@@ -25,18 +25,19 @@ const dayOfMonth = z.number().int().min(1).max(31)
 
 // Rupee text ("1,23,456.78") to paise, as a validation issue rather than a thrown MoneyParseError. Money never
 // arrives as a number: a float cannot hold paise exactly (EC-1).
-const positiveRupees = z
-  .string()
-  .transform((text, ctx) => {
-    try {
-      return parseRupees(text)
-    } catch (error) {
-      if (!(error instanceof MoneyParseError)) throw error
-      ctx.addIssue({ code: "custom", message: "Enter an amount in rupees, with at most two decimal places" })
-      return z.NEVER
-    }
-  })
-  .refine((paise) => paise > 0n, "The amount must be greater than zero")
+const rupees = z.string().transform((text, ctx) => {
+  try {
+    return parseRupees(text)
+  } catch (error) {
+    if (!(error instanceof MoneyParseError)) throw error
+    ctx.addIssue({ code: "custom", message: "Enter an amount in rupees, with at most two decimal places" })
+    return z.NEVER
+  }
+})
+const positiveRupees = rupees.refine((paise) => paise > 0n, "The amount must be greater than zero")
+// An opening position is signed: positive for money you hold, negative for money you owe or an overdrawn balance
+// (spec "Opening position"). Zero is not a position, so it is refused rather than posting a pointless transaction.
+const signedRupees = rupees.refine((paise) => paise !== 0n, "Enter an amount other than zero")
 
 const ledgerFields = { name, parentId: nodeId.optional() }
 
@@ -49,7 +50,7 @@ const asset = z.strictObject({
   assetSubtype: z.enum(ASSET_SUBTYPES),
   institution: institution.optional(),
   lastFour: lastFour.optional(),
-  openingBalance: positiveRupees.optional(),
+  openingBalance: signedRupees.optional(),
 })
 
 const liability = z.strictObject({
@@ -61,7 +62,7 @@ const liability = z.strictObject({
   creditLimit: positiveRupees.optional(),
   statementDay: dayOfMonth.optional(),
   dueDay: dayOfMonth.optional(),
-  openingBalance: positiveRupees.optional(),
+  openingBalance: signedRupees.optional(),
 })
 
 const investment = z.strictObject({

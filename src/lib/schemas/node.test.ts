@@ -59,9 +59,16 @@ describe("createNodeSchema", () => {
     expect(fieldsWithIssues({ kind: "EXPENSE", name: "x".repeat(101) })).toEqual(["name"])
   })
 
-  it("rejects a malformed or non-positive opening balance", () => {
+  it("accepts a negative opening balance, as paise, for an account that starts overdrawn or owed on", () => {
     const base = { kind: "ASSET", name: "Bank", assetSubtype: "CASH" }
-    for (const openingBalance of ["", "abc", "1.234", "1e3", "-5", "0", "0.00", "1,2,3"]) {
+    expect(parse({ ...base, openingBalance: "-2,500.50" })).toMatchObject({ success: true, data: { openingBalance: -250_050n } })
+    const card = parse({ kind: "LIABILITY", name: "Card", liabilitySubtype: "CREDIT_CARD", openingBalance: "-5000" })
+    expect(card).toMatchObject({ success: true, data: { openingBalance: -500_000n } })
+  })
+
+  it("rejects a malformed or zero opening balance", () => {
+    const base = { kind: "ASSET", name: "Bank", assetSubtype: "CASH" }
+    for (const openingBalance of ["", "abc", "1.234", "1e3", "0", "-0", "0.00", "1,2,3", "--5"]) {
       expect(fieldsWithIssues({ ...base, openingBalance }), openingBalance).toEqual(["openingBalance"])
     }
     // a number is not rupees-as-text; money does not travel as a float

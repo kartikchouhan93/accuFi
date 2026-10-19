@@ -3,6 +3,7 @@ import { fromDbDate, todayIn } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { findNodeById } from "@/server/repositories/node-repository"
+import * as nodeRepo from "@/server/repositories/node-repository"
 import * as transactionRepo from "@/server/repositories/transaction-repository"
 import { sumBalances } from "@/server/repositories/transaction-repository"
 import { seedAccountNodes } from "@/server/services/account-seed"
@@ -15,10 +16,12 @@ import {
   listAllNodes,
   listNodesForPicker,
   NodeHasHistoryError,
+  NodeKindChangeError,
   removeLedgerNode,
   renameLedgerNode,
   restoreLedgerNode,
   SystemNodeError,
+  updateLedgerNode,
 } from "@/server/services/node-service"
 import { createRegistry } from "./repositories/fixtures"
 
@@ -30,7 +33,9 @@ afterEach(() => vi.restoreAllMocks())
 async function makeSeededUser() {
   const user = await registry.makeUser()
   await prisma.$transaction((tx) => seedAccountNodes(tx, user.id))
-  const systemNode = async (role: "OPENING_BALANCE" | "REALISED_GAIN" | "REALISED_LOSS") =>
+  const systemNode = async (
+    role: "OPENING_BALANCE" | "OPENING_BALANCE_CONTRA" | "REALISED_GAIN" | "REALISED_LOSS",
+  ) =>
     prisma.ledgerNode.findFirstOrThrow({ where: { userId: user.id, systemRole: role } })
   return { user, systemNode }
 }
@@ -112,7 +117,7 @@ describe("createLedgerNode", () => {
     expect(balances.find((b) => b.nodeId === bank.id)?.balance).toBe(12_345_67n)
   })
 
-  it("posts a liability's opening balance from the same system node", async () => {
+  it("posts a positive opening balance on a liability (a credit balance) from the Opening Balance node", async () => {
     const { user, systemNode } = await makeSeededUser()
     const openingNode = await systemNode("OPENING_BALANCE")
     const loan = await createLedgerNode(user.id, {
@@ -131,14 +136,46 @@ describe("createLedgerNode", () => {
     expect(await prisma.transaction.count({ where: { userId: user.id } })).toBe(0)
   })
 
-  it("refuses an opening balance that is zero or negative, creating nothing", async () => {
+  it("refuses an opening balance of zero, creating nothing", async () => {
     const { user } = await makeSeededUser()
     const nodesBefore = await prisma.ledgerNode.count({ where: { userId: user.id } })
-    for (const openingBalance of [0n, -100n]) {
-      await expect(createLedgerNode(user.id, { ...bankInput, openingBalance })).rejects.toThrow(InvalidNodeError)
-    }
+    await expect(createLedgerNode(user.id, { ...bankInput, openingBalance: 0n })).rejects.toThrow(InvalidNodeError)
     expect(await prisma.ledgerNode.count({ where: { userId: user.id } })).toBe(nodesBefore)
     expect(await prisma.transaction.count({ where: { userId: user.id } })).toBe(0)
+  })
+
+  it("posts a negative opening balance as node -> Opening Balance Contra, for the magnitude", async () => {
+    // An overdrawn account: INCOME_SOURCE can never be a target, so a negative start needs the EXPENSE-kind contra node.
+    const { user, systemNode } = await makeSeededUser()
+    const contra = await systemNode("OPENING_BALANCE_CONTRA")
+    const overdrawn = await createLedgerNode(user.id, { ...bankInput, openingBalance: -2_500_00n })
+
+    const rows = await prisma.transaction.findMany({ where: { userId: user.id } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ fromNodeId: overdrawn.id, toNodeId: contra.id, amountPaise: 2_500_00n })
+    const balances = await sumBalances(user.id)
+    expect(balances.find((b) => b.nodeId === overdrawn.id)?.balance).toBe(-2_500_00n)
+    expect(balances.find((b) => b.nodeId === contra.id)?.balance).toBe(2_500_00n)
+  })
+
+  it("posts the opening balance of a card you already owe on, so that its balance is negative", async () => {
+    const { user, systemNode } = await makeSeededUser()
+    const contra = await systemNode("OPENING_BALANCE_CONTRA")
+    const card = await createLedgerNode(user.id, {
+      kind: "LIABILITY",
+      name: "Axis Card",
+      liabilitySubtype: "CREDIT_CARD",
+      openingBalance: -5_000_00n,
+    })
+    const row = await prisma.transaction.findFirstOrThrow({ where: { userId: user.id } })
+    expect(row).toMatchObject({ fromNodeId: card.id, toNodeId: contra.id, amountPaise: 5_000_00n })
+    expect((await sumBalances(user.id)).find((b) => b.nodeId === card.id)?.balance).toBe(-5_000_00n)
+  })
+
+  it("refuses a negative opening balance for an account that has no contra node, creating nothing", async () => {
+    const user = await registry.makeUser() // not seeded
+    await expect(createLedgerNode(user.id, { ...bankInput, openingBalance: -100n })).rejects.toThrow(SystemNodeError)
+    expect(await prisma.ledgerNode.count({ where: { userId: user.id } })).toBe(0)
   })
 
   it("refuses an opening balance on a kind that does not hold a balance, creating nothing", async () => {
@@ -151,12 +188,29 @@ describe("createLedgerNode", () => {
     expect(await prisma.ledgerNode.count({ where: { userId: user.id } })).toBe(nodesBefore)
   })
 
-  it("rolls the node back if the opening-balance transaction cannot be written", async () => {
+  it("leaves no node behind when the opening-balance write fails, without needing a compensating delete", async () => {
     const { user } = await makeSeededUser()
     const nodesBefore = await prisma.ledgerNode.count({ where: { userId: user.id } })
     vi.spyOn(transactionRepo, "insertTransactions").mockRejectedValueOnce(new Error("connection reset"))
+    // If the service created the node first and then tried to undo it, a failing undo would leave an orphan.
+    const cleanup = vi.spyOn(nodeRepo, "deleteNode").mockRejectedValue(new Error("cleanup failed"))
     await expect(createLedgerNode(user.id, { ...bankInput, openingBalance: 100n })).rejects.toThrow("connection reset")
     expect(await prisma.ledgerNode.count({ where: { userId: user.id } })).toBe(nodesBefore)
+    expect(cleanup).not.toHaveBeenCalled()
+  })
+
+  it("writes the node and its opening transaction in one database transaction", async () => {
+    // The process dying right after the insert: both rows must go, and the node must not be left holding history.
+    const { user } = await makeSeededUser()
+    const nodesBefore = await prisma.ledgerNode.count({ where: { userId: user.id } })
+    const real = transactionRepo.insertTransactions
+    vi.spyOn(transactionRepo, "insertTransactions").mockImplementationOnce(async (...args) => {
+      await real(...args)
+      throw new Error("crashed after the insert")
+    })
+    await expect(createLedgerNode(user.id, { ...bankInput, openingBalance: 100n })).rejects.toThrow("crashed after")
+    expect(await prisma.ledgerNode.count({ where: { userId: user.id } })).toBe(nodesBefore)
+    expect(await prisma.transaction.count({ where: { userId: user.id } })).toBe(0)
   })
 
   it("refuses an opening balance for an account that has no Opening Balance node", async () => {
@@ -216,7 +270,6 @@ describe("node hierarchy", () => {
 
 describe("renameLedgerNode", () => {
   it("renames a node and leaves its kind alone", async () => {
-    // EC-34: there is no function in this module that changes a kind, and rename carries nothing but the name.
     const user = await registry.makeUser()
     const bank = await createLedgerNode(user.id, bankInput)
     const renamed = await renameLedgerNode(user.id, bank.id, "  Salary account ")
@@ -240,11 +293,53 @@ describe("renameLedgerNode", () => {
   })
 })
 
+describe("updateLedgerNode", () => {
+  it("refuses to change a node's kind, and applies nothing else from the same call", async () => {
+    // EC-34: every transaction pointing at a node derives its meaning from the node's kind
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    const forged = { name: "Renamed", kind: "EXPENSE" } as unknown as Parameters<typeof updateLedgerNode>[2]
+    await expect(updateLedgerNode(user.id, bank.id, forged)).rejects.toThrow(NodeKindChangeError)
+    expect(await findNodeById(user.id, bank.id)).toEqual(bank)
+  })
+
+  it("tolerates a kind that is the node's own, ignoring it", async () => {
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    const echoed = { name: "Renamed", kind: "ASSET" } as unknown as Parameters<typeof updateLedgerNode>[2]
+    expect(await updateLedgerNode(user.id, bank.id, echoed)).toMatchObject({ name: "Renamed", kind: "ASSET" })
+  })
+
+  it("refuses any field it does not edit, and applies nothing", async () => {
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    for (const extra of [{ userId: "x" }, { systemRole: "OPENING_BALANCE" }, { archivedAt: null }, { parentId: "x" }]) {
+      const forged = { name: "Renamed", ...extra } as unknown as Parameters<typeof updateLedgerNode>[2]
+      await expect(updateLedgerNode(user.id, bank.id, forged)).rejects.toThrow(InvalidNodeError)
+    }
+    expect(await findNodeById(user.id, bank.id)).toEqual(bank)
+  })
+
+  it("applies a rename", async () => {
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    expect(await updateLedgerNode(user.id, bank.id, { name: " Salary account " })).toMatchObject({ name: "Salary account" })
+  })
+
+  it("answers not found for another user's node before saying anything about its kind", async () => {
+    const mine = await registry.makeUser()
+    const theirs = await registry.makeUser()
+    const theirBank = await createLedgerNode(theirs.id, bankInput)
+    const forged = { kind: "EXPENSE" } as unknown as Parameters<typeof updateLedgerNode>[2]
+    await expect(updateLedgerNode(mine.id, theirBank.id, forged)).rejects.toThrow(NotFoundError)
+  })
+})
+
 describe("system nodes", () => {
   it("refuses to rename, archive or delete a system node", async () => {
     // EC-37, SystemNodeError
     const { user, systemNode } = await makeSeededUser()
-    for (const role of ["OPENING_BALANCE", "REALISED_GAIN", "REALISED_LOSS"] as const) {
+    for (const role of ["OPENING_BALANCE", "OPENING_BALANCE_CONTRA", "REALISED_GAIN", "REALISED_LOSS"] as const) {
       const node = await systemNode(role)
       await expect(renameLedgerNode(user.id, node.id, "Other")).rejects.toThrow(SystemNodeError)
       await expect(archiveLedgerNode(user.id, node.id)).rejects.toThrow(SystemNodeError)

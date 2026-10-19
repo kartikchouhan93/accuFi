@@ -14,6 +14,7 @@ export interface NodeBalance {
 export interface NetWorth {
   assets: Paise
   investments: Paise
+  /** The positive magnitude owed: the negation of the summed liability balances (a UI shows "Liabilities ₹45,000"). */
   liabilities: Paise
   total: Paise
   // True when at least one investment could not be valued and so is missing from `total`.
@@ -22,7 +23,12 @@ export interface NetWorth {
 }
 
 /**
- * net worth = Σ ASSET balances + Σ INVESTMENT current values − Σ LIABILITY balances
+ * net worth = Σ ASSET balances + Σ INVESTMENT current values + Σ LIABILITY balances
+ *
+ * Every balance is inflows − outflows, with no per-kind special case (spec §4.2), so a liability you owe on is
+ * NEGATIVE: a card spend is LIABILITY → EXPENSE, an outflow from the card. Net worth therefore ADDS the liability
+ * balances; subtracting an already-negative balance would make borrowing look like wealth. `liabilities` in the result
+ * is the same sum negated, a positive magnitude owed, so a display can read assets + investments − liabilities.
  *
  * `valuations` maps an investment node to its current market value:
  *   - absent from the map  → falls back to its contribution balance (all of M1's behaviour);
@@ -37,7 +43,7 @@ export function netWorth(
 ): NetWorth {
   let assets = 0n
   let investments = 0n
-  let liabilities = 0n
+  let liabilityBalances = 0n
   const unvaluedNodeIds: string[] = []
 
   for (const { nodeId, kind, balance } of balances) {
@@ -46,7 +52,7 @@ export function netWorth(
         assets += balance
         break
       case "LIABILITY":
-        liabilities += balance
+        liabilityBalances += balance
         break
       case "INVESTMENT": {
         // `has`, not truthiness: a null value and a 0n value are both falsy, and neither means "absent".
@@ -68,8 +74,8 @@ export function netWorth(
   return {
     assets,
     investments,
-    liabilities,
-    total: assets + investments - liabilities,
+    liabilities: -liabilityBalances,
+    total: assets + investments + liabilityBalances,
     isPartial: unvaluedNodeIds.length > 0,
     unvaluedNodeIds,
   }

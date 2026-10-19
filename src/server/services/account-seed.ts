@@ -6,8 +6,13 @@ import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
 //
 // OPENING_BALANCE and REALISED_GAIN are INCOME_SOURCE (money comes *from* them into the ledger); REALISED_LOSS is
 // EXPENSE (money goes *to* it). Disposals and opening balances rely on exactly these kinds.
+//
+// OPENING_BALANCE_CONTRA is the other half of the opening position: INCOME_SOURCE can never be a target (spec §5), so
+// a starting balance that is NEGATIVE (a card already owed on, an overdrawn account) is posted node -> contra, an
+// EXPENSE, while a positive one is posted OPENING_BALANCE -> node.
 const SYSTEM_NODES: Record<SystemNodeRole, { name: string; kind: LedgerKind }> = {
   OPENING_BALANCE: { name: "Opening Balance", kind: "INCOME_SOURCE" },
+  OPENING_BALANCE_CONTRA: { name: "Opening Balance Contra", kind: "EXPENSE" },
   REALISED_GAIN: { name: "Realised Gain", kind: "INCOME_SOURCE" },
   REALISED_LOSS: { name: "Realised Loss", kind: "EXPENSE" },
 }

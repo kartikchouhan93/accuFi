@@ -27,10 +27,10 @@ afterAll(async () => {
 })
 
 describe("createAccount", () => {
-  it("creates the three system nodes on signup", async () => {
+  it("creates the four system nodes on signup", async () => {
     const { userId } = await createAccount({ email: freshEmail(), password: "correct horse" })
     const roles = (await prisma.ledgerNode.findMany({ where: { userId } })).map((n) => n.systemRole)
-    expect(roles.filter(Boolean).sort()).toEqual(["OPENING_BALANCE", "REALISED_GAIN", "REALISED_LOSS"])
+    expect(roles.filter(Boolean).sort()).toEqual(["OPENING_BALANCE", "OPENING_BALANCE_CONTRA", "REALISED_GAIN", "REALISED_LOSS"])
   })
 
   it("gives the system nodes the right kinds", async () => {
@@ -39,6 +39,7 @@ describe("createAccount", () => {
     const kindOf = Object.fromEntries(nodes.map((n) => [n.systemRole, n.kind]))
     expect(kindOf).toEqual({
       OPENING_BALANCE: "INCOME_SOURCE",
+      OPENING_BALANCE_CONTRA: "EXPENSE",
       REALISED_GAIN: "INCOME_SOURCE",
       REALISED_LOSS: "EXPENSE",
     })
@@ -58,8 +59,8 @@ describe("createAccount", () => {
     const second = await createAccount({ email: freshEmail(), password: "correct horse" })
     const firstNodes = await prisma.ledgerNode.findMany({ where: { userId: first.userId } })
     const secondNodes = await prisma.ledgerNode.findMany({ where: { userId: second.userId } })
-    expect(firstNodes).toHaveLength(9)
-    expect(secondNodes).toHaveLength(9)
+    expect(firstNodes).toHaveLength(10)
+    expect(secondNodes).toHaveLength(10)
     const firstIds = new Set(firstNodes.map((n) => n.id))
     expect(secondNodes.some((n) => firstIds.has(n.id))).toBe(false)
   })
@@ -82,7 +83,7 @@ describe("createAccount", () => {
     const email = freshEmail()
     const { userId } = await createAccount({ email, password: "correct horse" })
     await expect(createAccount({ email, password: "correct horse" })).rejects.toThrow(EmailTakenError)
-    expect(await prisma.ledgerNode.count({ where: { userId } })).toBe(9)
+    expect(await prisma.ledgerNode.count({ where: { userId } })).toBe(10)
     expect(await prisma.user.count({ where: { email: email.toLowerCase() } })).toBe(1)
   })
 

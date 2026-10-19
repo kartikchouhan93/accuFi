@@ -7,7 +7,7 @@ export const LEDGER_KINDS = ["INCOME_SOURCE", "ASSET", "INVESTMENT", "EXPENSE", 
 export type LedgerKind = (typeof LEDGER_KINDS)[number]
 
 // Nodes the system creates itself, never the user.
-export const SYSTEM_NODE_ROLES = ["OPENING_BALANCE", "REALISED_GAIN", "REALISED_LOSS"] as const
+export const SYSTEM_NODE_ROLES = ["OPENING_BALANCE", "OPENING_BALANCE_CONTRA", "REALISED_GAIN", "REALISED_LOSS"] as const
 export type SystemNodeRole = (typeof SYSTEM_NODE_ROLES)[number]
 
 // The 18 allowed (from, to) pairs of spec §5, transcribed row by row (rows are "from").

@@ -74,14 +74,23 @@ export function findNodeById(userId: string, nodeId: string): Promise<LedgerNode
   return prisma.ledgerNode.findFirst({ where: { id: nodeId, userId } })
 }
 
-export async function createNode(userId: string, data: CreateNodeData): Promise<LedgerNode> {
+/**
+ * `tx`, when given, is the client of a transaction the caller already opened (see unit-of-work.ts): the node is
+ * written inside it, so it commits or rolls back with the caller's other writes. Ownership is checked either way.
+ */
+export async function createNode(
+  userId: string,
+  data: CreateNodeData,
+  tx?: Prisma.TransactionClient,
+): Promise<LedgerNode> {
   const fields = pick(data, OPTIONAL_FIELDS)
-  return prisma.$transaction(async (tx) => {
-    if (fields.parentId) await assertNodesOwned(userId, [fields.parentId], tx)
-    return tx.ledgerNode.create({
+  const write = async (db: Prisma.TransactionClient) => {
+    if (fields.parentId) await assertNodesOwned(userId, [fields.parentId], db)
+    return db.ledgerNode.create({
       data: { ...fields, kind: data.kind, name: data.name, userId }, // userId last: nothing above can override it
     })
-  })
+  }
+  return tx ? write(tx) : prisma.$transaction(write)
 }
 
 /** Throws NotFoundError if the node is not this user's (or does not exist). */

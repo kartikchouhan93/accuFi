@@ -133,23 +133,27 @@ async function assertGroupOwned(userId: string, groupId: string, db: Db): Promis
 /**
  * Insert all drafts or none. Throws NotFoundError, and writes nothing, if any referenced node (or the group) is not
  * this user's; DuplicateIdempotencyKeyError, carrying the stored row, if a draft repeats a key this user already used.
+ * `tx`, when given, is the client of a transaction the caller already opened (see unit-of-work.ts): the rows are
+ * written inside it and commit or roll back with it. A duplicate key then still raises DuplicateIdempotencyKeyError,
+ * but it has aborted the caller's transaction too, so the caller must let it roll back.
  */
 export async function insertTransactions(
   userId: string,
   drafts: InsertDraft[],
   groupId?: string,
+  tx?: Prisma.TransactionClient,
 ): Promise<Transaction[]> {
   if (drafts.length === 0) return []
   const keys = drafts.flatMap((d) => (d.idempotencyKey ? [d.idempotencyKey] : []))
   if (new Set(keys).size !== keys.length) throw new Error("A batch cannot repeat an idempotency key")
   try {
-    return await prisma.$transaction(async (tx) => {
-      await assertNodesOwned(userId, drafts.flatMap((d) => [d.fromNodeId, d.toNodeId]), tx)
-      if (groupId !== undefined) await assertGroupOwned(userId, groupId, tx)
+    const write = async (db: Prisma.TransactionClient) => {
+      await assertNodesOwned(userId, drafts.flatMap((d) => [d.fromNodeId, d.toNodeId]), db)
+      if (groupId !== undefined) await assertGroupOwned(userId, groupId, db)
       const created: Transaction[] = []
       for (const draft of drafts) {
         created.push(
-          await tx.transaction.create({
+          await db.transaction.create({
             data: {
               userId, // always the caller's; the draft has no way to name another
               fromNodeId: draft.fromNodeId,
@@ -165,7 +169,8 @@ export async function insertTransactions(
         )
       }
       return created
-    })
+    }
+    return await (tx ? write(tx) : prisma.$transaction(write))
   } catch (error) {
     // The only unique constraint a Transaction insert can hit is (userId, idempotencyKey). The failed statement
     // aborted the database transaction, so the lookup runs outside it, on its own, scoped to the user like every query.

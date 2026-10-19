@@ -87,6 +87,20 @@ describe("createNodeAction", () => {
     expect(row.amountPaise).toBe(123_450n)
   })
 
+  it("posts a negative opening balance as node -> contra, so a card you owe on starts negative", async () => {
+    const user = await signedInSeededUser()
+    const result = await actions.createNodeAction({
+      kind: "LIABILITY",
+      name: "Card",
+      liabilitySubtype: "CREDIT_CARD",
+      openingBalance: "-5,000",
+    })
+    expect(result.ok).toBe(true)
+    const contra = await prisma.ledgerNode.findFirstOrThrow({ where: { userId: user.id, systemRole: "OPENING_BALANCE_CONTRA" } })
+    const row = await prisma.transaction.findFirstOrThrow({ where: { userId: user.id } })
+    expect(row).toMatchObject({ toNodeId: contra.id, amountPaise: 500_000n })
+  })
+
   it("serialises a liability's credit limit as a paise string", async () => {
     await signedInUser()
     const result = await actions.createNodeAction({

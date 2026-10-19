@@ -52,6 +52,7 @@ enum LotMethod {
 // (pinned by tests/db/enum-parity.test.ts).
 enum SystemNodeRole {
   OPENING_BALANCE
+  OPENING_BALANCE_CONTRA
   REALISED_GAIN
   REALISED_LOSS
 }

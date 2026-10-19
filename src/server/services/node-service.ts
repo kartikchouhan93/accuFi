@@ -14,12 +14,14 @@ import {
   updateNode,
 } from "@/server/repositories/node-repository"
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
+import { inTransaction } from "@/server/repositories/unit-of-work"
 import { findUserTimezone } from "@/server/repositories/user-repository"
 
 // The node lifecycle. The database has no CHECK constraints, so everything it cannot enforce is enforced here: a
 // system node is never renamed, archived or deleted; a node that transactions reference is never deleted; the
-// hierarchy is one level deep; an opening balance is positive and goes only to a node that holds a balance. A node's
-// kind is fixed at creation (EC-34): no function below changes it, and the repository's allow-list would not write it.
+// hierarchy is one level deep; an opening balance is non-zero and goes only to a node that holds a balance. A node's
+// kind is fixed at creation (EC-34): updateLedgerNode refuses a change outright, and the repository's allow-list
+// would not write one anyway.
 
 export type { CreateNodeInput }
 
@@ -41,6 +43,13 @@ export class HierarchyDepthError extends Error {
   constructor() {
     super("Nodes can be grouped one level deep: a node inside a group cannot itself contain others")
     this.name = "HierarchyDepthError"
+  }
+}
+
+export class NodeKindChangeError extends Error {
+  constructor() {
+    super("A node's kind cannot be changed: create a new node and move its history instead")
+    this.name = "NodeKindChangeError"
   }
 }
 
@@ -111,77 +120,118 @@ async function validateParent(userId: string, input: CreateNodeInput): Promise<v
   if (parent.kind !== input.kind) throw new InvalidNodeError("A node can only be grouped under a node of the same kind")
 }
 
-/** The opening balance's source node, after checking the movement is one the transaction rules allow. */
-async function openingBalanceSource(
+interface OpeningBalancePlan {
+  /** The system node on the other side of the movement. */
+  counterpart: LedgerNode
+  /** Money flows new node -> counterpart (a negative position) rather than counterpart -> new node. */
+  outOfNewNode: boolean
+  amount: Paise
+  occurredAt: CalendarDate
+}
+
+/**
+ * Where an opening balance comes from, chosen by its sign and checked against the transaction rules. A positive
+ * position posts OPENING_BALANCE -> node; a negative one (a card already owed on, an overdrawn account) posts
+ * node -> OPENING_BALANCE_CONTRA, because INCOME_SOURCE can never be a target (spec §5) and so no legal edge into the
+ * Opening Balance node exists. Decided by sign, not by kind: both kinds can start on either side of zero.
+ */
+async function planOpeningBalance(
   userId: string,
   kind: LedgerKind,
-  amount: Paise,
+  openingBalance: Paise,
   occurredAt: CalendarDate,
-): Promise<LedgerNode> {
+): Promise<OpeningBalancePlan> {
   if (!OPENING_BALANCE_KINDS.has(kind)) {
     throw new InvalidNodeError("An opening balance can only be set on an asset or a liability")
   }
-  const source = (await findNodes(userId, { kinds: ["INCOME_SOURCE"] })).find((n) => n.systemRole === "OPENING_BALANCE")
-  if (!source) throw new SystemNodeError("This account has no Opening Balance node")
+  if (openingBalance === 0n) throw new InvalidNodeError("An opening balance cannot be zero")
+  const outOfNewNode = openingBalance < 0n
+  const amount = outOfNewNode ? -openingBalance : openingBalance
+  const [role, systemKind] = outOfNewNode ? (["OPENING_BALANCE_CONTRA", "EXPENSE"] as const) : (["OPENING_BALANCE", "INCOME_SOURCE"] as const)
+  const counterpart = (await findNodes(userId, { kinds: [systemKind] })).find((n) => n.systemRole === role)
+  if (!counterpart) throw new SystemNodeError(`This account has no ${role} node`)
   // The new node does not exist yet, so it is described by what the rules read: its kind. Checking before the write
   // means a refused opening balance leaves nothing behind.
+  const newNode = { id: "(new node)", kind, archivedAt: null, systemRole: null }
   const violations = validateTransaction({
-    fromNode: source,
-    toNode: { id: "(new node)", kind, archivedAt: null, systemRole: null },
+    fromNode: outOfNewNode ? newNode : counterpart,
+    toNode: outOfNewNode ? counterpart : newNode,
     amount,
     occurredAt,
   })
   if (violations.length > 0) throw new InvalidNodeError(violations.map((v) => v.message).join(" "))
-  return source
+  return { counterpart, outOfNewNode, amount, occurredAt }
 }
 
 /**
- * Create a node. With `openingBalance` (ASSET and LIABILITY only), also post a transaction for it from the user's
- * Opening Balance system node, dated today in the user's timezone (EC-36). That is an ordinary, editable
- * transaction, not a column: there is no stored balance anywhere.
+ * Create a node. With `openingBalance` (ASSET and LIABILITY only; signed, never zero), also post a transaction for
+ * it against the user's Opening Balance or Opening Balance Contra system node, dated today in the user's timezone
+ * (EC-36). That is an ordinary, editable transaction, not a column: there is no stored balance anywhere.
  *
- * The node and its opening transaction are two repository calls, not one database transaction (the repositories each
- * own their transaction). If the second fails, the node is deleted again, so a failed create does not leave a node the
- * user never saw confirmed; if that cleanup fails too, the original error is still the one thrown.
+ * The node and its opening transaction are written in one database transaction, so a failure (or a crash) between
+ * them leaves neither.
  */
 export async function createLedgerNode(userId: string, input: CreateNodeInput): Promise<LedgerNode> {
   const name = cleanName(input.name)
   await validateParent(userId, input)
 
   const openingBalance = "openingBalance" in input ? input.openingBalance : undefined
-  let opening: { source: LedgerNode; amount: Paise; occurredAt: CalendarDate } | null = null
+  let plan: OpeningBalancePlan | null = null
   if (openingBalance !== undefined) {
     const timezone = await findUserTimezone(userId)
     if (timezone === null) throw new NotFoundError("user")
-    const occurredAt = todayIn(timezone)
-    opening = { source: await openingBalanceSource(userId, input.kind, openingBalance, occurredAt), amount: openingBalance, occurredAt }
+    plan = await planOpeningBalance(userId, input.kind, openingBalance, todayIn(timezone))
   }
 
   // `input` also carries `openingBalance`, which is not a column; the repository copies only the fields it allows.
-  const node = await createNode(userId, { ...input, name })
-  if (opening) {
-    try {
-      await insertTransactions(userId, [
+  const data = { ...input, name }
+  if (!plan) return createNode(userId, data)
+  const opening = plan
+  return inTransaction(async (tx) => {
+    const node = await createNode(userId, data, tx)
+    await insertTransactions(
+      userId,
+      [
         {
-          fromNodeId: opening.source.id,
-          toNodeId: node.id,
+          fromNodeId: opening.outOfNewNode ? node.id : opening.counterpart.id,
+          toNodeId: opening.outOfNewNode ? opening.counterpart.id : node.id,
           amountPaise: opening.amount,
           occurredAt: opening.occurredAt,
           note: "Opening balance",
         },
-      ])
-    } catch (error) {
-      await deleteNode(userId, node.id).catch(() => undefined)
-      throw error
-    }
-  }
-  return node
+      ],
+      undefined,
+      tx,
+    )
+    return node
+  })
 }
 
-export async function renameLedgerNode(userId: string, nodeId: string, name: string): Promise<LedgerNode> {
-  const clean = cleanName(name)
-  await requireMutableNode(userId, nodeId)
-  return updateNode(userId, nodeId, { name: clean })
+/** What an edit may carry. Widen this, and EDITABLE_FIELDS, when another field becomes editable. */
+export interface NodeChanges {
+  name?: string
+}
+const EDITABLE_FIELDS: readonly string[] = ["name"]
+
+/**
+ * Edit a node. A node's kind is fixed at creation (EC-34): every transaction pointing at it derives its meaning from
+ * the kind, so a change is refused here whatever the caller's types say. (The strict schemas turn a stray `kind` away
+ * at the boundary first; this is the guard for a caller that bypasses them.) Naming the node's own, unchanged kind is
+ * tolerated and ignored. Any other field the edit does not cover is refused, and nothing is written.
+ */
+export async function updateLedgerNode(userId: string, nodeId: string, changes: NodeChanges): Promise<LedgerNode> {
+  const node = await requireMutableNode(userId, nodeId)
+  const submitted: Record<string, unknown> = { ...changes }
+  if (submitted.kind !== undefined && submitted.kind !== node.kind) throw new NodeKindChangeError()
+  const rejected = Object.keys(submitted).filter(
+    (field) => field !== "kind" && submitted[field] !== undefined && !EDITABLE_FIELDS.includes(field),
+  )
+  if (rejected.length > 0) throw new InvalidNodeError(`These fields cannot be changed: ${rejected.join(", ")}`)
+  return updateNode(userId, nodeId, { name: changes.name === undefined ? undefined : cleanName(changes.name) })
+}
+
+export function renameLedgerNode(userId: string, nodeId: string, name: string): Promise<LedgerNode> {
+  return updateLedgerNode(userId, nodeId, { name })
 }
 
 /**
