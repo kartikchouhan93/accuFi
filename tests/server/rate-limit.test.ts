@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { prisma } from "@/server/db"
-import { afterEach, vi } from "vitest"
 import { clientIp } from "@/server/client-ip"
 import {
   accountKey,
@@ -20,11 +19,15 @@ import { authenticate, RateLimitedError } from "@/server/services/login-service"
 import { createAccount } from "@/server/services/signup-service"
 
 // Writes to the dedicated test database. Every test uses a random email and IP, so counters never collide.
+// The address is the same UUID that names the email, laid out as an IPv6 address (128 bits, 8 groups of 4 hex
+// digits), so two tests can never draw the same address; a small random octet could, and one test would then
+// find another's budget already spent.
 const keys: string[] = []
 const emails: string[] = []
 const fresh = () => {
-  const email = `${randomUUID()}@ratelimit.test`
-  const ip = `203.0.113.${Math.floor(Math.random() * 250) + 1}`
+  const id = randomUUID()
+  const email = `${id}@ratelimit.test`
+  const ip = id.replaceAll("-", "").match(/.{4}/g)!.join(":")
   const key = rateLimitKey("login", ip, email)
   keys.push(key, accountKey(email), ipKey("signup", ip))
   emails.push(email)
