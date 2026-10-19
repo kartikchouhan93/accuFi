@@ -4,7 +4,7 @@ import type { LedgerKind } from "@/domain/ledger-kind"
 import type { NodeBalance } from "@/domain/balance"
 import type { Paise } from "@/domain/money"
 import { prisma } from "@/server/db"
-import { InvalidCursorError, NotFoundError } from "./errors"
+import { DuplicateIdempotencyKeyError, InvalidCursorError, NotFoundError } from "./errors"
 import { assertNodesOwned, type Db } from "./node-repository"
 
 // The only code that reads or writes Transaction rows. Every exported function takes `userId` first and puts it in the
@@ -63,7 +63,8 @@ export const MAX_PAGE_SIZE = 200
 
 // Listings are newest first on (occurredAt, id). `id` makes the order total, so rows sharing a day never straddle a
 // page boundary ambiguously. The cursor is the last row's pair; the next page is everything strictly after it.
-// Keyset, not OFFSET: a page costs the same however deep it is, and rows inserted meanwhile cannot shift it.
+// Keyset, not OFFSET: rows inserted meanwhile cannot shift a page, and the (userId, occurredAt, id) index serves the
+// order and the cursor condition directly, so deep pages do not scan the pages before them.
 function encodeCursor(row: Pick<Transaction, "occurredAt" | "id">): string {
   return Buffer.from(JSON.stringify([fromDbDate(row.occurredAt), row.id])).toString("base64url")
 }
@@ -131,7 +132,7 @@ async function assertGroupOwned(userId: string, groupId: string, db: Db): Promis
 
 /**
  * Insert all drafts or none. Throws NotFoundError, and writes nothing, if any referenced node (or the group) is not
- * this user's.
+ * this user's; DuplicateIdempotencyKeyError, carrying the stored row, if a draft repeats a key this user already used.
  */
 export async function insertTransactions(
   userId: string,
@@ -139,29 +140,42 @@ export async function insertTransactions(
   groupId?: string,
 ): Promise<Transaction[]> {
   if (drafts.length === 0) return []
-  return prisma.$transaction(async (tx) => {
-    await assertNodesOwned(userId, drafts.flatMap((d) => [d.fromNodeId, d.toNodeId]), tx)
-    if (groupId !== undefined) await assertGroupOwned(userId, groupId, tx)
-    const created: Transaction[] = []
-    for (const draft of drafts) {
-      created.push(
-        await tx.transaction.create({
-          data: {
-            userId, // always the caller's; the draft has no way to name another
-            fromNodeId: draft.fromNodeId,
-            toNodeId: draft.toNodeId,
-            amountPaise: draft.amountPaise,
-            occurredAt: toDbDate(draft.occurredAt),
-            note: draft.note ?? null,
-            tags: draft.tags ?? [],
-            idempotencyKey: draft.idempotencyKey ?? null,
-            groupId: groupId ?? null,
-          },
-        }),
-      )
+  const keys = drafts.flatMap((d) => (d.idempotencyKey ? [d.idempotencyKey] : []))
+  if (new Set(keys).size !== keys.length) throw new Error("A batch cannot repeat an idempotency key")
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await assertNodesOwned(userId, drafts.flatMap((d) => [d.fromNodeId, d.toNodeId]), tx)
+      if (groupId !== undefined) await assertGroupOwned(userId, groupId, tx)
+      const created: Transaction[] = []
+      for (const draft of drafts) {
+        created.push(
+          await tx.transaction.create({
+            data: {
+              userId, // always the caller's; the draft has no way to name another
+              fromNodeId: draft.fromNodeId,
+              toNodeId: draft.toNodeId,
+              amountPaise: draft.amountPaise,
+              occurredAt: toDbDate(draft.occurredAt),
+              note: draft.note ?? null,
+              tags: draft.tags ?? [],
+              idempotencyKey: draft.idempotencyKey ?? null,
+              groupId: groupId ?? null,
+            },
+          }),
+        )
+      }
+      return created
+    })
+  } catch (error) {
+    // The only unique constraint a Transaction insert can hit is (userId, idempotencyKey). The failed statement
+    // aborted the database transaction, so the lookup runs outside it, on its own, scoped to the user like every query.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" && keys.length > 0) {
+      const rows = await prisma.transaction.findMany({ where: { userId, idempotencyKey: { in: keys } } })
+      const existing = rows.find((row) => row.idempotencyKey !== null && keys.includes(row.idempotencyKey))
+      if (existing) throw new DuplicateIdempotencyKeyError(existing)
     }
-    return created
-  })
+    throw error
+  }
 }
 
 /**

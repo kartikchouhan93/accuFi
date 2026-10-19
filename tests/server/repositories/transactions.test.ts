@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, it } from "vitest"
+import { Prisma } from "@prisma/client"
 import { calendarDate, fromDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
-import { InvalidCursorError, NotFoundError } from "@/server/repositories/errors"
+import { DuplicateIdempotencyKeyError, InvalidCursorError, NotFoundError } from "@/server/repositories/errors"
 import {
   findTransactionById,
   findTransactions,
@@ -59,16 +60,59 @@ describe("insertTransactions", () => {
     expect(rows.every((r) => r.groupId === group.id)).toBe(true)
   })
 
-  it("rolls the whole batch back when a draft fails to insert", async () => {
-    const { user, salary, bank } = await setup()
-    const key = `key-${user.id}`
-    const draft = { fromNodeId: salary.id, toNodeId: bank.id, amountPaise: 1n, occurredAt: d("2026-04-01") }
-    await insertTransactions(user.id, [{ ...draft, idempotencyKey: key }])
-    // the second draft collides on the idempotency key, after the first has been written
-    await expect(
-      insertTransactions(user.id, [{ ...draft, note: "first" }, { ...draft, idempotencyKey: key }]),
-    ).rejects.toThrow()
-    expect(await prisma.transaction.count({ where: { userId: user.id, note: "first" } })).toBe(0)
+  describe("idempotency keys", () => {
+    async function withKey() {
+      const ctx = await setup()
+      const key = `key-${ctx.user.id}`
+      const draft = { fromNodeId: ctx.salary.id, toNodeId: ctx.bank.id, amountPaise: 1n, occurredAt: d("2026-04-01") }
+      const [first] = await insertTransactions(ctx.user.id, [{ ...draft, idempotencyKey: key, note: "original" }])
+      return { ...ctx, key, draft, first }
+    }
+
+    it("throws DuplicateIdempotencyKeyError, carrying the existing row, on a repeated key", async () => {
+      const { user, key, draft, first } = await withKey()
+      const error = await insertTransactions(user.id, [{ ...draft, idempotencyKey: key, note: "retry" }]).catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(DuplicateIdempotencyKeyError)
+      expect((error as DuplicateIdempotencyKeyError).existing).toEqual(first)
+      expect(await prisma.transaction.count({ where: { userId: user.id } })).toBe(1)
+    })
+
+    it("rolls the whole batch back when a later draft repeats a key", async () => {
+      const { user, key, draft, first } = await withKey()
+      const error = await insertTransactions(user.id, [
+        { ...draft, note: "first" },
+        { ...draft, idempotencyKey: key },
+      ]).catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(DuplicateIdempotencyKeyError)
+      expect((error as DuplicateIdempotencyKeyError).existing.id).toBe(first.id)
+      expect(await prisma.transaction.count({ where: { userId: user.id, note: "first" } })).toBe(0)
+    })
+
+    it("treats the same key under two users as unrelated, and never reveals the other user's row", async () => {
+      const a = await withKey()
+      const b = await setup()
+      const [mine] = await insertTransactions(b.user.id, [
+        { fromNodeId: b.salary.id, toNodeId: b.bank.id, amountPaise: 2n, occurredAt: d("2026-04-01"), idempotencyKey: a.key },
+      ])
+      expect(mine.userId).toBe(b.user.id)
+      // and a repeat by b reports b's own row, not a's
+      const error = await insertTransactions(b.user.id, [
+        { fromNodeId: b.salary.id, toNodeId: b.bank.id, amountPaise: 3n, occurredAt: d("2026-04-01"), idempotencyKey: a.key },
+      ]).catch((e: unknown) => e)
+      expect((error as DuplicateIdempotencyKeyError).existing.id).toBe(mine.id)
+    })
+
+    it("rejects a key repeated within one batch as a plain error, not a Prisma one", async () => {
+      const { user, draft } = await withKey()
+      const error = await insertTransactions(user.id, [
+        { ...draft, idempotencyKey: "same-in-batch" },
+        { ...draft, idempotencyKey: "same-in-batch" },
+      ]).catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(Error)
+      expect(error).not.toBeInstanceOf(Prisma.PrismaClientKnownRequestError)
+      expect((error as Error).message).toMatch(/idempotency key/i)
+      expect(await prisma.transaction.count({ where: { userId: user.id, idempotencyKey: "same-in-batch" } })).toBe(0)
+    })
   })
 })
 
@@ -209,10 +253,24 @@ describe("findTransactions", () => {
     }
   })
 
-  it("clamps the page size", async () => {
-    const { user } = await seeded()
+  it("clamps the page size to 1..MAX_PAGE_SIZE", async () => {
+    const { user, bank, food } = await setup()
+    // One more row than the cap, so a missing upper clamp would return all of them.
+    await prisma.transaction.createMany({
+      data: Array.from({ length: MAX_PAGE_SIZE + 1 }, () => ({
+        userId: user.id,
+        fromNodeId: bank.id,
+        toNodeId: food.id,
+        amountPaise: 1n,
+        occurredAt: new Date(Date.UTC(2026, 3, 1)),
+      })),
+    })
+    const huge = await findTransactions(user.id, {}, undefined, 1_000_000)
+    expect(huge.items).toHaveLength(MAX_PAGE_SIZE)
+    expect(huge.nextCursor).not.toBeNull()
     expect((await findTransactions(user.id, {}, undefined, 0)).items).toHaveLength(1)
-    expect((await findTransactions(user.id, {}, undefined, 1_000_000)).items.length).toBeLessThanOrEqual(MAX_PAGE_SIZE)
+    expect((await findTransactions(user.id, {}, undefined, -5)).items).toHaveLength(1)
+    expect((await findTransactions(user.id, {}, undefined, Number.NaN)).items).toHaveLength(50)
   })
 
   describe("pagination", () => {

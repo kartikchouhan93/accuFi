@@ -3,8 +3,11 @@ import type { LedgerKind } from "@/domain/ledger-kind"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "./errors"
 
-// The only code that reads or writes LedgerNode rows. Every exported function takes `userId` first and puts it in the
-// `where` of every query, so a row belonging to another user is indistinguishable from a row that does not exist.
+// The only code that reads or writes LedgerNode rows, with one sanctioned exception: seedAccountNodes
+// (src/server/services/account-seed.ts) creates a new account's system nodes and starter ledgers inside the signup
+// transaction, because the user does not exist as far as this layer is concerned until that transaction commits.
+// Every exported function here takes `userId` first and puts it in the `where` of every query, so a row belonging to
+// another user is indistinguishable from a row that does not exist.
 
 // Anything that can run a query: the global client or the client handed to a $transaction callback.
 export type Db = PrismaClient | Prisma.TransactionClient
@@ -99,8 +102,11 @@ export async function deleteNode(userId: string, nodeId: string): Promise<void> 
 }
 
 /**
- * Every transaction that touches the node on either side, soft-deleted ones included: the database refuses to delete
- * a node while any row references it, deleted or not, so this is the number that decides delete versus archive.
+ * Every transaction of this user that touches the node on either side, soft-deleted ones included. It is a good guide
+ * to whether the node can be deleted: the database refuses to delete a node any row references, deleted or not. It is
+ * not a guarantee, because it counts only this user's rows while the foreign keys see every user's, so it reads 0 for
+ * a node another user's row references (which the repositories never create, but the schema cannot forbid); the
+ * delete then fails at the database rather than here.
  */
 export function countTransactionsForNode(userId: string, nodeId: string): Promise<number> {
   return prisma.transaction.count({
