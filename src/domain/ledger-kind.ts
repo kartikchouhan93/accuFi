@@ -1,10 +1,14 @@
 // Everything money can come from, sit in, or go to is a ledger node of one of five kinds. A transaction
 // is one movement from one node to one node; which kind pairs are legal is spec §5, kept as data.
 
-export type LedgerKind = "INCOME_SOURCE" | "ASSET" | "INVESTMENT" | "EXPENSE" | "LIABILITY"
+// The unions are derived from these arrays so there is a runtime list of members as well as a type;
+// tests/db/enum-parity.test.ts compares them with the Prisma enums of the same names.
+export const LEDGER_KINDS = ["INCOME_SOURCE", "ASSET", "INVESTMENT", "EXPENSE", "LIABILITY"] as const
+export type LedgerKind = (typeof LEDGER_KINDS)[number]
 
 // Nodes the system creates itself, never the user.
-export type SystemNodeRole = "OPENING_BALANCE" | "REALISED_GAIN" | "REALISED_LOSS"
+export const SYSTEM_NODE_ROLES = ["OPENING_BALANCE", "REALISED_GAIN", "REALISED_LOSS"] as const
+export type SystemNodeRole = (typeof SYSTEM_NODE_ROLES)[number]
 
 // The 18 allowed (from, to) pairs of spec §5, transcribed row by row (rows are "from").
 // Deliberately a literal: it is read against the spec and pinned by an independent test, not derived from a rule.

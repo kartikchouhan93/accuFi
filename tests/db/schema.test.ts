@@ -183,7 +183,7 @@ describe("column types and defaults", () => {
     expect(type("amountPaise")).toBe("bigint")
   })
 
-  it("takes every createdAt / updatedAt default from the database clock (EC-66)", async () => {
+  it("defaults every createdAt / updatedAt to the database clock on insert (EC-66)", async () => {
     for (const table of ["User", "LedgerNode", "TransactionGroup", "Transaction"]) {
       const cols = await columns(table)
       const stamps = cols.filter((c) => c.column_name === "createdAt" || c.column_name === "updatedAt")
@@ -192,6 +192,42 @@ describe("column types and defaults", () => {
         expect(col.column_default, `${table}.${col.column_name}`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
       }
     }
+  })
+
+  describe("updatedAt on UPDATE comes from the database clock (EC-66)", () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    async function makeTransaction() {
+      const { user, from, to } = await makeUserWithNodes()
+      return prisma.transaction.create({
+        data: {
+          userId: user.id,
+          fromNodeId: from.id,
+          toNodeId: to.id,
+          amountPaise: 100n,
+          occurredAt: toDbDate(calendarDate("2026-04-01")),
+        },
+      })
+    }
+
+    it("ignores an updatedAt supplied by the application", async () => {
+      const tx = await makeTransaction()
+      await sleep(20)
+      const updated = await prisma.transaction.update({
+        where: { id: tx.id },
+        data: { note: "edited", updatedAt: new Date("2000-01-01T00:00:00Z") },
+      })
+      expect(updated.updatedAt.getTime()).toBeGreaterThan(tx.updatedAt.getTime())
+    })
+
+    it("advances updatedAt for a raw-SQL update that does not mention it", async () => {
+      const tx = await makeTransaction()
+      await sleep(20)
+      await prisma.$executeRaw`UPDATE "Transaction" SET "note" = 'raw' WHERE "id" = ${tx.id}`
+      const read = await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })
+      expect(read.updatedAt.getTime()).toBeGreaterThan(tx.updatedAt.getTime())
+      expect(read.createdAt.getTime()).toBe(tx.createdAt.getTime())
+    })
   })
 
   it("has no stored balance or opening-balance column anywhere", async () => {

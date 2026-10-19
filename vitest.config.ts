@@ -20,9 +20,9 @@ function testDatabaseUrl(): string {
   }
   const url = new URL((explicit ?? base) as string)
   if (!explicit) url.pathname = `${url.pathname}_test`
-  // Last line of defence: never hand a database whose name does not say "test" to a suite that writes to it.
-  if (!/test/i.test(url.pathname)) {
-    throw new Error(`Refusing to run tests against "${url.pathname.slice(1)}": the database name must contain "test"`)
+  // Last line of defence: never hand a database that is not named `*_test` to a suite that writes to it.
+  if (!/^\/[^/]+_test$/.test(url.pathname)) {
+    throw new Error(`Refusing to run tests against "${url.pathname.slice(1)}": the database name must end in "_test"`)
   }
   return url.toString()
 }
