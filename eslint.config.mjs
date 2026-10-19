@@ -4,6 +4,9 @@ import nextTs from "eslint-config-next/typescript";
 
 // Identifier names that denote money; the float path must be unavailable for them.
 const MONEY = "/[Pp]aise|[Aa]mount|[Bb]alance/";
+// Selector matching a call whose argument is a money identifier (`amount`) or member (`row.amount`).
+const moneyArg = (call, argPath) =>
+  `${call}[${argPath}.name=${MONEY}], ${call}[${argPath}.property.name=${MONEY}]`;
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -17,7 +20,18 @@ const eslintConfig = defineConfig([
         {
           patterns: [
             {
-              group: ["@prisma/client", "next", "next/*", "../server/*", "../../server/*"],
+              // `@/*` maps to `src/*`, so `@/server/*` is the server layer; `**/server` catches
+              // relative paths of any depth. `@prisma/client`, `next`, `next/*` are package names
+              // (no `@/` alias form of them exists).
+              group: [
+                "@prisma/client",
+                "next",
+                "next/*",
+                "@/server",
+                "@/server/*",
+                "**/server",
+                "**/server/*",
+              ],
               message: "src/domain must stay pure: no Prisma, Next.js or server imports.",
             },
           ],
@@ -26,12 +40,19 @@ const eslintConfig = defineConfig([
       "no-restricted-syntax": [
         "error",
         {
-          selector: `CallExpression[callee.name='parseFloat'][arguments.0.name=${MONEY}], CallExpression[callee.name='parseFloat'][arguments.0.property.name=${MONEY}]`,
+          selector: [
+            moneyArg("CallExpression[callee.name='parseFloat']", "arguments.0"),
+            moneyArg("CallExpression[callee.object.name='Number'][callee.property.name=/^parse(Float|Int)$/]", "arguments.0"),
+          ].join(", "),
           message: "No float parsing of money values; use integer paise.",
         },
         {
-          selector: `CallExpression[callee.name='Number'][arguments.0.name=${MONEY}], CallExpression[callee.name='Number'][arguments.0.property.name=${MONEY}]`,
+          selector: moneyArg("CallExpression[callee.name='Number']", "arguments.0"),
           message: "No Number() coercion of money values; use BigInt/integer paise.",
+        },
+        {
+          selector: `UnaryExpression[operator='+'][argument.name=${MONEY}], UnaryExpression[operator='+'][argument.property.name=${MONEY}]`,
+          message: "No unary + coercion of money values; use BigInt/integer paise.",
         },
         {
           selector: `CallExpression[callee.property.name='toFixed'][callee.object.name=${MONEY}], CallExpression[callee.property.name='toFixed'][callee.object.property.name=${MONEY}]`,
