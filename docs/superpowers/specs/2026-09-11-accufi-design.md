@@ -264,7 +264,7 @@ Both system nodes are created per user at signup, flagged `isSystem`, and cannot
 
 **Node management.** Create, rename, archive, and restore nodes of any kind. Kind is fixed at creation and cannot be changed — a node's kind determines the meaning of every transaction already pointing at it. Kind-specific fields:
 
-- `ASSET`: subtype (`SAVINGS` / `CURRENT` / `CASH` / `WALLET`), institution, last four digits, and an optional opening balance — a convenience on the create form that posts a transaction from the system Opening Balance node, not a stored column (§9.4, EC-36).
+- `ASSET`: subtype (`SAVINGS` / `CURRENT` / `CASH` / `WALLET`), institution, last four digits, and an optional opening balance — a convenience on the create form that posts an ordinary transaction, not a stored column (§9.4, EC-36). A positive figure posts from the Opening Balance node; a negative one posts to the Opening Balance Contra node (§4, "Opening position").
 - `LIABILITY`: subtype (`CREDIT_CARD` / `LOAN`), institution, credit limit, statement day, due day, and an optional opening balance on the same terms as `ASSET`.
 - `INVESTMENT`: `valuationMode`, unit label (`gram`, `unit`, …), lot consumption method.
 - `INCOME_SOURCE`, `EXPENSE`: name and optional parent for one level of grouping.
@@ -452,11 +452,11 @@ These are requirements, not notes. Each gets a test.
 
 | # | Case | Behaviour |
 |---|---|---|
-| EC-32 | Archiving a node with a non-zero balance | Warned. For assets and liabilities, the user is prompted to transfer the residue out first. Archiving is permitted regardless — the balance remains in history and in net worth. |
+| EC-32 | Archiving a node with a non-zero balance | Warned. For assets and liabilities, the user is prompted to transfer the residue out first. Archiving is permitted regardless — the balance remains in history **and in net worth**. Balance summation therefore includes archived nodes; excluding them from the picker is a separate, display-only concern. Archiving a card you still owe on must not raise your net worth. |
 | EC-33 | Hard-deleting a node with history | Not permitted. Archive is the only option once a transaction references the node. |
 | EC-34 | Changing a node's kind | Not permitted. Every transaction pointing at it derives meaning from its kind. The user creates a new node and moves history explicitly. |
 | EC-35 | Duplicate node names | Permitted but warned. Names are not identifiers. |
-| EC-36 | Setting an opening balance after transactions exist | Allowed. The opening-balance transaction is a real, editable transaction from the system node. |
+| EC-36 | Setting an opening balance after transactions exist | Allowed. The opening-balance transaction is a real, editable transaction against the appropriate system node — Opening Balance for a positive position, Opening Balance Contra for a negative one. |
 | EC-37 | Deleting a system node | Blocked. |
 
 ### Dates, periods, timezones
