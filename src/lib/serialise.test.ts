@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { MoneyParseError } from "../domain/money"
 import { deserialisePaise, serialisePaise } from "./serialise"
 
 describe("serialisePaise / deserialisePaise", () => {
@@ -10,7 +11,7 @@ describe("serialisePaise / deserialisePaise", () => {
   })
   it("rejects non-integral input", () => {
     for (const bad of ["", " ", "1.5", "1e3", "0x10", "abc", "12 ", "+5", "--1", "1,000"]) {
-      expect(() => deserialisePaise(bad), JSON.stringify(bad)).toThrow()
+      expect(() => deserialisePaise(bad), JSON.stringify(bad)).toThrow(MoneyParseError)
     }
   })
 })
