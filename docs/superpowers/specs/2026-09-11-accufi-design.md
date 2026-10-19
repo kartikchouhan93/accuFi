@@ -216,7 +216,7 @@ A monthly SIP therefore produces one lot per installment, each at that month's N
 
 - **Current value** at date *D* = `Σ (remaining quantity of open lots) × (price snapshot with the greatest asOf ≤ D)`.
 - If no snapshot exists at or before *D*, the node has **no valuation** at *D*. It is not zero and it is not the cost basis. Reports show it as "not valued" and net worth shows a clearly marked partial figure.
-- A snapshot older than `stalePriceDays` (default 30) is labelled in the UI — "as of 12 Mar 2026" — and never rendered as though it were today's price.
+- A snapshot older than the staleness window is labelled in the UI — "as of 12 Mar 2026" — and never rendered as though it were today's price. The window is `stalePriceDays`, a user-level default of 30 with a nullable per-node override: 30 days is right for gold and NAV and absurd for a plot of land.
 - Snapshots may be entered out of order; ordering is by `asOf`, not by insertion.
 - `(nodeId, asOf)` is unique; re-entering a price for a date overwrites it.
 
@@ -258,8 +258,8 @@ Both system nodes are created per user at signup, flagged `isSystem`, and cannot
 
 **Node management.** Create, rename, archive, and restore nodes of any kind. Kind is fixed at creation and cannot be changed — a node's kind determines the meaning of every transaction already pointing at it. Kind-specific fields:
 
-- `ASSET`: subtype (`SAVINGS` / `CURRENT` / `CASH` / `WALLET`), institution, last four digits, opening balance.
-- `LIABILITY`: subtype (`CREDIT_CARD` / `LOAN`), institution, credit limit, statement day, due day.
+- `ASSET`: subtype (`SAVINGS` / `CURRENT` / `CASH` / `WALLET`), institution, last four digits, and an optional opening balance — a convenience on the create form that posts a transaction from the system Opening Balance node, not a stored column (§9.4, EC-36).
+- `LIABILITY`: subtype (`CREDIT_CARD` / `LOAN`), institution, credit limit, statement day, due day, and an optional opening balance on the same terms as `ASSET`.
 - `INVESTMENT`: `valuationMode`, unit label (`gram`, `unit`, …), lot consumption method.
 - `INCOME_SOURCE`, `EXPENSE`: name and optional parent for one level of grouping.
 
@@ -369,10 +369,11 @@ The domain layer's purity is what makes the money rules testable without a datab
 Node balances and net worth are computed on read by SQL aggregation over transactions:
 
 ```
-balance(node) = openingBalance
-              + Σ amount where toNodeId   = node and not deleted
+balance(node) = Σ amount where toNodeId   = node and not deleted
               − Σ amount where fromNodeId = node and not deleted
 ```
+
+There is no `openingBalance` column. An opening balance is an ordinary transaction from the system Opening Balance node (EC-36), which keeps it visible, editable, and correctable like any other figure.
 
 with indexes on `(userId, toNodeId, occurredAt)` and `(userId, fromNodeId, occurredAt)`.
 
@@ -526,9 +527,9 @@ Each is independently shippable and leaves the application in a usable state.
 
 ## 12. Open questions
 
-1. **Tags versus a category hierarchy.** The design assumes expense ledgers with one level of parent grouping, plus free tags. If deeper hierarchy is wanted, it should be decided before M1 — it changes the node table.
+1. ~~**Tags versus a category hierarchy.**~~ **Resolved 2026-10-20:** one level of parent grouping on expense and income nodes, plus free tags. Deeper hierarchy is frequently requested and rarely used, and it would complicate every report's roll-up.
 2. **Attachments.** Receipts against transactions were considered and deferred; they need object storage in the compose stack. Deferred to post-v1.
-3. **`stalePriceDays` default.** Set to 30. Reasonable for gold and NAV; arguably far too short for property, which might warrant a per-node override.
+3. ~~**`stalePriceDays` default.**~~ **Resolved 2026-10-20:** user-level default of 30 with a nullable per-node override (§7.3).
 4. **Recurrence representation.** A structured schedule is specified rather than RRULE strings. If genuinely irregular schedules turn up, RRULE is the upgrade path.
 
 ---
