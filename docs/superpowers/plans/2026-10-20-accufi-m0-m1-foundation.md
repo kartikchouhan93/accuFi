@@ -580,9 +580,12 @@ Credentials provider calling `verifyPassword`, Prisma adapter, database sessions
 
 Spec §9.5. A fixed-window counter keyed on IP plus submitted email, held in Postgres so it survives a restart and needs no new infrastructure: 10 attempts per 15 minutes, responding 429 beyond that. Test that the eleventh attempt is refused and that a successful login clears the counter.
 
+- [ ] **Step 8: Run the tests**
+
+Run: `bun run test src/server/password.test.ts tests/server/signup-service.test.ts tests/server/rate-limit.test.ts`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/server/password.ts src/server/auth.ts src/server/services/signup-service.ts src/app/\(auth\) middleware.ts prisma/seed.ts src/server/password.test.ts tests/server/signup-service.test.ts
