@@ -7,9 +7,10 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Every createdAt / updatedAt defaults to the database clock (dbgenerated now()), never the app's, so
-// app/DB clock skew cannot reorder history (EC-66). `@updatedAt` only makes Prisma refresh updatedAt on
-// update; the default is what applies on insert.
+// createdAt defaults to the database clock (dbgenerated now()), never the app's, so app/DB clock skew cannot reorder
+// history (EC-66). updatedAt is different: `@updatedAt` makes Prisma supply a value itself on create and on update, so
+// the column default never applies. The database clock is enforced by the BEFORE INSERT OR UPDATE trigger on
+// "Transaction" (migration updated_at_on_insert_and_keyset_index), which overwrites whatever the statement sent.
 
 // Everything money can come from, sit in, or go to is a ledger node of one of these kinds.
 enum LedgerKind {
@@ -149,7 +150,7 @@ model Transaction {
   @@unique([userId, idempotencyKey])
   @@index([userId, toNodeId, occurredAt])
   @@index([userId, fromNodeId, occurredAt])
-  @@index([userId, occurredAt])
+  @@index([userId, occurredAt, id]) // the listing order and keyset cursor: (occurredAt, id)
 }
 
 // Fixed-window attempt counters for the auth endpoints (spec §9.5), held in Postgres so they survive a restart

@@ -183,15 +183,48 @@ describe("column types and defaults", () => {
     expect(type("amountPaise")).toBe("bigint")
   })
 
-  it("defaults every createdAt / updatedAt to the database clock on insert (EC-66)", async () => {
+  it("defaults every createdAt to the database clock on insert (EC-66)", async () => {
+    // Prisma never sends createdAt (it is dbgenerated), so the column default is what stamps it.
     for (const table of ["User", "LedgerNode", "TransactionGroup", "Transaction"]) {
-      const cols = await columns(table)
-      const stamps = cols.filter((c) => c.column_name === "createdAt" || c.column_name === "updatedAt")
-      expect(stamps.length, `${table} should have a createdAt`).toBeGreaterThan(0)
-      for (const col of stamps) {
-        expect(col.column_default, `${table}.${col.column_name}`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
-      }
+      const col = (await columns(table)).find((c) => c.column_name === "createdAt")
+      expect(col?.column_default, `${table}.createdAt`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
     }
+  })
+
+  // updatedAt is different: Prisma's @updatedAt supplies a value on create, so the column default never fires and
+  // only a trigger can put the database clock on it. These tests insert real rows; the column_default is not evidence.
+  describe("updatedAt on INSERT comes from the database clock (EC-66)", () => {
+    it("overwrites the updatedAt that Prisma supplies on create", async () => {
+      const { user, from, to } = await makeUserWithNodes()
+      const tx = await prisma.transaction.create({
+        data: {
+          userId: user.id,
+          fromNodeId: from.id,
+          toNodeId: to.id,
+          amountPaise: 100n,
+          occurredAt: toDbDate(calendarDate("2026-04-01")),
+          // Without this Prisma would send its own clock reading, which can land in the same millisecond as the
+          // database's and hide the bug; a value that is plainly not now() cannot.
+          updatedAt: new Date("2000-01-01T00:00:00Z"),
+        },
+      })
+      // createdAt is stamped by the column default (database now()); in the same INSERT statement updatedAt must be
+      // exactly that value, not what the application sent.
+      const [row] = await prisma.$queryRaw<{ same: boolean }[]>`
+        SELECT "updatedAt" = "createdAt" AS same FROM "Transaction" WHERE "id" = ${tx.id}`
+      expect(row.same).toBe(true)
+    })
+
+    it("overwrites an updatedAt written by a raw INSERT, comparing against now() from the same statement", async () => {
+      const { user, from, to } = await makeUserWithNodes()
+      const id = randomUUID()
+      // The column keeps milliseconds and now() has microseconds, so the comparison casts now() to the column's precision.
+      const [row] = await prisma.$queryRaw<{ same: boolean }[]>`
+        INSERT INTO "Transaction" ("id", "userId", "fromNodeId", "toNodeId", "amountPaise", "occurredAt", "updatedAt")
+        VALUES (${id}, ${user.id}, ${from.id}, ${to.id}, 100, '2026-04-01', '2000-01-01T00:00:00Z')
+        RETURNING ("updatedAt" = now()::timestamptz(3)) AS same`
+      expect(row.same).toBe(true)
+    })
   })
 
   describe("updatedAt on UPDATE comes from the database clock (EC-66)", () => {
@@ -228,6 +261,12 @@ describe("column types and defaults", () => {
       expect(read.updatedAt.getTime()).toBeGreaterThan(tx.updatedAt.getTime())
       expect(read.createdAt.getTime()).toBe(tx.createdAt.getTime())
     })
+  })
+
+  it("indexes Transaction on (userId, occurredAt, id), the listing order, so keyset paging needs no sort", async () => {
+    const indexes = await prisma.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'Transaction'`
+    expect(indexes.map((i) => i.indexdef.replace(/^.*USING btree /, ""))).toContain('("userId", "occurredAt", id)')
   })
 
   it("has no stored balance or opening-balance column anywhere", async () => {
