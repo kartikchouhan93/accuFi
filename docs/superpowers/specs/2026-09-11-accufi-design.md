@@ -77,7 +77,7 @@ Every row that belongs to a user carries `userId`. Isolation is enforced in the 
 | `ASSET` | Money you hold and can spend | HDFC Savings, ICICI Current, cash in wallet, Paytm balance | Yes |
 | `INVESTMENT` | Money you hold that is not directly spendable and may change in value | Sovereign gold, an MF scheme, a plot of land, an FD | Yes, two ways (§7) |
 | `EXPENSE` | A category money disappears into | Groceries, fuel, dining, rent paid, school fees | No — it is a flow total |
-| `LIABILITY` | Money you owe | HDFC credit card, home loan, personal loan | Yes, as a negative |
+| `LIABILITY` | Money you owe | HDFC credit card, home loan, personal loan | Yes — negative when you owe (§4.2) |
 
 **Transaction** — one movement of money from exactly one node to exactly one node, on a given date, for a positive amount. Direction carries the sign; amounts are never negative.
 
@@ -86,6 +86,8 @@ Every row that belongs to a user carries `userId`. Isolation is enforced in the 
 **Investment lot** — a single acquisition of a quantity of something at a unit cost. Created by any transaction targeting an `INVESTMENT` node.
 
 **Price snapshot** — a dated unit price for an investment node, entered by the user.
+
+**Opening position** — a node's starting balance, recorded as an ordinary transaction rather than a column (§9.4, EC-36). A *positive* opening position posts `OPENING_BALANCE → node`. A *negative* one — a card you already owe on, an overdrawn account — posts `node → OPENING_BALANCE_CONTRA`, a per-user system node of kind `EXPENSE`. The contra node exists because `INCOME_SOURCE` can never be a target (§5), so without it there is no legal edge that makes a balance negative at setup. Both opening-balance system nodes are excluded from income and expense reports by their `systemRole`.
 
 ### 4.1 Every flow, one shape
 
@@ -113,8 +115,12 @@ The uniformity is the point: one entry form, one list view, one balance formula,
 ```
 net worth = Σ ASSET balances
           + Σ INVESTMENT current values   (§7.3)
-          − Σ LIABILITY balances
+          + Σ LIABILITY balances          (already negative — see below)
 ```
+
+**Sign convention, stated once and binding everywhere.** Every node's balance is `inflows − outflows`, with no per-kind special case. A liability you owe money on is therefore **negative**: a card spend is `LIABILITY → EXPENSE`, an outflow from the card. Net worth adds that negative figure rather than subtracting it.
+
+For display, `NetWorth.liabilities` is reported as a **positive magnitude owed** — the negation of the summed liability balances — so the UI can render "Liabilities ₹45,000" and the total reads `assets + investments − liabilities`. The arithmetic and the presentation agree; what must never happen is subtracting an already-negative balance, which would make borrowing look like wealth.
 
 `INCOME_SOURCE` and `EXPENSE` totals never enter net worth. This is also what prevents an `ASSET → ASSET` transfer from being miscounted as income or spending in reports: reports classify by node **kind**, never by the sign of an amount.
 
@@ -254,7 +260,7 @@ Both system nodes are created per user at signup, flagged `isSystem`, and cannot
 
 ### 8.1 M1 — Foundation
 
-**Authentication.** Email and password via Auth.js v5 with the Prisma adapter; database-backed sessions. Passwords hashed with argon2id. Signup seeds the user's system nodes (Opening Balance, Realised Gain, Realised Loss) and a starter set of expense ledgers the user may delete.
+**Authentication.** Email and password via Auth.js v5. Sessions use the JWT strategy, not database sessions — Auth.js forces JWT whenever a Credentials provider is used, so the combination originally written here does not exist. Passwords hashed with argon2id. Signup seeds the user's system nodes (Opening Balance, Opening Balance Contra, Realised Gain, Realised Loss) and a starter set of expense ledgers the user may delete.
 
 **Node management.** Create, rename, archive, and restore nodes of any kind. Kind is fixed at creation and cannot be changed — a node's kind determines the meaning of every transaction already pointing at it. Kind-specific fields:
 
