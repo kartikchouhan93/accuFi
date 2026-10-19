@@ -59,7 +59,7 @@ describe("sumBalances", () => {
 
   it("returns a zero balance for a node with no transactions", async () => {
     const { bank, food, user, salary, balanceOf } = await setup()
-    expect(await balanceOf(bank.id)).toEqual({ nodeId: bank.id, kind: "ASSET", balance: 0n })
+    expect(await balanceOf(bank.id)).toEqual({ nodeId: bank.id, kind: "ASSET", balance: 0n, archived: false })
     // Also when other nodes have activity, and when the only rows are after asOf or deleted.
     await registry.makeTransaction(user.id, salary.id, food.id, { amountPaise: 5n, occurredAt: "2026-06-01" })
     expect((await balanceOf(bank.id, "2026-01-01"))?.balance).toBe(0n)
@@ -67,12 +67,16 @@ describe("sumBalances", () => {
     expect((await sumBalances(user.id)).map((r) => r.nodeId).sort()).toEqual([salary.id, bank.id, food.id].sort())
   })
 
-  it("omits archived nodes", async () => {
-    const { user, bank, food, balanceOf } = await setup()
-    await prisma.ledgerNode.update({ where: { id: food.id }, data: { archivedAt: new Date() } })
-    expect(await balanceOf(food.id)).toBeUndefined()
-    expect(await balanceOf(bank.id)).toBeDefined()
-    expect((await sumBalances(user.id)).some((r) => r.nodeId === food.id)).toBe(false)
+  it("includes archived nodes, flagged, with their balance intact", async () => {
+    // EC-32: an archived node still holds its balance, and net worth must still count it. Hiding it from lists is a
+    // display concern for the caller, which is what the flag is for.
+    const { user, salary, bank, food, balanceOf } = await setup()
+    await registry.makeTransaction(user.id, salary.id, bank.id, { amountPaise: 900n })
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 200n })
+    await prisma.ledgerNode.update({ where: { id: bank.id }, data: { archivedAt: new Date() } })
+    expect(await balanceOf(bank.id)).toEqual({ nodeId: bank.id, kind: "ASSET", balance: 700n, archived: true })
+    expect((await balanceOf(food.id))?.archived).toBe(false)
+    expect((await sumBalances(user.id)).map((r) => r.nodeId).sort()).toEqual([salary.id, bank.id, food.id].sort())
   })
 
   it("sums amounts above Number.MAX_SAFE_INTEGER without precision loss", async () => {

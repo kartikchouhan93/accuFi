@@ -4,7 +4,7 @@ import type { z } from "zod"
 import { serialisePaise } from "@/lib/serialise"
 import { toNodeView, type NodeView } from "@/lib/node-view"
 import { createNodeSchema, nodeIdSchema, renameNodeSchema } from "@/lib/schemas/node"
-import { failed, fieldErrorsOf, ok, redirectIfUnauthenticated, type ActionResult } from "@/server/action-support"
+import { failed, fieldErrorsOf, ok, redirectIfUnauthenticated, type ActionFailure, type ActionResult } from "@/server/action-support"
 import { requireUserId } from "@/server/auth"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
@@ -14,6 +14,7 @@ import {
   HierarchyDepthError,
   InvalidNodeError,
   NodeHasHistoryError,
+  NodeKindChangeError,
   removeLedgerNode,
   renameLedgerNode,
   restoreLedgerNode,
@@ -28,7 +29,7 @@ import {
 // Expected refusals come back as `{ ok: false }` so a form can show them; an unexpected error is rethrown for Next to
 // log (and mask in production). A missing session redirects to /login.
 
-type Failure = ReturnType<typeof failed>
+type Failure = ActionFailure
 
 // `userId` is deliberately not accepted anywhere in the input: the schemas are strict, so a forged one is rejected.
 function parseInput<S extends z.ZodType>(schema: S, input: unknown): { data: z.output<S> } | Failure {
@@ -42,6 +43,7 @@ function toFailure(error: unknown): Failure {
   if (error instanceof SystemNodeError) return failed("system_node", error.message)
   if (error instanceof NodeHasHistoryError) return failed("has_history", error.message)
   if (error instanceof HierarchyDepthError) return failed("hierarchy_depth", error.message)
+  if (error instanceof NodeKindChangeError) return failed("kind_immutable", error.message)
   if (error instanceof InvalidNodeError) return failed("invalid", error.message)
   if (error instanceof NotFoundError) return failed("not_found", "That node was not found")
   throw error

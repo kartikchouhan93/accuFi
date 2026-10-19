@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { createNodeSchema, nodeIdSchema, renameNodeSchema } from "./node"
+import { createNodeFields, createNodeSchema, nodeIdSchema, renameNodeSchema } from "./node"
 
 const parse = (input: unknown) => createNodeSchema.safeParse(input)
 const fieldsWithIssues = (input: unknown) => {
@@ -89,6 +89,17 @@ describe("createNodeSchema", () => {
     const result = parse({ kind: "LIABILITY", name: "Card", liabilitySubtype: "CREDIT_CARD", creditLimit: "2,00,000" })
     expect(result.success && result.data).toMatchObject({ creditLimitPaise: 2_00_000_00n })
     expect(result.success && "creditLimit" in result.data).toBe(false)
+  })
+})
+
+describe("createNodeFields", () => {
+  it("is the per-kind discriminated union, for a form to read the fields of each kind from", () => {
+    const kinds = createNodeFields.options.map((option) => option.shape.kind.value).sort()
+    expect(kinds).toEqual(["ASSET", "EXPENSE", "INCOME_SOURCE", "INVESTMENT", "LIABILITY"])
+    const liability = createNodeFields.options.find((option) => option.shape.kind.value === "LIABILITY")
+    expect(Object.keys(liability?.shape ?? {})).toEqual(
+      expect.arrayContaining(["name", "liabilitySubtype", "creditLimit", "statementDay", "dueDay", "openingBalance"]),
+    )
   })
 })
 

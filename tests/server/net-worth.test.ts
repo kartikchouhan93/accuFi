@@ -3,7 +3,7 @@ import { netWorth } from "@/domain/balance"
 import { prisma } from "@/server/db"
 import { sumBalances } from "@/server/repositories/transaction-repository"
 import { seedAccountNodes } from "@/server/services/account-seed"
-import { createLedgerNode } from "@/server/services/node-service"
+import { archiveLedgerNode, createLedgerNode } from "@/server/services/node-service"
 import { createRegistry } from "./repositories/fixtures"
 
 // netWorth is pure and its unit tests hand it balances; sumBalances is SQL and its tests read balances back. Each side
@@ -82,5 +82,30 @@ describe("sumBalances feeding netWorth", () => {
     await prisma.$transaction((tx) => seedAccountNodes(tx, user.id))
     await createLedgerNode(user.id, { kind: "ASSET", name: "Overdraft", assetSubtype: "CURRENT", openingBalance: -200_00n })
     expect(netWorth(await sumBalances(user.id)).total).toBe(-200_00n)
+  })
+
+  it("is unchanged by archiving a card you still owe on", async () => {
+    // EC-32: archiving removes the node from pickers and lists, never its balance from net worth. A summation that
+    // skipped archived nodes would drop the debt and raise net worth by the amount owed.
+    const { card, food, worth, move } = await world()
+    await move(card.id, food.id, 50_000n)
+    const owing = await worth()
+    expect(owing.liabilities).toBe(50_000n)
+
+    const { residualBalance } = await archiveLedgerNode(card.userId, card.id)
+
+    expect(residualBalance).toBe(-50_000n)
+    const archived = await worth()
+    expect(archived.total).toBe(owing.total)
+    expect(archived.liabilities).toBe(50_000n)
+    expect(archived).toEqual(owing)
+  })
+
+  it("is unchanged by archiving an account that still holds money", async () => {
+    const { bank, worth } = await world()
+    const holding = await worth()
+    expect(holding.assets).toBe(100_000n)
+    await archiveLedgerNode(bank.userId, bank.id)
+    expect(await worth()).toEqual(holding)
   })
 })

@@ -9,6 +9,9 @@ export interface NodeBalance {
   nodeId: string
   kind: LedgerKind
   balance: Paise
+  // Archived nodes are reported, and netWorth counts them: archiving hides a node from pickers and lists, it does not
+  // make its balance disappear (EC-32). The flag exists so a display can still hide them; arithmetic never reads it.
+  archived: boolean
 }
 
 export interface NetWorth {

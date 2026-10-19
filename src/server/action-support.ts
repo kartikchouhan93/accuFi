@@ -4,18 +4,27 @@ import { UnauthenticatedError } from "@/server/auth"
 
 // Shared by every Server Action file. It cannot live in one: a "use server" module may export only async functions.
 
+/** Every refusal an action can answer with, so a UI can switch on it exhaustively. */
+export type ActionErrorCode =
+  | "invalid_input"
+  | "system_node"
+  | "has_history"
+  | "hierarchy_depth"
+  | "invalid"
+  | "not_found"
+  | "kind_immutable"
+
+export interface ActionFailure {
+  ok: false
+  error: { code: ActionErrorCode; message: string; fieldErrors?: Record<string, string[]> }
+}
+
 /** A Server Action's answer. Plain data only: it is serialised to the browser, so no bigint and no Date. */
-export type ActionResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: { code: string; message: string; fieldErrors?: Record<string, string[]> } }
+export type ActionResult<T> = { ok: true; data: T } | ActionFailure
 
 export const ok = <T>(data: T): ActionResult<T> => ({ ok: true, data })
 
-export const failed = (
-  code: string,
-  message: string,
-  fieldErrors?: Record<string, string[]>,
-): { ok: false; error: { code: string; message: string; fieldErrors?: Record<string, string[]> } } => ({
+export const failed = (code: ActionErrorCode, message: string, fieldErrors?: Record<string, string[]>): ActionFailure => ({
   ok: false,
   error: fieldErrors ? { code, message, fieldErrors } : { code, message },
 })

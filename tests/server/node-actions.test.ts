@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { prisma } from "@/server/db"
 import { seedAccountNodes } from "@/server/services/account-seed"
 import { createRegistry } from "./repositories/fixtures"
@@ -12,12 +12,14 @@ const { requireUserId, UnauthenticatedError } = vi.hoisted(() => {
 vi.mock("@/server/auth", () => ({ requireUserId, UnauthenticatedError }))
 
 const actions = await import("@/app/nodes/actions")
+const nodeService = await import("@/server/services/node-service")
 
 const registry = createRegistry()
 afterAll(registry.cleanup)
 beforeEach(() => {
   requireUserId.mockReset()
 })
+afterEach(() => vi.restoreAllMocks())
 
 async function signedInSeededUser() {
   const user = await registry.makeUser()
@@ -177,6 +179,17 @@ describe("renameNodeAction", () => {
     expect(await actions.renameNodeAction({ nodeId: opening.id, name: "Mine" })).toMatchObject({
       ok: false,
       error: { code: "system_node" },
+    })
+  })
+
+  it("answers kind_immutable, not an unmasked error, if the service refuses a kind change", async () => {
+    // Unreachable through this action today (the schema is strict); reachable once an edit form exists.
+    await signedInUser()
+    const created = await actions.createNodeAction(bankInput)
+    vi.spyOn(nodeService, "renameLedgerNode").mockRejectedValueOnce(new nodeService.NodeKindChangeError())
+    expect(await actions.renameNodeAction({ nodeId: created.ok ? created.data.node.id : "", name: "X" })).toMatchObject({
+      ok: false,
+      error: { code: "kind_immutable" },
     })
   })
 

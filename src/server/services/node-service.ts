@@ -187,8 +187,8 @@ export async function createLedgerNode(userId: string, input: CreateNodeInput): 
   const data = { ...input, name }
   if (!plan) return createNode(userId, data)
   const opening = plan
-  return inTransaction(async (tx) => {
-    const node = await createNode(userId, data, tx)
+  return inTransaction(async (uow) => {
+    const node = await createNode(userId, data, uow)
     await insertTransactions(
       userId,
       [
@@ -201,7 +201,7 @@ export async function createLedgerNode(userId: string, input: CreateNodeInput): 
         },
       ],
       undefined,
-      tx,
+      uow,
     )
     return node
   })
@@ -236,18 +236,17 @@ export function renameLedgerNode(userId: string, nodeId: string, name: string): 
 
 /**
  * Archive a node and report what it still holds. Archiving is allowed whatever the balance (EC-32): the residue stays
- * in history and in net worth, and it is the caller's job to warn the user. The balance is read before the write
- * because balances are summed over live nodes only, so an archived node would no longer appear.
+ * in history and in net worth (balances are summed over archived nodes too), and it is the caller's job to warn the
+ * user. Archiving an archived node changes nothing and reports the same residual, so a retried request succeeds.
  */
 export async function archiveLedgerNode(
   userId: string,
   nodeId: string,
 ): Promise<{ node: LedgerNode; residualBalance: Paise }> {
   const current = await requireMutableNode(userId, nodeId)
-  if (current.archivedAt !== null) throw new InvalidNodeError("This node is already archived")
   const row = (await sumBalances(userId)).find((b) => b.nodeId === nodeId)
-  if (!row) throw new NotFoundError("node") // archived by someone else between the two reads
-  const node = await updateNode(userId, nodeId, { archivedAt: new Date() })
+  if (!row) throw new NotFoundError("node") // deleted between the two reads
+  const node = current.archivedAt !== null ? current : await updateNode(userId, nodeId, { archivedAt: new Date() })
   return { node, residualBalance: row.balance }
 }
 

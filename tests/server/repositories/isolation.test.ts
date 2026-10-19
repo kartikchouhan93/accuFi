@@ -1,9 +1,12 @@
+import { readdirSync } from "node:fs"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import * as nodeRepo from "@/server/repositories/node-repository"
 import * as txRepo from "@/server/repositories/transaction-repository"
+import { findUserTimezone } from "@/server/repositories/user-repository"
+import { inTransaction } from "@/server/repositories/unit-of-work"
 import { createRegistry } from "./fixtures"
 
 // The highest-severity property of the application: one user must never see or change another's finances. The
@@ -32,6 +35,13 @@ function isolation(method: string, title: string, body: () => Promise<void>) {
 }
 
 const day = calendarDate("2026-04-01")
+
+const draftTo = (from: string, to: string): txRepo.InsertDraft => ({
+  fromNodeId: from,
+  toNodeId: to,
+  amountPaise: 100n,
+  occurredAt: day,
+})
 
 async function expectNotFound(promise: Promise<unknown>) {
   const error = await promise.then(
@@ -131,13 +141,6 @@ describe("transaction repository", () => {
     expect(await txRepo.findTransactionById(a.user.id, a.tx.id)).not.toBeNull()
   })
 
-  const draftTo = (from: string, to: string): txRepo.InsertDraft => ({
-    fromNodeId: from,
-    toNodeId: to,
-    amountPaise: 100n,
-    occurredAt: day,
-  })
-
   isolation("insertTransactions", "refuses a transaction that points at another user's node", async () => {
     const aBefore = await snapshotTransactions(a.user.id)
     const bBefore = await snapshotTransactions(b.user.id)
@@ -213,18 +216,79 @@ describe("transaction repository", () => {
   })
 })
 
+describe("user repository", () => {
+  isolation("findUserTimezone", "answers only for the id it is given, and null for an id that is not a user", async () => {
+    await prisma.user.update({ where: { id: b.user.id }, data: { timezone: "America/New_York" } })
+    try {
+      expect(await findUserTimezone(a.user.id)).toBe("Asia/Kolkata")
+      expect(await findUserTimezone(b.user.id)).toBe("America/New_York")
+      expect(await findUserTimezone("no-such-user")).toBeNull()
+    } finally {
+      await prisma.user.update({ where: { id: b.user.id }, data: { timezone: "Asia/Kolkata" } })
+    }
+  })
+})
+
+describe("unit of work", () => {
+  isolation("inTransaction", "keeps the ownership checks of every repository write made through it", async () => {
+    const aNodes = await snapshotNodes(a.user.id)
+    const bNodes = await snapshotNodes(b.user.id)
+    const aTx = await snapshotTransactions(a.user.id)
+    const bTx = await snapshotTransactions(b.user.id)
+    // a parent that is B's, a destination that is B's: both refused as not-found, from inside the transaction
+    await expectNotFound(
+      inTransaction((uow) => nodeRepo.createNode(a.user.id, { kind: "EXPENSE", name: "Sub", parentId: b.food.id }, uow)),
+    )
+    await expectNotFound(
+      inTransaction((uow) => txRepo.insertTransactions(a.user.id, [draftTo(a.bank.id, b.food.id)], undefined, uow)),
+    )
+    // and a write that did succeed earlier in the same unit of work is rolled back with the refusal
+    await expectNotFound(
+      inTransaction(async (uow) => {
+        await nodeRepo.createNode(a.user.id, { kind: "EXPENSE", name: "Rolled back" }, uow)
+        await txRepo.insertTransactions(a.user.id, [draftTo(a.bank.id, b.food.id)], undefined, uow)
+      }),
+    )
+    expect(await snapshotNodes(a.user.id)).toEqual(aNodes)
+    expect(await snapshotNodes(b.user.id)).toEqual(bNodes)
+    expect(await snapshotTransactions(a.user.id)).toEqual(aTx)
+    expect(await snapshotTransactions(b.user.id)).toEqual(bTx)
+  })
+})
+
 describe("coverage", () => {
-  const exportedFunctions = (mod: object) =>
+  // Every module in src/server/repositories is read from the directory, not from a hand-kept import list.
+  const files = readdirSync(new URL("../../../src/server/repositories/", import.meta.url)).filter((f) => f.endsWith(".ts")).map((f) => f.slice(0, -".ts".length))
+  const exportedFunctions = (mod: Record<string, unknown>) =>
     Object.entries(mod)
       .filter(([name, value]) => typeof value === "function" && !name.endsWith("Error"))
       .map(([name]) => name)
 
-  it("every exported repository function has at least one isolation test, and none is registered for a non-export", () => {
-    const nodeFns = exportedFunctions(nodeRepo)
-    const txFns = exportedFunctions(txRepo)
-    // Separate lists, so a name exported from both cannot be hidden by one shadowing the other.
-    expect(nodeFns.filter((n) => txFns.includes(n)), "exported from both repositories").toEqual([])
-    const exported = [...nodeFns, ...txFns].sort()
+  // Not isolation surface: `clientOf` only unwraps the token a repository was handed, it takes and returns no user data.
+  const NOT_QUERIES = new Set(["clientOf"])
+
+  it("every exported repository function has at least one isolation test, and none is registered for a non-export", async () => {
+    const perModule = await Promise.all(
+      files.map(async (file) => ({
+        path: `${file}.ts`,
+        fns: exportedFunctions((await import(`../../../src/server/repositories/${file}.ts`)) as Record<string, unknown>).filter(
+          (name) => !NOT_QUERIES.has(name),
+        ),
+      })),
+    )
+    // The modules come from the directory, and their names are asserted: a repository file added later fails this line
+    // until its functions get isolation cases below, instead of sitting outside the check unnoticed.
+    expect(perModule.map((m) => m.path).sort()).toEqual([
+      "errors.ts",
+      "node-repository.ts",
+      "transaction-repository.ts",
+      "unit-of-work.ts",
+      "user-repository.ts",
+    ])
+    // Separate lists per module, so a name exported from two cannot be hidden by one shadowing the other.
+    const all = perModule.flatMap((m) => m.fns)
+    expect(all.filter((name, i) => all.indexOf(name) !== i), "exported from more than one repository").toEqual([])
+    const exported = [...all].sort()
     expect(exported.length).toBeGreaterThan(0)
     expect(exported.filter((name) => !covered.has(name)), "exports with no isolation test").toEqual([])
     expect([...covered.keys()].filter((name) => !exported.includes(name)), "tests registered for no export").toEqual([])

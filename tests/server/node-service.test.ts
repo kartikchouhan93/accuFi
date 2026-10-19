@@ -29,7 +29,7 @@ const registry = createRegistry()
 afterAll(registry.cleanup)
 afterEach(() => vi.restoreAllMocks())
 
-/** A user as signup leaves them: the three system nodes and the starter expense ledgers exist. */
+/** A user as signup leaves them: the four system nodes and the starter expense ledgers exist. */
 async function makeSeededUser() {
   const user = await registry.makeUser()
   await prisma.$transaction((tx) => seedAccountNodes(tx, user.id))
@@ -429,12 +429,15 @@ describe("archiveLedgerNode and restoreLedgerNode", () => {
     expect((await archiveLedgerNode(user.id, bank.id)).residualBalance).toBe(0n)
   })
 
-  it("refuses to archive a node twice, because it can no longer report a residual", async () => {
-    const user = await registry.makeUser()
-    const bank = await createLedgerNode(user.id, bankInput)
-    const { node } = await archiveLedgerNode(user.id, bank.id)
-    await expect(archiveLedgerNode(user.id, bank.id)).rejects.toThrow(InvalidNodeError)
-    expect((await findNodeById(user.id, bank.id))?.archivedAt).toEqual(node.archivedAt)
+  it("archiving a node twice changes nothing and still reports the residual", async () => {
+    // A retried request must not fail: the balance is still readable because archived nodes stay in the summation.
+    const { user } = await makeSeededUser()
+    const bank = await createLedgerNode(user.id, { ...bankInput, openingBalance: 800_00n })
+    const first = await archiveLedgerNode(user.id, bank.id)
+    const second = await archiveLedgerNode(user.id, bank.id)
+    expect(second.residualBalance).toBe(800_00n)
+    expect(second.node.archivedAt).toEqual(first.node.archivedAt)
+    expect((await findNodeById(user.id, bank.id))?.archivedAt).toEqual(first.node.archivedAt)
   })
 
   it("restores an archived node to the picker", async () => {

@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest"
 import { netWorth, type NodeBalance } from "./balance"
 
-const asset = (nodeId: string, balance: bigint): NodeBalance => ({ nodeId, kind: "ASSET", balance })
-const investment = (nodeId: string, balance: bigint): NodeBalance => ({ nodeId, kind: "INVESTMENT", balance })
+const asset = (nodeId: string, balance: bigint): NodeBalance => ({ nodeId, kind: "ASSET", balance, archived: false })
+const investment = (nodeId: string, balance: bigint): NodeBalance => ({ nodeId, kind: "INVESTMENT", balance, archived: false })
 // A liability balance is inflows minus outflows like every other (spec §4.2), so one the user owes on is NEGATIVE.
 // That is what sumBalances returns; every figure fed in below is therefore <= 0, never the positive magnitude.
-const liability = (nodeId: string, balance: bigint): NodeBalance => ({ nodeId, kind: "LIABILITY", balance })
+const liability = (nodeId: string, balance: bigint): NodeBalance => ({ nodeId, kind: "LIABILITY", balance, archived: false })
 
 describe("netWorth", () => {
   it("adds assets and investments and the (negative) liability balances, reporting the owed magnitude", () => {
     const nw = netWorth([
-      { nodeId: "a", kind: "ASSET", balance: 5000000n },
-      { nodeId: "i", kind: "INVESTMENT", balance: 7000000n },
-      { nodeId: "l", kind: "LIABILITY", balance: -1500000n },
+      { nodeId: "a", kind: "ASSET", balance: 5000000n, archived: false },
+      { nodeId: "i", kind: "INVESTMENT", balance: 7000000n, archived: false },
+      { nodeId: "l", kind: "LIABILITY", balance: -1500000n, archived: false },
     ])
     expect(nw.assets).toBe(5000000n)
     expect(nw.investments).toBe(7000000n)
@@ -58,6 +58,14 @@ describe("netWorth", () => {
     expect(after.liabilities).toBe(0n)
   })
 
+  it("counts an archived node exactly like a live one", () => {
+    // Archiving hides a node from lists; its balance is still owned or owed (EC-32).
+    const live = netWorth([asset("a", 500n), liability("l", -300n)])
+    const archived = netWorth([asset("a", 500n), { ...liability("l", -300n), archived: true }])
+    expect(archived).toEqual(live)
+    expect(archived.liabilities).toBe(300n)
+  })
+
   it("treats a liability in credit (an overpaid card) as negative debt", () => {
     const nw = netWorth([asset("bank", 100n), liability("card", 30n)])
     expect(nw.liabilities).toBe(-30n)
@@ -68,8 +76,8 @@ describe("netWorth", () => {
     const base = [asset("a", 5000000n), liability("l", -1500000n)]
     const withFlows = [
       ...base,
-      { nodeId: "salary", kind: "INCOME_SOURCE" as const, balance: 9900000n },
-      { nodeId: "food", kind: "EXPENSE" as const, balance: 400000n },
+      { nodeId: "salary", kind: "INCOME_SOURCE" as const, balance: 9900000n, archived: false },
+      { nodeId: "food", kind: "EXPENSE" as const, balance: 400000n, archived: false },
     ]
     expect(netWorth(withFlows)).toEqual(netWorth(base))
     expect(netWorth(withFlows).total).toBe(3500000n)

@@ -74,8 +74,10 @@ const investment = z.strictObject({
   institution: institution.optional(),
 })
 
-export const createNodeSchema = z
-  .discriminatedUnion("kind", [incomeSource, expense, asset, liability, investment])
+/** The fields of each kind, before the paise conversion: what a form reads (`.options`) to build its per-kind fields. */
+export const createNodeFields = z.discriminatedUnion("kind", [incomeSource, expense, asset, liability, investment])
+
+export const createNodeSchema = createNodeFields
   // The form says "credit limit" in rupees; the column and the service say paise. Rename at the boundary.
   .transform((input) => {
     if (input.kind !== "LIABILITY") return input

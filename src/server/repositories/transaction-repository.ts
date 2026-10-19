@@ -6,6 +6,7 @@ import type { Paise } from "@/domain/money"
 import { prisma } from "@/server/db"
 import { DuplicateIdempotencyKeyError, InvalidCursorError, NotFoundError } from "./errors"
 import { assertNodesOwned, type Db } from "./node-repository"
+import { clientOf, type UnitOfWork } from "./unit-of-work"
 
 // The only code that reads or writes Transaction rows. Every exported function takes `userId` first and puts it in the
 // `where` of every query. A transaction row is also only ever written pointing at nodes (and a group) the same user
@@ -133,15 +134,15 @@ async function assertGroupOwned(userId: string, groupId: string, db: Db): Promis
 /**
  * Insert all drafts or none. Throws NotFoundError, and writes nothing, if any referenced node (or the group) is not
  * this user's; DuplicateIdempotencyKeyError, carrying the stored row, if a draft repeats a key this user already used.
- * `tx`, when given, is the client of a transaction the caller already opened (see unit-of-work.ts): the rows are
- * written inside it and commit or roll back with it. A duplicate key then still raises DuplicateIdempotencyKeyError,
+ * `uow`, when given, is a transaction the caller already opened (see unit-of-work.ts): the rows are written inside
+ * it and commit or roll back with it. A duplicate key then still raises DuplicateIdempotencyKeyError,
  * but it has aborted the caller's transaction too, so the caller must let it roll back.
  */
 export async function insertTransactions(
   userId: string,
   drafts: InsertDraft[],
   groupId?: string,
-  tx?: Prisma.TransactionClient,
+  uow?: UnitOfWork,
 ): Promise<Transaction[]> {
   if (drafts.length === 0) return []
   const keys = drafts.flatMap((d) => (d.idempotencyKey ? [d.idempotencyKey] : []))
@@ -170,7 +171,7 @@ export async function insertTransactions(
       }
       return created
     }
-    return await (tx ? write(tx) : prisma.$transaction(write))
+    return await (uow ? write(clientOf(uow)) : prisma.$transaction(write))
   } catch (error) {
     // The only unique constraint a Transaction insert can hit is (userId, idempotencyKey). The failed statement
     // aborted the database transaction, so the lookup runs outside it, on its own, scoped to the user like every query.
@@ -231,10 +232,13 @@ interface BalanceRow {
   nodeId: string
   kind: LedgerKind
   balance: string
+  archived: boolean
 }
 
 /**
- * One row per non-archived node of the user, however few transactions it has: a node with none reports 0. A balance
+ * One row per node of the user, archived ones included (flagged `archived`), however few transactions it has: a node
+ * with none reports 0. Archiving hides a node from pickers and lists; it does not remove what the node holds or owes, so
+ * net worth must still count it (EC-32), and a caller that wants live nodes only filters on the flag. A balance
  * is inflows minus outflows over live (not soft-deleted) transactions dated on or before `asOf`; `asOf` omitted means
  * no upper bound, which includes future-dated rows (the projected figure, EC-10).
  *
@@ -246,7 +250,8 @@ interface BalanceRow {
 export async function sumBalances(userId: string, asOf?: CalendarDate): Promise<NodeBalance[]> {
   const upTo = asOf === undefined ? Prisma.empty : Prisma.sql`AND "occurredAt" <= ${asOf}::date`
   const rows = await prisma.$queryRaw<BalanceRow[]>`
-    SELECT n."id" AS "nodeId", n."kind"::text AS "kind", COALESCE(SUM(m."delta"), 0)::text AS "balance"
+    SELECT n."id" AS "nodeId", n."kind"::text AS "kind", COALESCE(SUM(m."delta"), 0)::text AS "balance",
+           (n."archivedAt" IS NOT NULL) AS "archived"
     FROM "LedgerNode" n
     LEFT JOIN (
       SELECT "toNodeId" AS "nodeId", "amountPaise" AS "delta" FROM "Transaction"
@@ -255,8 +260,8 @@ export async function sumBalances(userId: string, asOf?: CalendarDate): Promise<
       SELECT "fromNodeId", -"amountPaise" FROM "Transaction"
        WHERE "userId" = ${userId} AND "deletedAt" IS NULL ${upTo}
     ) m ON m."nodeId" = n."id"
-    WHERE n."userId" = ${userId} AND n."archivedAt" IS NULL
-    GROUP BY n."id", n."kind"
+    WHERE n."userId" = ${userId}
+    GROUP BY n."id", n."kind", n."archivedAt"
     ORDER BY n."id"`
-  return rows.map((row) => ({ nodeId: row.nodeId, kind: row.kind, balance: BigInt(row.balance) }))
+  return rows.map((row) => ({ nodeId: row.nodeId, kind: row.kind, balance: BigInt(row.balance), archived: row.archived }))
 }
