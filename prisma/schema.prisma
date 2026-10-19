@@ -1,0 +1,14 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Throwaway model: exists only so the first migration has something to create,
+// proving `prisma migrate` works. Task 6 replaces it with the real schema.
+model HealthCheck {
+  id Int @id @default(autoincrement())
+}
