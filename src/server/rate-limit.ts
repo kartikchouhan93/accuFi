@@ -12,6 +12,9 @@ export const RATE_LIMIT = { maxAttempts: 10, windowSeconds: 15 * 60 } as const
 // as the deployment, so nothing the client sends (headers, rotating addresses) may enlarge this budget. It is
 // higher than the per-address limit so a user at a new address is not locked out by a handful of typos, at the
 // cost that sustained guessing from many addresses can lock a victim out for up to one window.
+// What actually locks an account depends on TRUSTED_PROXY_HOPS. At the shipped default (0) every client shares the
+// address "unknown", so the per-(address, email) counter is effectively per-account and trips first, at
+// RATE_LIMIT.maxAttempts (10). Only once a proxy is declared do addresses differ, and then 30 is the threshold.
 export const ACCOUNT_MAX_ATTEMPTS = 30
 
 // Signup answers "this email already exists", so it can be used to probe which addresses have accounts. The
