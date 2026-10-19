@@ -5,13 +5,26 @@ import type { DefaultSession, NextAuthConfig } from "next-auth"
 
 declare module "next-auth" {
   interface Session {
-    user: { id: string } & DefaultSession["user"]
+    // Optional on purpose: only requireUserId() (src/server/auth.ts) may narrow it, and it refuses a missing id.
+    user: { id?: string } & DefaultSession["user"]
   }
 }
 
 // Sessions are JWTs, not database rows: Auth.js requires the JWT strategy whenever the Credentials provider is
 // used. The trade-off is that a session cannot be revoked server-side before it expires, so the lifetime is short.
 export const SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
+
+/**
+ * `trustHost` (below) makes Auth.js fall back to the request's Host header to build redirects when AUTH_URL is
+ * unset, and that header is client-controlled. So a production server refuses to start without AUTH_URL. Skipped
+ * during `next build`, which imports this module with NODE_ENV=production but no runtime environment.
+ */
+export function assertProductionAuthUrl(env: Record<string, string | undefined>): void {
+  if (env.NODE_ENV === "production" && env.NEXT_PHASE !== "phase-production-build" && !env.AUTH_URL) {
+    throw new Error("AUTH_URL must be set in production (the public URL of the app, e.g. https://accufi.example)")
+  }
+}
+assertProductionAuthUrl(process.env)
 
 export const authConfig = {
   session: { strategy: "jwt", maxAge: SESSION_MAX_AGE_SECONDS },

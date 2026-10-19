@@ -26,6 +26,12 @@ bun run dev
 Scripts: `dev`, `build`, `start`, `lint`, `test`, `test:watch`, `db:migrate`, `db:deploy`, `db:studio`.
 Always use Bun (`bun install`, `bun run ...`); do not use npm.
 
+## Deployment
+
+- **`AUTH_URL`** (compose passes `APP_URL` as `AUTH_URL`) must be the public URL of the app. The server refuses to start in production without it, because Auth.js would otherwise build redirects from the client-supplied `Host` header.
+- **Terminate TLS in a reverse proxy.** The session cookie is `Secure` in production, so it is only sent over HTTPS (browsers also accept it on `http://localhost`).
+- **Tell the app about your proxy: `TRUSTED_PROXY_HOPS`.** Login and signup are rate limited per client address and email. The address comes from `X-Forwarded-For`, which any client can forge, so it is **ignored unless you set `TRUSTED_PROXY_HOPS`** to the number of reverse proxies in front of the app (default `0`: the app is reached directly and every client shares the address "unknown"). Set it to `1` behind one proxy that appends the real client address (nginx `proxy_add_x_forwarded_for`, Caddy, Traefik), `2` behind two, and so on. Setting it higher than the real number lets a client choose its own address. Whatever you set, each account is also capped independently of address (30 attempts per 15 minutes), and signup is capped per address.
+
 ## Runtime spike outcome (spec §9.1)
 
 Question: does Next.js 16 + Prisma 6 work on the Bun runtime, in Docker, against Postgres 16?

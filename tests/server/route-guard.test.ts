@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest"
-import { isPublicPath } from "@/server/auth.config"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { assertProductionAuthUrl, isPublicPath } from "@/server/auth.config"
 import { clientIp } from "@/server/client-ip"
 
 describe("isPublicPath", () => {
@@ -15,13 +15,53 @@ describe("isPublicPath", () => {
 })
 
 describe("clientIp", () => {
-  it("uses the last X-Forwarded-For entry, which the nearest proxy appended, not the forgeable first", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it("ignores X-Forwarded-For and X-Real-IP entirely unless a proxy is declared", () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "")
+    const forged = new Headers({ "x-forwarded-for": "6.6.6.6", "x-real-ip": "7.7.7.7" })
+    expect(clientIp(forged)).toBe("unknown")
+    expect(clientIp(new Headers())).toBe("unknown")
+  })
+
+  it("treats 0, junk and negative hop counts as no proxy", () => {
+    for (const hops of ["0", "abc", "-1", "1.5", " "]) {
+      vi.stubEnv("TRUSTED_PROXY_HOPS", hops)
+      expect(clientIp(new Headers({ "x-forwarded-for": "6.6.6.6" })), `hops=${hops}`).toBe("unknown")
+    }
+  })
+
+  it("with one trusted proxy, uses the last entry, which that proxy appended, not the forgeable first", () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "1")
     expect(clientIp(new Headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9" }))).toBe("203.0.113.9")
     expect(clientIp(new Headers({ "x-forwarded-for": "203.0.113.9" }))).toBe("203.0.113.9")
   })
 
-  it("falls back to X-Real-IP and then to a fixed placeholder", () => {
-    expect(clientIp(new Headers({ "x-real-ip": "198.51.100.4" }))).toBe("198.51.100.4")
+  it("with two trusted proxies, uses the second entry from the right", () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "2")
+    expect(clientIp(new Headers({ "x-forwarded-for": "6.6.6.6, 203.0.113.9, 10.0.0.1" }))).toBe("203.0.113.9")
+  })
+
+  it("returns unknown when the header is absent or shorter than the declared proxy chain", () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "2")
+    expect(clientIp(new Headers({ "x-forwarded-for": "203.0.113.9" }))).toBe("unknown")
     expect(clientIp(new Headers())).toBe("unknown")
+  })
+})
+
+describe("assertProductionAuthUrl", () => {
+  it("refuses to start in production without AUTH_URL, since trustHost would fall back to the Host header", () => {
+    expect(() => assertProductionAuthUrl({ NODE_ENV: "production" })).toThrow(/AUTH_URL/)
+    expect(() => assertProductionAuthUrl({ NODE_ENV: "production", AUTH_URL: "" })).toThrow(/AUTH_URL/)
+  })
+
+  it("allows production with AUTH_URL, development and test without it, and the production build phase", () => {
+    expect(() => assertProductionAuthUrl({ NODE_ENV: "production", AUTH_URL: "https://accufi.example" })).not.toThrow()
+    expect(() => assertProductionAuthUrl({ NODE_ENV: "development" })).not.toThrow()
+    expect(() => assertProductionAuthUrl({ NODE_ENV: "test" })).not.toThrow()
+    // `next build` imports server modules with NODE_ENV=production before any runtime env exists
+    expect(() => assertProductionAuthUrl({ NODE_ENV: "production", NEXT_PHASE: "phase-production-build" })).not.toThrow()
   })
 })

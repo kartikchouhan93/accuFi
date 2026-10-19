@@ -23,6 +23,8 @@ services:
       AUTH_SECRET: ${AUTH_SECRET}
       # The public URL: Auth.js builds its redirects and form actions from this, not from the container's own port.
       AUTH_URL: ${APP_URL}
+      # How many reverse proxies sit in front of the app (see README, "Deployment"). 0 = none: X-Forwarded-For is ignored.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
     ports:
       - "${APP_PORT:-3000}:3000"
     depends_on:

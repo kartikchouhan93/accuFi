@@ -23,6 +23,10 @@ describe("password hashing", () => {
     expect(hash).not.toContain("correct horse")
   })
 
+  it("pins the work factor explicitly instead of inheriting the library's defaults", async () => {
+    expect(await hashPassword("correct horse")).toMatch(/^\$argon2id\$v=19\$m=19456,t=2,p=1\$/)
+  })
+
   it("treats a malformed stored hash as a failed match, not an error", async () => {
     expect(await verifyPassword("correct horse", "not-a-hash")).toBe(false)
     expect(await verifyPassword("correct horse", "")).toBe(false)

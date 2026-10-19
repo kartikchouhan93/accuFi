@@ -1,7 +1,21 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it } from "vitest"
 import { prisma } from "@/server/db"
-import { clearAttempts, consumeAttempt, isLimited, rateLimitKey, RATE_LIMIT } from "@/server/rate-limit"
+import { afterEach, vi } from "vitest"
+import { clientIp } from "@/server/client-ip"
+import {
+  accountKey,
+  ACCOUNT_MAX_ATTEMPTS,
+  clearAttempts,
+  consumeAttempt,
+  consumeSignupAttempt,
+  ipKey,
+  isLimited,
+  rateLimitKey,
+  RATE_LIMIT,
+  SIGNUP_IP_MAX_ATTEMPTS,
+  sweepExpired,
+} from "@/server/rate-limit"
 import { authenticate, RateLimitedError } from "@/server/services/login-service"
 import { createAccount } from "@/server/services/signup-service"
 
@@ -12,10 +26,15 @@ const fresh = () => {
   const email = `${randomUUID()}@ratelimit.test`
   const ip = `203.0.113.${Math.floor(Math.random() * 250) + 1}`
   const key = rateLimitKey("login", ip, email)
-  keys.push(key)
+  keys.push(key, accountKey(email), ipKey("signup", ip))
   emails.push(email)
   return { email, ip, key }
 }
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+})
 
 afterAll(async () => {
   await prisma.rateLimitCounter.deleteMany({ where: { key: { in: keys } } })
@@ -133,5 +152,109 @@ describe("login attempts are rate limited", () => {
     const other = await authenticate({ email, password: "correct horse", ip: "198.51.100.77" })
     expect(other).not.toBeNull()
     keys.push(rateLimitKey("login", "198.51.100.77", email))
+  })
+})
+
+describe("the limit cannot be reset by anything the client sends", () => {
+  it("a rotating X-Forwarded-For earns no fresh budget while no proxy is declared", async () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "")
+    const { email } = fresh()
+    await createAccount({ email, password: "correct horse" })
+    // The attacker sends a different forged address with every request.
+    const attempt = (i: number, password: string) =>
+      authenticate({ email, password, ip: clientIp(new Headers({ "x-forwarded-for": `198.51.100.${i}` })) })
+    for (let i = 1; i <= 10; i++) expect(await attempt(i, `wrong-${i}`), `attempt ${i}`).toBeNull()
+    await expect(attempt(11, "correct horse")).rejects.toThrow(RateLimitedError)
+    await expect(attempt(12, "correct horse")).rejects.toThrow(RateLimitedError)
+    keys.push(rateLimitKey("login", "unknown", email))
+  })
+
+  it("even behind a declared proxy, rotating source addresses cannot exceed the per-account budget", async () => {
+    vi.stubEnv("TRUSTED_PROXY_HOPS", "1")
+    const { email } = fresh()
+    await createAccount({ email, password: "correct horse" })
+    // A botnet: every attempt arrives from a different, genuinely distinct address.
+    const attempt = (i: number, password: string) =>
+      authenticate({ email, password, ip: clientIp(new Headers({ "x-forwarded-for": `198.51.100.${i % 250}, 10.1.${Math.floor(i / 250)}.${i % 250}` })) })
+    for (let i = 1; i <= ACCOUNT_MAX_ATTEMPTS; i++) expect(await attempt(i, `wrong-${i}`), `attempt ${i}`).toBeNull()
+    await expect(attempt(ACCOUNT_MAX_ATTEMPTS + 1, "correct horse")).rejects.toThrow(RateLimitedError)
+    for (let i = 1; i <= ACCOUNT_MAX_ATTEMPTS + 1; i++) {
+      keys.push(rateLimitKey("login", clientIp(new Headers({ "x-forwarded-for": `198.51.100.${i % 250}, 10.1.${Math.floor(i / 250)}.${i % 250}` })), email))
+    }
+  })
+
+  it("a refused attempt does not burn the account budget", async () => {
+    const { email, ip, key } = fresh()
+    for (let i = 0; i < 10; i++) await authenticate({ email, password: "x", ip })
+    for (let i = 0; i < 20; i++) await authenticate({ email, password: "x", ip }).catch(() => null)
+    expect((await prisma.rateLimitCounter.findUniqueOrThrow({ where: { key: accountKey(email) } })).count).toBe(10)
+    expect(await isLimited(key)).toBe(true)
+  })
+
+  it("a successful login clears the account budget as well", async () => {
+    const { email, ip } = fresh()
+    await createAccount({ email, password: "correct horse" })
+    for (let i = 0; i < 5; i++) await authenticate({ email, password: "wrong", ip })
+    expect(await authenticate({ email, password: "correct horse", ip })).not.toBeNull()
+    expect(await prisma.rateLimitCounter.findUnique({ where: { key: accountKey(email) } })).toBeNull()
+  })
+
+  it("keys the account counter on the normalised email alone", () => {
+    expect(accountKey("A@B.com")).toBe(accountKey(" a@b.COM "))
+    expect(accountKey("a@b.com")).not.toBe(rateLimitKey("login", "unknown", "a@b.com"))
+  })
+})
+
+describe("signup probing is bounded", () => {
+  it("refuses a bulk probe of many distinct emails from one address", async () => {
+    const { ip } = fresh()
+    let allowed = 0
+    for (let i = 0; i < SIGNUP_IP_MAX_ATTEMPTS + 5; i++) {
+      const email = `${randomUUID()}@probe.test`
+      keys.push(rateLimitKey("signup", ip, email))
+      if ((await consumeSignupAttempt(ip, email)).allowed) allowed++
+    }
+    expect(allowed).toBe(SIGNUP_IP_MAX_ATTEMPTS)
+  })
+
+  it("still applies the per-email limit within the per-address allowance", async () => {
+    const { ip, email } = fresh()
+    let allowed = 0
+    for (let i = 0; i < 12; i++) if ((await consumeSignupAttempt(ip, email)).allowed) allowed++
+    expect(allowed).toBe(RATE_LIMIT.maxAttempts)
+    keys.push(rateLimitKey("signup", ip, email))
+  })
+})
+
+describe("expired counters are reclaimed", () => {
+  it("sweepExpired deletes rows past their window and keeps live ones", async () => {
+    const dead = fresh()
+    const live = fresh()
+    await consumeAttempt(dead.key)
+    await consumeAttempt(live.key)
+    await prisma.$executeRaw`UPDATE "RateLimitCounter" SET "windowStart" = now() - interval '16 minutes' WHERE key = ${dead.key}`
+    await sweepExpired()
+    expect(await prisma.rateLimitCounter.findUnique({ where: { key: dead.key } })).toBeNull()
+    expect(await prisma.rateLimitCounter.findUnique({ where: { key: live.key } })).not.toBeNull()
+  })
+
+  it("consumeAttempt sweeps opportunistically, so unauthenticated probing cannot grow the table without bound", async () => {
+    const dead = fresh()
+    const trigger = fresh()
+    await consumeAttempt(dead.key)
+    await prisma.$executeRaw`UPDATE "RateLimitCounter" SET "windowStart" = now() - interval '16 minutes' WHERE key = ${dead.key}`
+    vi.spyOn(Math, "random").mockReturnValue(0) // the sweep fires
+    await consumeAttempt(trigger.key)
+    expect(await prisma.rateLimitCounter.findUnique({ where: { key: dead.key } })).toBeNull()
+  })
+
+  it("does not sweep on every call", async () => {
+    const dead = fresh()
+    const trigger = fresh()
+    await consumeAttempt(dead.key)
+    await prisma.$executeRaw`UPDATE "RateLimitCounter" SET "windowStart" = now() - interval '16 minutes' WHERE key = ${dead.key}`
+    vi.spyOn(Math, "random").mockReturnValue(0.999)
+    await consumeAttempt(trigger.key)
+    expect(await prisma.rateLimitCounter.findUnique({ where: { key: dead.key } })).not.toBeNull()
   })
 })

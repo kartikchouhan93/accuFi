@@ -154,9 +154,12 @@ model Transaction {
 
 // Fixed-window attempt counters for the auth endpoints (spec §9.5), held in Postgres so they survive a restart
 // and need no new infrastructure. `key` is a SHA-256 of scope + IP + email, never the values themselves.
-// `windowStart` is set by the database clock, and the window is evaluated by the database too.
+// `windowStart` is always supplied by consumeAttempt from the database clock (no column default), and the window is
+// evaluated by the database too. The index serves the sweep that deletes expired windows.
 model RateLimitCounter {
   key         String   @id
-  windowStart DateTime @default(dbgenerated("now()")) @db.Timestamptz(3)
+  windowStart DateTime @db.Timestamptz(3)
   count       Int
+
+  @@index([windowStart])
 }

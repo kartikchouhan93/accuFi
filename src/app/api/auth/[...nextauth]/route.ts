@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { handlers } from "@/server/auth"
 import { clientIp } from "@/server/client-ip"
-import { isLimited, rateLimitKey } from "@/server/rate-limit"
+import { accountKey, ACCOUNT_MAX_ATTEMPTS, isLimited, rateLimitKey } from "@/server/rate-limit"
 
 export const { GET } = handlers
 
@@ -21,7 +21,11 @@ async function submittedEmail(req: NextRequest): Promise<string | null> {
 export async function POST(req: NextRequest) {
   if (req.nextUrl.pathname === "/api/auth/callback/credentials") {
     const email = await submittedEmail(req)
-    if (email !== null && (await isLimited(rateLimitKey("login", clientIp(req.headers), email)))) {
+    if (
+      email !== null &&
+      ((await isLimited(rateLimitKey("login", clientIp(req.headers), email))) ||
+        (await isLimited(accountKey(email), ACCOUNT_MAX_ATTEMPTS)))
+    ) {
       return NextResponse.json(
         { error: "too_many_attempts" },
         { status: 429, headers: { "Retry-After": "900" } },

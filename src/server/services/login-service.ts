@@ -2,7 +2,7 @@ import { z } from "zod"
 import { normaliseEmail } from "@/lib/email"
 import { prisma } from "@/server/db"
 import { hashPassword, verifyPassword } from "@/server/password"
-import { clearAttempts, consumeAttempt, rateLimitKey } from "@/server/rate-limit"
+import { accountKey, ACCOUNT_MAX_ATTEMPTS, clearAttempts, consumeAttempt, rateLimitKey } from "@/server/rate-limit"
 import { PASSWORD_MAX_LENGTH } from "@/server/services/signup-service"
 
 export class RateLimitedError extends Error {
@@ -37,14 +37,19 @@ export async function authenticate(input: {
   if (!parsed.success) return null
   const { email, password } = parsed.data
 
+  // Two budgets. Per address and email first; an attempt already refused there is not charged to the account, so
+  // one blocked client cannot burn the account's budget for everyone else. Then per account, which nothing the
+  // client sends can reset.
   const key = rateLimitKey("login", input.ip, email)
-  const attempt = await consumeAttempt(key)
-  if (!attempt.allowed) throw new RateLimitedError(attempt.retryAfterSeconds)
+  const perAddress = await consumeAttempt(key)
+  if (!perAddress.allowed) throw new RateLimitedError(perAddress.retryAfterSeconds)
+  const perAccount = await consumeAttempt(accountKey(email), ACCOUNT_MAX_ATTEMPTS)
+  if (!perAccount.allowed) throw new RateLimitedError(perAccount.retryAfterSeconds)
 
   const user = await prisma.user.findUnique({ where: { email }, select: { id: true, email: true, passwordHash: true } })
   const matches = await verifyPassword(password, user?.passwordHash ?? (await getDummyHash()))
   if (!user || !matches) return null
 
-  await clearAttempts(key)
+  await Promise.all([clearAttempts(key), clearAttempts(accountKey(email))])
   return { userId: user.id, email: user.email }
 }

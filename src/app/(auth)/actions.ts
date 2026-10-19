@@ -6,7 +6,7 @@ import { redirect } from "next/navigation"
 import { InvalidTimezoneError } from "@/domain/timezone"
 import { signIn } from "@/server/auth"
 import { clientIp } from "@/server/client-ip"
-import { consumeAttempt, rateLimitKey } from "@/server/rate-limit"
+import { consumeSignupAttempt } from "@/server/rate-limit"
 import { createAccount, EmailTakenError, InvalidSignupInputError } from "@/server/services/signup-service"
 
 export type AuthFormState = { error: string | null }
@@ -39,7 +39,7 @@ export async function signupAction(_previous: AuthFormState, formData: FormData)
   const email = field(formData, "email")
   const password = field(formData, "password")
 
-  const attempt = await consumeAttempt(rateLimitKey("signup", clientIp(await headers()), email))
+  const attempt = await consumeSignupAttempt(clientIp(await headers()), email)
   if (!attempt.allowed) return { error: TOO_MANY }
 
   try {

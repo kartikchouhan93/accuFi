@@ -35,6 +35,13 @@ describe("/api/auth route", () => {
     expect(delegatedPost).not.toHaveBeenCalled()
   })
 
+  it("answers 429 when only the per-account budget is exhausted (the request's own address is fresh)", async () => {
+    limited.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    const res = await POST(credentialsPost("a@b.com", { "x-forwarded-for": "198.51.100.1" }))
+    expect(res.status).toBe(429)
+    expect(delegatedPost).not.toHaveBeenCalled()
+  })
+
   it("hands the request to Auth.js while under the limit", async () => {
     limited.mockResolvedValue(false)
     const res = await POST(credentialsPost("a@b.com"))
