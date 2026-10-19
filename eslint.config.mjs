@@ -11,6 +11,13 @@ const moneyArg = (call, argPath) =>
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  // Applies to src/, tests/ and the config files alike. The Next presets do not enable it, which is how a duplicate
+  // `vitest` import survived into a committed test file. `import type` beside a value import stays allowed.
+  {
+    rules: {
+      "no-duplicate-imports": ["error", { allowSeparateTypeImports: true }],
+    },
+  },
   // Domain layer purity: no framework/DB imports, and no float path for money (EC-1).
   {
     files: ["src/domain/**/*.{ts,tsx}"],
