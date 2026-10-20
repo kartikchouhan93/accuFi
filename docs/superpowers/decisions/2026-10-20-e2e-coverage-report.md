@@ -1,6 +1,6 @@
 # E2E coverage report, 2026-10-20
 
-Branch `test/e2e-coverage`. Tests only: no production code was changed (`git diff 53bd0a5..HEAD -- src` is empty).
+Branch `test/e2e-coverage`. The coverage commits are tests only (`git diff 53bd0a5..ffc7a7c -- src` is empty). The two defects they exposed were then fixed in two further commits: see **Fixes** at the end.
 
 ## What was added
 
@@ -54,10 +54,10 @@ I checked the tests can fail. With `findNodes` temporarily unscoped, all 7 faile
 - Run three times: twice with the default 4 workers (30 s each) and once with `--workers=1` (1.1 min), so a serial order and a parallel order both pass. Each run left no `next dev` behind.
 - `bun run lint`, `bunx tsc --noEmit` and `bunx next build` are clean. No lint rule was disabled and no `waitForTimeout`, `.skip` or `.only` was added to the new files.
 
-## Findings: possible product defects (not fixed)
+## Findings: product defects (both fixed, see Fixes)
 
-1. **A refused signup empties the form.** The signup form (and, since `AuthForm` is shared, presumably the login form) is a React 19 `<form action>`. React resets an uncontrolled form once its action settles, whether the action succeeded or refused. After "An account with this email already exists." or "Password must be at least 8 characters", both the email and the password the person typed are gone. The brief asks for "keeping what was typed". This is recorded as `test.fail("keeps the email and password after a refused signup")` in `auth.spec.ts`. It keeps the suite green while the defect stands, and it turns red the day it is fixed, at which point the marker should be removed. Playwright prints it with a `✘` and counts it as passed. A fix needs a decision (controlled inputs, or `defaultValue` from the returned state). The login form's behaviour is the same mechanism but is not separately asserted.
-2. **Every failed login writes an Auth.js error and stack trace to the server log.** `[auth][error] CredentialsSignin ...` plus about 25 stack lines is printed for each wrong password, unknown email and rate-limited attempt. This comes from Auth.js's default logger and is silenced only by a `logger` option in `src/server/auth.ts`. The e2e output is therefore **not pristine any more**: 16 such traces per run, all from the new tests that deliberately fail logins. The earlier 48-test run printed none. In production the same noise is one trace per failed attempt, so an attacker can flood the log. I did not hide it with `stderr: "ignore"`, which would also hide real server errors.
+1. **A refused signup emptied the form** (resolved). The signup form, and the login form with it because `AuthForm` is shared, is a React 19 `<form action>`. React resets an uncontrolled form once its action settles, whether the action succeeded or refused, so after "An account with this email already exists." or "Password must be at least 8 characters" both the email and the password the person typed were gone. It was recorded as `test.fail("keeps the email and password after a refused signup")`. The login form had the same defect; it was not separately asserted then and is now.
+2. **Every failed login wrote an Auth.js error and stack trace to the server log** (resolved). `[auth][error] CredentialsSignin ...` plus about 25 stack lines was printed for each wrong password, unknown email and rate-limited attempt, from Auth.js's default logger: 16 traces per e2e run, and one per failed attempt in production, so an attacker could flood the log. I did not hide it with `stderr: "ignore"`, which would also hide real server errors.
 
 Observation, not a defect: sessions are JWTs and cannot be revoked server-side (documented in `auth.config.ts`). A copy of the cookie taken before sign-out would still be accepted until it expires. I did not assert that.
 
@@ -69,3 +69,28 @@ Observation, not a defect: sessions are JWTs and cannot be revoked server-side (
 - **Replaying restore, ungroup and record-split against A's ids.** Edit, delete and record cover the three distinct lookups, and the repository tests cover the rest exhaustively.
 - **"Not income or expense anywhere on screen" beyond the ledger and the kind filters.** The dashboard has no income or spending figures in M1, and reports are M3.
 - The three older specs keep their own copies of `form`, `entries`, `balances` and `optionsOf`. I did not refactor them, to keep this change to additions only.
+
+## Fixes
+
+Two commits, one per defect.
+
+### 1. Refused sign-in or signup keeps what was typed
+
+- **Login shared the defect.** Reproduced first: the three new e2e tests (refused signup for a short password, refused signup for a taken email, refused login) all failed against the old form with the email field reading `""`.
+- **Fix:** `src/app/(auth)/auth-form.tsx` holds the email and password in `useState` and renders them as controlled inputs. `AuthForm` is the only form for both modes, so one change covers both. The alternative (returning the submitted values from the action as `defaultValue`) was rejected because it would send the password back from the server; here the password never leaves the browser and `AuthFormState` is unchanged. A successful action redirects, so nothing needs clearing.
+- **Tests:** the `test.fail` is now a normal `test(...)`, and two cases were added (taken email, refused login). `auth.spec.ts` has 17 tests instead of 15, and the suite 78 instead of 76.
+
+### 2. Failed logins no longer print a stack trace
+
+- **Fix:** `src/server/auth-logger.ts` exports `authLogger`, passed as `logger` in `src/server/auth.ts`. Only `error` is overridden. It returns without printing when the error's `type` is `CredentialsSignin`, which is what Auth.js throws for a wrong password and an unknown email, and which `RateLimitedSignin` (a subclass) inherits for a lockout. Anything else is printed in the format of Auth.js's default (`[auth][error] <type>: <message>`, then the cause's stack or the error's own stack). `warn` and `debug` are not overridden, so Auth.js's defaults apply to them.
+- **Why `type` and not `instanceof`:** the static `type` is inherited by subclasses and does not depend on which copy of the class a bundle holds. (`next-auth` also cannot be imported under Vitest, because it requires `next/server`.)
+- **A real fault still surfaces.** An exception thrown inside `authorize` (a database outage; Auth.js wraps it in a `CallbackRouteError` whose `cause.err` is the original) is not `CredentialsSignin`, so it is logged with its cause. `verifyPassword`'s own `console.error` on a throw is untouched, and its test still passes. `src/server/auth-logger.test.ts` (4 tests) pins both sides: nothing is logged for `CredentialsSignin` or `RateLimitedSignin`; a `CallbackRouteError` carrying an `ECONNREFUSED` cause, a plain `Error` and a bare `CallbackRouteError` are all logged. Checked that the tests can fail: with the skip removed, the two silence tests failed; with everything silenced, the two logging tests failed. Both mutations were reverted.
+- **Result:** the e2e output contains no `[auth]` lines.
+
+### Verification
+
+- Vitest: 712 passed in both time zones (708 plus the 4 logger tests). Playwright: 78 passed with no `✘`. `bun run lint`, `bunx tsc --noEmit` and `bunx next build` are clean, and no `next dev` was left running.
+
+### One observation, not caused by these changes
+
+In roughly 1 e2e run in 7, after the fixes, the server printed one `NotFoundError: user not found` trace from `todayFor` via `NodesPage` (`src/app/nodes/page.tsx`), right after a `nodes.spec.ts` test. It is a race in an older spec: a test's teardown deletes its user while a refresh of `/nodes` is still in flight. It did not occur in the two baseline runs at `ffc7a7c`, but those are too few to tell, and the page involved is not touched by either fix. Left as it is, because it is outside this task.
