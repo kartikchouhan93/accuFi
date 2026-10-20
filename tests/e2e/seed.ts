@@ -30,6 +30,15 @@ export const card = (userId: string, name: string, over: { limit?: string; owed?
     ...(over.owed === undefined ? {} : { openingBalance: -parseRupees(over.owed) }),
   })
 
+/** A loan, optionally with an amount already owed on it (opening balance, entered as a positive rupee amount owed). */
+export const loan = (userId: string, name: string, owed?: string) =>
+  addNode(userId, {
+    kind: "LIABILITY",
+    name,
+    liabilitySubtype: "LOAN",
+    ...(owed === undefined ? {} : { openingBalance: -parseRupees(owed) }),
+  })
+
 /** The id of a node of this user by name (the starter expense ledgers included). */
 export async function nodeId(userId: string, name: string): Promise<string> {
   const node = await prisma.ledgerNode.findFirstOrThrow({ where: { userId, name } })
