@@ -117,6 +117,10 @@ async function validateParent(userId: string, input: CreateNodeInput): Promise<v
   if (!("parentId" in input) || input.parentId === undefined) return
   if (!GROUPED_KINDS.has(input.kind)) throw new InvalidNodeError("Only income and expense nodes can be grouped")
   const parent = await requireNode(userId, input.parentId) // someone else's node is simply "not found"
+  // The schema takes any parent id and no screen offers a picker yet, so a crafted payload is the only way here: it must
+  // not file an expense under "Realised Loss", nor under a node the user has put away.
+  if (parent.systemRole !== null) throw new InvalidNodeError("A system node cannot contain others")
+  if (parent.archivedAt !== null) throw new InvalidNodeError("An archived node cannot contain others. Restore it first.")
   if (parent.parentId !== null) throw new HierarchyDepthError()
   if (parent.kind !== input.kind) throw new InvalidNodeError("A node can only be grouped under a node of the same kind")
 }

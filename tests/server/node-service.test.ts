@@ -258,6 +258,36 @@ describe("node hierarchy", () => {
     await expect(createLedgerNode(user.id, forged)).rejects.toThrow(InvalidNodeError)
   })
 
+  it("refuses a system node as a parent: nothing the user files belongs under Realised Loss", async () => {
+    const { user, systemNode } = await makeSeededUser()
+    for (const role of ["REALISED_LOSS", "OPENING_BALANCE_CONTRA"] as const) {
+      const system = await systemNode(role)
+      await expect(createLedgerNode(user.id, { kind: "EXPENSE", name: "Coffee", parentId: system.id })).rejects.toThrow(
+        InvalidNodeError,
+      )
+    }
+    for (const role of ["REALISED_GAIN", "OPENING_BALANCE"] as const) {
+      const system = await systemNode(role)
+      await expect(createLedgerNode(user.id, { kind: "INCOME_SOURCE", name: "Tips", parentId: system.id })).rejects.toThrow(
+        InvalidNodeError,
+      )
+    }
+    expect(await prisma.ledgerNode.count({ where: { userId: user.id, name: { in: ["Coffee", "Tips"] } } })).toBe(0)
+  })
+
+  it("refuses an archived node as a parent, and says so", async () => {
+    const user = await registry.makeUser()
+    const food = await createLedgerNode(user.id, { kind: "EXPENSE", name: "Food" })
+    await archiveLedgerNode(user.id, food.id)
+    await expect(createLedgerNode(user.id, { kind: "EXPENSE", name: "Lunch", parentId: food.id })).rejects.toThrow(
+      /archived/i,
+    )
+    expect(await prisma.ledgerNode.count({ where: { userId: user.id, name: "Lunch" } })).toBe(0)
+    // Restored, it is a parent again.
+    await restoreLedgerNode(user.id, food.id)
+    expect((await createLedgerNode(user.id, { kind: "EXPENSE", name: "Lunch", parentId: food.id })).parentId).toBe(food.id)
+  })
+
   it("cannot be pointed at another user's node as a parent", async () => {
     const mine = await registry.makeUser()
     const theirs = await registry.makeUser()
