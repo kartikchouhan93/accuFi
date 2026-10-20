@@ -157,4 +157,11 @@ describe("netWorth", () => {
       unvaluedNodeIds: [],
     })
   })
+
+  it("refuses a kind it has no rule for, rather than leaving that node out of the total", () => {
+    // The compiler stops a sixth LedgerKind that the switch does not name; this is the same promise at run time, for a
+    // value that got past the types (a row read from a database whose enum has grown).
+    const unknown = { nodeId: "n", kind: "COMMODITY", balance: 5_00n, archived: false } as unknown as NodeBalance
+    expect(() => netWorth([asset("a", 1_00n), unknown])).toThrow(/COMMODITY/)
+  })
 })

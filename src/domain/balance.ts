@@ -71,6 +71,12 @@ export function netWorth(
       case "EXPENSE":
         // Flows, not holdings.
         break
+      default: {
+        // Every kind is decided above. A new LedgerKind makes `kind` something other than `never` here, which is a
+        // compile error, so it cannot silently vanish from net worth; the throw is the same refusal at run time.
+        const undecided: never = kind
+        throw new Error(`netWorth has no rule for the kind ${String(undecided)}`)
+      }
     }
   }
 
