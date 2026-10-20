@@ -61,6 +61,16 @@ describe("paiseTextToRupees and sumPaiseText", () => {
     expect(parseRupees(paiseTextToRupees("9007199254740993"))).toBe(9_007_199_254_740_993n)
   })
 
+  it("keeps the sign of a negative amount, whole rupees or not, and the text parses back to the same paise", () => {
+    // Unreachable from the screens today (an amount is always positive), but it must not print "-123.-45" or lose the sign.
+    expect(paiseTextToRupees("-12345")).toBe("-123.45")
+    expect(paiseTextToRupees("-45")).toBe("-0.45")
+    expect(paiseTextToRupees("-100")).toBe("-1.00")
+    expect(paiseTextToRupees("-1")).toBe("-0.01")
+    expect(paiseTextToRupees("0")).toBe("0.00")
+    for (const paise of ["-12345", "-45", "-9007199254740993"]) expect(parseRupees(paiseTextToRupees(paise))).toBe(BigInt(paise))
+  })
+
   it("sums without going through a float", () => {
     expect(sumPaiseText(["3334", "3333", "3333"])).toBe("10000")
     expect(sumPaiseText(["9007199254740993", "1"])).toBe("9007199254740994")

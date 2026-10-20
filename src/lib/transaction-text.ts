@@ -14,9 +14,14 @@ export function formatDay(date: CalendarDate): string {
   return `${Number(day)} ${MONTHS[Number(month) - 1]} ${year}`
 }
 
-/** Paise as a form field holds them, with no sign, symbol or grouping: 3334n is "33.34". */
+/**
+ * Paise as a form field holds them, with no symbol or grouping: 3334n is "33.34". A negative amount keeps its minus sign
+ * in front of the whole figure: BigInt division and remainder both truncate toward zero, so the parts are taken of the
+ * magnitude and the sign is put back once ("-45n" is "-0.45", not "0.-45").
+ */
 function plainRupees(paise: Paise): string {
-  return `${paise / 100n}.${String(paise % 100n).padStart(2, "0")}`
+  const magnitude = paise < 0n ? -paise : paise
+  return `${paise < 0n ? "-" : ""}${magnitude / 100n}.${String(magnitude % 100n).padStart(2, "0")}`
 }
 
 /** An amount that crossed to the browser as paise text, as the rupee text a form field holds: "123450" is "1234.50". */
