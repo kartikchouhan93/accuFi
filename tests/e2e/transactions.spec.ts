@@ -474,3 +474,103 @@ test("records a backdated entry on the day given and counts it in today's balanc
   await page.goto("/transactions?from=&to=")
   await expect(entries(page).getByRole("listitem").filter({ hasText: "March salary, entered late" })).toContainText("5 Mar 2026")
 })
+
+test("says when a recorded entry falls outside the dates being listed", async ({ session: { page, userId } }) => {
+  await incomeSource(userId, "Salary")
+  await account(userId, "HDFC Savings")
+  await page.goto("/transactions")
+  const record = async (date: string) => {
+    await form(page).getByLabel("From", { exact: true }).selectOption({ label: "Salary" })
+    await form(page).getByLabel("To", { exact: true }).selectOption({ label: "HDFC Savings" })
+    await form(page).getByLabel("Amount (₹)").fill("100")
+    await form(page).getByLabel("Date").fill(date)
+    await form(page).getByRole("button", { name: "Record transaction" }).click()
+  }
+
+  await record("2026-03-05")
+  await expect(page.getByRole("status")).toContainText("Recorded Salary → HDFC Savings")
+  await expect(page.getByRole("status")).toContainText("Dated 5 Mar 2026, outside the dates listed.")
+
+  // An entry on a listed day needs no such line.
+  await record(await today(userId))
+  await expect(page.getByRole("status")).toContainText("Recorded Salary → HDFC Savings")
+  await expect(page.getByRole("status")).not.toContainText("outside the dates listed")
+})
+
+test("two submits sent at once make one request, whatever the button does", async ({ session: { page, userId } }) => {
+  await account(userId, "HDFC Savings", "1,000")
+  let posts = 0
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.headers()["next-action"]) posts += 1
+  })
+  await page.goto("/transactions")
+  await form(page).getByLabel("From", { exact: true }).selectOption({ label: "HDFC Savings" })
+  await form(page).getByLabel("To", { exact: true }).selectOption({ label: "Groceries" })
+  await form(page).getByLabel("Amount (₹)").fill("250")
+
+  // Two submit events in the same turn: they bypass the disabled button, so only the form's own guard can stop the second.
+  await form(page).evaluate((element) => {
+    const target = element as HTMLFormElement
+    target.requestSubmit()
+    target.requestSubmit()
+  })
+  await expect(page.getByRole("status")).toContainText("Recorded HDFC Savings → Groceries")
+  await page.waitForTimeout(500) // a second request, if there were one, would have been sent by now
+  expect(posts).toBe(1)
+  expect(await prisma.transaction.count({ where: { userId, toNodeId: await nodeId(userId, "Groceries") } })).toBe(1)
+})
+
+test("records an opening balance against an account that has none, from the Setup group of sources", async ({ session: { page, userId } }) => {
+  await account(userId, "HDFC Savings") // created without an opening balance, and now it is forgotten
+  await page.goto("/transactions")
+  const from = form(page).getByLabel("From", { exact: true })
+  const to = form(page).getByLabel("To", { exact: true })
+
+  // The opening-balance node is offered, apart from the other sources, and only as a source.
+  await expect(from.locator("optgroup[label='Setup'] option")).toHaveText(["Opening Balance", "Opening Balance Contra"])
+  await from.selectOption({ label: "Opening Balance" })
+  const destinations = await optionsOf(to)
+  expect(destinations).toContain("HDFC Savings")
+  expect(destinations).not.toContain("Groceries") // an opening balance goes to an account or a card
+  expect(destinations).not.toContain("Opening Balance Contra")
+  await to.selectOption({ label: "HDFC Savings" })
+  await form(page).getByLabel("Amount (₹)").fill("25,000")
+  await form(page).getByLabel("Note").fill("Opening balance")
+  await form(page).getByRole("button", { name: "Record transaction" }).click()
+
+  await expect(page.getByRole("status")).toContainText("Recorded Opening Balance → HDFC Savings, ₹25,000.00")
+  await expect(balances(page).getByRole("listitem").filter({ hasText: "HDFC Savings" })).toContainText("₹25,000.00")
+})
+
+test("never offers the opening-balance contra or any system node as a destination", async ({ session: { page, userId } }) => {
+  await account(userId, "HDFC Savings")
+  await card(userId, "Axis card")
+  await incomeSource(userId, "Salary")
+  await page.goto("/transactions")
+  const from = form(page).getByLabel("From", { exact: true })
+  const to = form(page).getByLabel("To", { exact: true })
+  for (const source of ["HDFC Savings", "Axis card", "Salary", "Groceries"]) {
+    await from.selectOption({ label: source })
+    const offered = await optionsOf(to)
+    for (const name of ["Opening Balance", "Opening Balance Contra", "Realised Gain", "Realised Loss"]) expect(offered, `${source} -> ${name}`).not.toContain(name)
+  }
+  // Realised gain and loss are not sources either: disposals (M2) post them, not this form.
+  const sources = await optionsOf(from)
+  expect(sources).not.toContain("Realised Gain")
+  expect(sources).not.toContain("Realised Loss")
+})
+
+test("flags the source field, not the destination, when the source was archived in another tab", async ({ session: { page, userId } }) => {
+  const old = await account(userId, "HDFC Savings", "1,000")
+  await page.goto("/transactions")
+  await form(page).getByLabel("From", { exact: true }).selectOption({ label: "HDFC Savings" })
+  await form(page).getByLabel("To", { exact: true }).selectOption({ label: "Groceries" })
+  await form(page).getByLabel("Amount (₹)").fill("100")
+  await archiveLedgerNode(userId, old.id)
+  await form(page).getByRole("button", { name: "Record transaction" }).click()
+
+  await expect(form(page).getByText("The source node is archived.")).toBeVisible()
+  await expect(form(page).getByLabel("From", { exact: true })).toHaveAttribute("aria-invalid", "true")
+  await expect(form(page).getByLabel("To", { exact: true })).not.toHaveAttribute("aria-invalid", "true")
+  await expect(form(page).getByLabel("From", { exact: true })).toBeFocused()
+})

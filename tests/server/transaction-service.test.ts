@@ -115,9 +115,9 @@ describe("recordTransaction", () => {
     const { user, bank, savings, food } = await setup()
     await archiveLedgerNode(user.id, savings.id)
     const error = await rejection(record(user.id, savings, food, 100n))
-    expect((error as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    expect((error as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_SOURCE"])
     const intoArchived = await rejection(record(user.id, bank, savings, 100n))
-    expect((intoArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    expect((intoArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_TARGET"])
   })
 
   it("answers not-found, writing nothing, for another user's node", async () => {
@@ -469,9 +469,9 @@ describe("editTransaction", () => {
     await archiveLedgerNode(user.id, savings.id)
     const toArchived = await rejection(editTransaction(user.id, view.id, { toNodeId: savings.id }, view.version))
     expect(toArchived).toBeInstanceOf(InvalidTransactionError)
-    expect((toArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    expect((toArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_TARGET"])
     const fromArchived = await rejection(editTransaction(user.id, view.id, { fromNodeId: savings.id }, view.version))
-    expect((fromArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    expect((fromArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_SOURCE"])
     expect(await prisma.transaction.findUniqueOrThrow({ where: { id: view.id } })).toMatchObject({ fromNodeId: bank.id, toNodeId: food.id, version: 0 })
   })
 

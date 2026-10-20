@@ -54,13 +54,14 @@ describe("validateTransaction", () => {
 
   it("rejects an archived node by default", () => {
     const archived = node("old-bank", "ASSET", new Date("2025-01-01T00:00:00Z"))
-    expect(codes(draft({ toNode: archived }))).toEqual(["ARCHIVED_NODE"])
-    expect(codes(draft({ toNode: archived }), { allowArchived: false })).toEqual(["ARCHIVED_NODE"])
+    expect(codes(draft({ toNode: archived }))).toEqual(["ARCHIVED_TARGET"])
+    expect(codes(draft({ toNode: archived }), { allowArchived: false })).toEqual(["ARCHIVED_TARGET"])
   })
 
   it("flags an archived source node as well as an archived target", () => {
     const archived = node("old-job", "INCOME_SOURCE", new Date("2025-01-01T00:00:00Z"))
-    expect(codes(draft({ fromNode: archived }))).toEqual(["ARCHIVED_NODE"])
+    // its own code, so a form can highlight the control that is wrong
+    expect(codes(draft({ fromNode: archived }))).toEqual(["ARCHIVED_SOURCE"])
   })
 
   it("permits an archived node when allowArchived is set (EC-14)", () => {
@@ -72,7 +73,7 @@ describe("validateTransaction", () => {
     const archived = node("old-bank", "ASSET", new Date("2025-01-01T00:00:00Z"))
     const result = codes(draft({ toNode: archived, amount: 0n }))
     expect(result).toHaveLength(2)
-    expect(result).toEqual(expect.arrayContaining(["NON_POSITIVE_AMOUNT", "ARCHIVED_NODE"]))
+    expect(result).toEqual(expect.arrayContaining(["NON_POSITIVE_AMOUNT", "ARCHIVED_TARGET"]))
   })
 
   it("reports a same-node expense-to-expense transaction as both same-node and illegal", () => {

@@ -1,5 +1,5 @@
 import { Amount } from "@/app/amount"
-import { HOLDING_KINDS, KIND_COPY } from "@/lib/node-kinds"
+import { HOLDING_KINDS } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
 import type { PickerNode } from "@/lib/transaction-list-view"
 import { groupByKind } from "./pickers"
@@ -10,7 +10,7 @@ import { groupByKind } from "./pickers"
 // is drawn, so there is nothing here that could disagree with the rows above it; net worth is the ledger screen's.
 
 export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: Record<string, string> }) {
-  const holding = nodes.filter((node) => HOLDING_KINDS.has(node.kind) && !node.archived && !node.system)
+  const holding = nodes.filter((node) => HOLDING_KINDS.has(node.kind) && !node.archived && node.systemRole === null)
   const groups = groupByKind(holding)
   return (
     <section aria-labelledby="balances-heading">
@@ -23,7 +23,7 @@ export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: R
         <div className="mt-2 grid gap-x-8 gap-y-4 sm:grid-cols-2">
           {groups.map((group) => (
             <div key={group.kind}>
-              <h3 className="border-b-2 border-ink pb-0.5 text-sm font-semibold text-ink-soft">{KIND_COPY[group.kind].plural}</h3>
+              <h3 className="border-b-2 border-ink pb-0.5 text-sm font-semibold text-ink-soft">{group.label}</h3>
               <ul className="divide-y divide-rule">
                 {group.nodes.map((node) => (
                   <li key={node.id} className="flex items-baseline gap-3 py-1.5">

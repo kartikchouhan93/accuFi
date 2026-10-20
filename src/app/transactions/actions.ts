@@ -57,11 +57,13 @@ function wrote(): void {
 }
 
 // The form field a broken rule belongs to. A rule about the pair of nodes or the flow is filed under the destination:
-// that is the control a user changes to fix it (the source is what they chose first), and the message names both.
+// that is the control a user changes to fix it (the source is what they chose first), and the message names both. An
+// archived end is filed under its own control. The source is shared by every leg of a split, so its field has no leg.
 const FIELD_OF_VIOLATION: Record<ViolationCode, string> = {
   SAME_NODE: "toNodeId",
   ILLEGAL_FLOW: "toNodeId",
-  ARCHIVED_NODE: "toNodeId",
+  ARCHIVED_SOURCE: "fromNodeId",
+  ARCHIVED_TARGET: "toNodeId",
   NON_POSITIVE_AMOUNT: "amount",
 }
 
@@ -70,7 +72,7 @@ function violationFieldErrors(violations: readonly TransactionViolation[]): Reco
   const out: Record<string, string[]> = {}
   for (const violation of violations) {
     const field = FIELD_OF_VIOLATION[violation.code]
-    const key = violation.leg === undefined ? field : `legs.${violation.leg}.${field}`
+    const key = violation.leg === undefined || field === "fromNodeId" ? field : `legs.${violation.leg}.${field}`
     ;(out[key] ??= []).push(violation.message)
   }
   return out

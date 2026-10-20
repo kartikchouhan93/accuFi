@@ -1,6 +1,6 @@
 import type { LedgerNode } from "@prisma/client"
 import type { CalendarDate } from "../domain/calendar-date"
-import type { LedgerKind } from "../domain/ledger-kind"
+import type { LedgerKind, SystemNodeRole } from "../domain/ledger-kind"
 import type { TransactionView } from "./transaction-view"
 
 // What the transaction screen is made of, in a shape that can cross to the browser: money as paise text, days as
@@ -13,12 +13,12 @@ export interface PickerNode {
   name: string
   kind: LedgerKind
   archived: boolean
-  /** Opening Balance, Realised Gain and the like: the application's own, never offered for a new entry. */
-  system: boolean
+  /** Set for the application's own nodes (Opening Balance, Realised Gain and the like), null for the user's. */
+  systemRole: SystemNodeRole | null
 }
 
 export function toPickerNode(node: LedgerNode): PickerNode {
-  return { id: node.id, name: node.name, kind: node.kind, archived: node.archivedAt !== null, system: node.systemRole !== null }
+  return { id: node.id, name: node.name, kind: node.kind, archived: node.archivedAt !== null, systemRole: node.systemRole }
 }
 
 /**

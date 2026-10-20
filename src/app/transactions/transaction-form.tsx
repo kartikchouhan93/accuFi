@@ -6,13 +6,13 @@ import { formatPaiseText } from "@/lib/node-money"
 import { newRequestKey } from "@/lib/request-key"
 import { SPLIT_LEGS_MAX, SPLIT_LEGS_MIN } from "@/lib/schemas/transaction"
 import type { PickerNode } from "@/lib/transaction-list-view"
-import { describeTally, divideEqually, paiseTextToRupees, parseTags, sumPaiseText } from "@/lib/transaction-text"
+import { describeTally, divideEqually, formatDay, outsideListed, paiseTextToRupees, parseTags, sumPaiseText } from "@/lib/transaction-text"
 import type { TransactionView, Warning } from "@/lib/transaction-view"
 import type { FailureText } from "@/app/nodes/node-failure"
 import type { ActionFailure } from "@/server/action-support"
 import { editTransactionAction, recordSplitAction, recordTransactionAction } from "./actions"
 import type { Announce } from "./notice"
-import { destinationChoices, groupByKind, nodeLabel, sourceChoices } from "./pickers"
+import { destinationChoices, groupByKind, groupSources, nodeLabel, sourceChoices, type KindGroup } from "./pickers"
 import { describeTransactionFailure } from "./transaction-failure"
 
 // One form for every flow: salary into a bank, groceries on a card, paying the card, moving money between accounts. They
@@ -28,6 +28,8 @@ import { describeTransactionFailure } from "./transaction-failure"
 interface Props {
   nodes: PickerNode[]
   today: CalendarDate
+  /** The days the list beside the form is showing, as the filter holds them (blank for no bound). */
+  listed: { from: string; to: string }
   /** The transaction being edited, or null for a new entry. The parent remounts the form when this changes. */
   editing: TransactionView | null
   /** An edit was saved or abandoned. */
@@ -78,7 +80,7 @@ const linkButtonClass = "rounded-sm text-sm font-medium text-pen underline under
 
 const unique = (messages: string[]) => [...new Set(messages)]
 
-export function TransactionForm({ nodes, today, editing, onFinished, announce }: Props) {
+export function TransactionForm({ nodes, today, listed, editing, onFinished, announce }: Props) {
   const formId = useId()
   const formRef = useRef<HTMLFormElement>(null)
   const inFlight = useRef(false)
@@ -172,6 +174,11 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
     return warnings.map((warning) => warning.message)
   }
 
+  /** A line saying so when the entry is dated outside the days the list shows: otherwise it looks as if it was not saved. */
+  function placement(date: CalendarDate): string[] {
+    return outsideListed(date, listed) ? [`Dated ${formatDay(date)}, outside the dates listed.`] : []
+  }
+
   function afterRecording(lines: string[], warnings: Warning[]) {
     announce({ tone: warnings.length > 0 ? "warning" : "success", lines: [...lines, ...warningLines(warnings)] })
     setOutcome(null)
@@ -216,6 +223,7 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
             tone: saved.warnings.length > 0 ? "warning" : "success",
             lines: [
               `Saved changes to ${nameOf(saved.fromNodeId)} → ${nameOf(saved.toNodeId)}, ${formatPaiseText(saved.amountPaise)}.`,
+              ...placement(saved.occurredAt),
               ...warningLines(saved.warnings),
             ],
           })
@@ -232,7 +240,7 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
           if (!result.ok) return reportFailure(result)
           const total = formatPaiseText(sumPaiseText(result.data.legs.map((leg) => leg.amountPaise)))
           afterRecording(
-            [`Recorded a split of ${total} from ${nameOf(values.from)} in ${result.data.legs.length} legs.`],
+            [`Recorded a split of ${total} from ${nameOf(values.from)} in ${result.data.legs.length} legs.`, ...placement(result.data.legs[0].occurredAt)],
             result.data.warnings, // once: every leg carries the same list
           )
         } else {
@@ -248,7 +256,10 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
           if (!result.ok) return reportFailure(result)
           const recorded = result.data
           afterRecording(
-            [`Recorded ${nameOf(recorded.fromNodeId)} → ${nameOf(recorded.toNodeId)}, ${formatPaiseText(recorded.amountPaise)}.`],
+            [
+              `Recorded ${nameOf(recorded.fromNodeId)} → ${nameOf(recorded.toNodeId)}, ${formatPaiseText(recorded.amountPaise)}.`,
+              ...placement(recorded.occurredAt),
+            ],
             recorded.warnings,
           )
         }
@@ -289,7 +300,7 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
               {...props}
               value={values.from}
               onChange={chooseSource}
-              choices={sources}
+              groups={groupSources(sources)}
               placeholder="Choose a source"
               data-first-field=""
             />
@@ -303,7 +314,7 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
                 {...props}
                 value={values.to}
                 onChange={(to) => patch({ to })}
-                choices={destinations}
+                groups={groupByKind(destinations)}
                 placeholder={values.from === "" ? "Choose a source first" : "Choose a destination"}
                 disabled={values.from === ""}
               />
@@ -341,7 +352,7 @@ export function TransactionForm({ nodes, today, editing, onFinished, announce }:
                       {...props}
                       value={leg.to}
                       onChange={(to) => setLeg(index, { to })}
-                      choices={destinations}
+                      groups={groupByKind(destinations)}
                       placeholder={values.from === "" ? "Choose a source first" : "Choose a destination"}
                       disabled={values.from === ""}
                     />
@@ -561,18 +572,18 @@ function Field({ idBase, label, optional, hint, errors, children }: FieldProps) 
 interface NodePickerProps extends ControlAttributes {
   value: string
   onChange: (id: string) => void
-  choices: PickerNode[]
+  groups: KindGroup[]
   placeholder: string
   disabled?: boolean
   "data-first-field"?: string
 }
 
 /** A select of nodes, grouped by kind. The placeholder is the empty choice: a destination is never chosen by default. */
-function NodePicker({ value, onChange, choices, placeholder, disabled, ...attributes }: NodePickerProps) {
+function NodePicker({ value, onChange, groups, placeholder, disabled, ...attributes }: NodePickerProps) {
   return (
     <select {...attributes} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className={inputClass}>
       <option value="">{placeholder}</option>
-      {groupByKind(choices).map((group) => (
+      {groups.map((group) => (
         <optgroup key={group.kind} label={group.label}>
           {group.nodes.map((node) => (
             <option key={node.id} value={node.id}>

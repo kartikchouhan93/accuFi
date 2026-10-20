@@ -1,5 +1,5 @@
 import type { LedgerNode, Transaction } from "@prisma/client"
-import { compareDates, fromDbDate, todayIn, type CalendarDate } from "@/domain/calendar-date"
+import { compareDates, fromDbDate, type CalendarDate } from "@/domain/calendar-date"
 import { formatPaise, type Paise } from "@/domain/money"
 import { validateTransaction, type RuleViolation } from "@/domain/transaction-rules"
 import { SPLIT_LEGS_MAX, SPLIT_LEGS_MIN } from "@/lib/schemas/transaction"
@@ -23,7 +23,7 @@ import {
   type UpdateDraft,
 } from "@/server/repositories/transaction-repository"
 import { inTransaction, type UnitOfWork } from "@/server/repositories/unit-of-work"
-import { findUserTimezone } from "@/server/repositories/user-repository"
+import { todayFor } from "@/server/services/clock"
 
 // The central write path: record, edit, delete and restore one movement of money. Everything the database cannot
 // enforce is enforced here: both nodes are the caller's (the repositories answer not-found for anyone else's, EC-8),
@@ -119,12 +119,6 @@ async function requireNode(userId: string, nodeId: string): Promise<LedgerNode> 
   const node = await findNodeById(userId, nodeId) // archived nodes included: history still points at them
   if (!node) throw new NotFoundError("node") // someone else's node is simply "not found"
   return node
-}
-
-export async function todayFor(userId: string): Promise<CalendarDate> {
-  const timezone = await findUserTimezone(userId)
-  if (timezone === null) throw new NotFoundError("user")
-  return todayIn(timezone)
 }
 
 /**
@@ -320,10 +314,10 @@ export async function editTransaction(
   const existingEnds = [existing.fromNodeId, existing.toNodeId]
   const introduced: RuleViolation[] = []
   if (input.fromNodeId !== undefined && !existingEnds.includes(from.id) && from.archivedAt !== null) {
-    introduced.push({ code: "ARCHIVED_NODE", message: "The source node is archived." })
+    introduced.push({ code: "ARCHIVED_SOURCE", message: "The source node is archived." })
   }
   if (input.toNodeId !== undefined && !existingEnds.includes(to.id) && to.archivedAt !== null) {
-    introduced.push({ code: "ARCHIVED_NODE", message: "The target node is archived." })
+    introduced.push({ code: "ARCHIVED_TARGET", message: "The target node is archived." })
   }
   if (introduced.length > 0) throw new InvalidTransactionError(introduced.map((v) => v.message).join(" "), introduced)
 
@@ -473,10 +467,13 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
   const replay = await storedSplit(userId, input.idempotencyKey, input.legs.length)
   if (replay) return replay
 
+  // The source is the same for every leg, so an archived source is one problem, reported once and without a leg: it is
+  // not any one leg's fault, and the form flags the source field for it.
   const violations = input.legs.flatMap((leg, index) =>
-    legalityViolations(from, destinations[index], leg.amount, input.occurredAt, false).map(
-      (violation): TransactionViolation => ({ ...violation, leg: index, message: `Leg ${index + 1}: ${violation.message}` }),
-    ),
+    legalityViolations(from, destinations[index], leg.amount, input.occurredAt, false).flatMap((violation): TransactionViolation[] => {
+      if (violation.code === "ARCHIVED_SOURCE") return index === 0 ? [violation] : []
+      return [{ ...violation, leg: index, message: `Leg ${index + 1}: ${violation.message}` }]
+    }),
   )
   if (violations.length > 0) throw new InvalidTransactionError(violations.map((v) => v.message).join(" "), violations)
 

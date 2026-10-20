@@ -133,6 +133,18 @@ describe("recordTransactionAction", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "overdraft_blocked" } })
   })
 
+  it("files an archived source under the source field and an archived target under the destination, so the right control is flagged", async () => {
+    const { user, bank, food, input } = await signedInWorld()
+    const old = await registry.makeNode(user.id, "ASSET", "Old account")
+    await prisma.ledgerNode.update({ where: { id: old.id }, data: { archivedAt: new Date() } })
+    const fromArchived = await actions.recordTransactionAction(input({ fromNodeId: old.id, toNodeId: food.id }))
+    expect(fromArchived).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { fromNodeId: ["The source node is archived."] } } })
+    expect(!fromArchived.ok && Object.keys(fromArchived.error.fieldErrors ?? {})).toEqual(["fromNodeId"])
+    const toArchived = await actions.recordTransactionAction(input({ fromNodeId: bank.id, toNodeId: old.id }))
+    expect(toArchived).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { toNodeId: ["The target node is archived."] } } })
+    expect(!toArchived.ok && Object.keys(toArchived.error.fieldErrors ?? {})).toEqual(["toNodeId"])
+  })
+
   it("answers not-found for another user's node", async () => {
     const { input } = await signedInWorld()
     const other = await signedInWorld() // the session is now the other user; ids below are the first user's
@@ -331,6 +343,21 @@ describe("recordSplitAction", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { "legs.1.toNodeId": [expect.stringContaining("INCOME_SOURCE")], "legs.2.toNodeId": [expect.stringContaining("itself")] } } })
     expect(!result.ok && Object.keys(result.error.fieldErrors ?? {}).sort()).toEqual(["legs.1.toNodeId", "legs.2.toNodeId"])
     expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(0)
+  })
+
+  it("flags an archived source of a split once, on the source field, whatever the number of legs", async () => {
+    const { user, food, clothes, body } = await splitWorld()
+    const old = await registry.makeNode(user.id, "ASSET", "Old account")
+    await prisma.ledgerNode.update({ where: { id: old.id }, data: { archivedAt: new Date() } })
+    const legs = [
+      { toNodeId: food.id, amount: "60" },
+      { toNodeId: clothes.id, amount: "40" },
+    ]
+    const result = await actions.recordSplitAction(body({ fromNodeId: old.id, legs }))
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "invalid", message: "The source node is archived.", fieldErrors: { fromNodeId: ["The source node is archived."] } },
+    })
   })
 
   it("reports the warnings once, not once per leg", async () => {

@@ -1,5 +1,5 @@
 import type { Transaction } from "@prisma/client"
-import { fromDbDate, monthRange, todayIn } from "@/domain/calendar-date"
+import { fromDbDate, monthRange } from "@/domain/calendar-date"
 import { fieldErrorsOf } from "@/lib/field-errors"
 import { serialisePaise } from "@/lib/serialise"
 import { transactionQuerySchema } from "@/lib/schemas/transaction"
@@ -12,7 +12,6 @@ import {
   type TransactionScreen,
 } from "@/lib/transaction-list-view"
 import { toTransactionView } from "@/lib/transaction-view"
-import { NotFoundError } from "@/server/repositories/errors"
 import {
   DEFAULT_PAGE_SIZE,
   findGroupMembers,
@@ -20,7 +19,7 @@ import {
   sumBalances,
   type TransactionFilter,
 } from "@/server/repositories/transaction-repository"
-import { findUserTimezone } from "@/server/repositories/user-repository"
+import { todayFor } from "@/server/services/clock"
 import { listAllNodes } from "@/server/services/node-service"
 import type { z } from "zod"
 
@@ -97,9 +96,7 @@ export async function loadTransactionPage(userId: string, filter: ListFilter, cu
  * in `problems`.
  */
 export async function loadTransactionScreen(userId: string, query: Record<string, string | undefined>): Promise<TransactionScreen> {
-  const timezone = await findUserTimezone(userId)
-  if (timezone === null) throw new NotFoundError("user")
-  const today = todayIn(timezone)
+  const today = await todayFor(userId)
   const month = monthRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)))
   const asked = "from" in query || "to" in query ? query : { ...query, from: month.start, to: month.end }
 

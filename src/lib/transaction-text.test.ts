@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { calendarDate } from "../domain/calendar-date"
 import { parseRupees } from "../domain/money"
-import { describeTally, divideEqually, formatDay, paiseTextToRupees, parseTags, sumPaiseText } from "./transaction-text"
+import { describeTally, divideEqually, formatDay, outsideListed, paiseTextToRupees, parseTags, sumPaiseText } from "./transaction-text"
 
 describe("formatDay", () => {
   it("reads the day from the text, so no timezone can move it", () => {
@@ -65,5 +65,27 @@ describe("paiseTextToRupees and sumPaiseText", () => {
     expect(sumPaiseText(["3334", "3333", "3333"])).toBe("10000")
     expect(sumPaiseText(["9007199254740993", "1"])).toBe("9007199254740994")
     expect(sumPaiseText([])).toBe("0")
+  })
+})
+
+describe("outsideListed", () => {
+  const month = { from: "2026-10-01", to: "2026-10-31" }
+
+  it("is true for a day before the first or after the last listed day", () => {
+    expect(outsideListed(calendarDate("2026-03-05"), month)).toBe(true)
+    expect(outsideListed(calendarDate("2026-11-01"), month)).toBe(true)
+  })
+
+  it("is false for a day inside the range, the end days included", () => {
+    expect(outsideListed(calendarDate("2026-10-01"), month)).toBe(false)
+    expect(outsideListed(calendarDate("2026-10-20"), month)).toBe(false)
+    expect(outsideListed(calendarDate("2026-10-31"), month)).toBe(false)
+  })
+
+  it("treats a blank bound as no bound, and an unusable one as none either", () => {
+    expect(outsideListed(calendarDate("2001-01-01"), { from: "", to: "" })).toBe(false)
+    expect(outsideListed(calendarDate("2026-03-05"), { from: "", to: "2026-03-31" })).toBe(false)
+    expect(outsideListed(calendarDate("2026-04-05"), { from: "", to: "2026-03-31" })).toBe(true)
+    expect(outsideListed(calendarDate("2026-03-05"), { from: "2026-02-30", to: "" })).toBe(false)
   })
 })

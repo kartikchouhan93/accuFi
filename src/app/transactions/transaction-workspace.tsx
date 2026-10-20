@@ -64,6 +64,7 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
             key={editing ? editing.id : "new"}
             nodes={screen.nodes}
             today={screen.today}
+            listed={screen.filter}
             editing={editing}
             onFinished={() => setEditing(null)}
             announce={announce}

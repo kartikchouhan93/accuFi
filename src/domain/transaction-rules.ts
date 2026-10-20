@@ -16,7 +16,8 @@ export interface TransactionDraft {
   occurredAt: CalendarDate
 }
 
-export type ViolationCode = "SAME_NODE" | "NON_POSITIVE_AMOUNT" | "ILLEGAL_FLOW" | "ARCHIVED_NODE"
+// An archived node is two codes, one per end, because they are two different controls to fix: a form flags the one that is wrong.
+export type ViolationCode = "SAME_NODE" | "NON_POSITIVE_AMOUNT" | "ILLEGAL_FLOW" | "ARCHIVED_SOURCE" | "ARCHIVED_TARGET"
 
 export interface RuleViolation {
   code: ViolationCode
@@ -48,10 +49,10 @@ export function validateTransaction(
   }
   if (!allowArchived) {
     if (fromNode.archivedAt !== null) {
-      violations.push({ code: "ARCHIVED_NODE", message: "The source node is archived." })
+      violations.push({ code: "ARCHIVED_SOURCE", message: "The source node is archived." })
     }
     if (toNode.archivedAt !== null) {
-      violations.push({ code: "ARCHIVED_NODE", message: "The target node is archived." })
+      violations.push({ code: "ARCHIVED_TARGET", message: "The target node is archived." })
     }
   }
 

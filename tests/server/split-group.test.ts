@@ -220,7 +220,17 @@ describe("recordSplit", () => {
     const { user, bank, groceries, clothes } = await setup()
     await archiveLedgerNode(user.id, clothes.id)
     const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)]))
-    expect((error as InvalidTransactionError).violations.map((v) => [v.code, v.leg])).toEqual([["ARCHIVED_NODE", 1]])
+    expect((error as InvalidTransactionError).violations.map((v) => [v.code, v.leg])).toEqual([["ARCHIVED_TARGET", 1]])
+    expect(await groupCount(user.id)).toBe(0)
+  })
+
+  it("reports an archived source once, for the form as a whole, not once per leg", async () => {
+    const { user, bank, groceries, clothes } = await setup()
+    await archiveLedgerNode(user.id, bank.id)
+    const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n), leg(groceries, 300n)]))
+    const violations = (error as InvalidTransactionError).violations
+    expect(violations.map((v) => [v.code, v.leg, v.message])).toEqual([["ARCHIVED_SOURCE", undefined, "The source node is archived."]])
+    expect((error as InvalidTransactionError).message).toBe("The source node is archived.")
     expect(await groupCount(user.id)).toBe(0)
   })
 

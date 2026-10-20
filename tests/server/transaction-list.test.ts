@@ -174,7 +174,7 @@ describe("loadTransactionScreen", () => {
     await prisma.ledgerNode.update({ where: { id: bank.id }, data: { archivedAt: new Date() } })
     const screen = await loadTransactionScreen(user.id, { from: "", to: "" })
     expect(() => JSON.stringify(screen)).not.toThrow()
-    expect(screen.nodes.find((node) => node.id === bank.id)).toMatchObject({ name: "Bank", kind: "ASSET", archived: true, system: false })
+    expect(screen.nodes.find((node) => node.id === bank.id)).toMatchObject({ name: "Bank", kind: "ASSET", archived: true, systemRole: null })
     expect(screen.nodes).toHaveLength(4)
   })
 

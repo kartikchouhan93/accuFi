@@ -1,4 +1,4 @@
-import type { CalendarDate } from "../domain/calendar-date"
+import { calendarDate, CalendarDateError, compareDates, type CalendarDate } from "../domain/calendar-date"
 import { allocate, formatPaise, MoneyParseError, parseRupees, type Paise } from "../domain/money"
 import { deserialisePaise, serialisePaise } from "./serialise"
 
@@ -68,4 +68,24 @@ export function parseTags(text: string): string[] {
     .split(",")
     .map((tag) => tag.trim())
     .filter((tag) => tag !== "")
+}
+
+function tryDay(text: string): CalendarDate | null {
+  try {
+    return calendarDate(text)
+  } catch (error) {
+    if (error instanceof CalendarDateError) return null
+    throw error
+  }
+}
+
+/**
+ * Whether `date` is a day the list is not showing: before its first day or after its last. A bound that is blank or not
+ * a usable date is no bound, as the list treats it. The form uses this to say that an entry it just recorded is not on
+ * the screen, so a backdated entry does not look like one that failed to save.
+ */
+export function outsideListed(date: CalendarDate, range: { from: string; to: string }): boolean {
+  const from = tryDay(range.from)
+  const to = tryDay(range.to)
+  return (from !== null && compareDates(date, from) < 0) || (to !== null && compareDates(date, to) > 0)
 }
