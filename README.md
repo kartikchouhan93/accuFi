@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AccuFi
 
-## Getting Started
+Personal finance tracker. Next.js 16 (App Router) + Prisma 6 + PostgreSQL 16, run on Bun.
 
-First, run the development server:
+Product requirements and design: `docs/superpowers/`.
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.example .env          # then edit the secrets
+bun install
+docker compose up --build -d  # postgres:16 + the app (http://localhost:3000)
+bun run test                  # smoke test hits the running stack via APP_URL
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+If host port 3000 is taken, set `APP_PORT=3100` (and `APP_URL=http://localhost:3100`) in `.env`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Local development without the app container:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+docker compose up -d postgres
+bunx prisma migrate dev       # or: bun run db:migrate
+bun run dev
+```
 
-## Learn More
+Scripts: `dev`, `build`, `start`, `lint`, `test`, `test:watch`, `test:e2e`, `db:migrate`, `db:deploy`, `db:studio`.
+Always use Bun (`bun install`, `bun run ...`); do not use npm.
 
-To learn more about Next.js, take a look at the following resources:
+### End-to-end tests
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`bun run test:e2e` drives the real screens in a browser (Playwright). It is separate from `bun run test` because it boots a server and a browser. It uses the installed Google Chrome (no browser download), starts its own `next dev` on port `E2E_PORT` (default 3200, not `APP_PORT`, which belongs to the Docker stack), and uses the `<database>_test` database like the Vitest suites, never the dev database. A focused run: `bunx playwright test tests/e2e/nodes.spec.ts`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deployment
 
-## Deploy on Vercel
+- **`AUTH_URL`** (compose passes `APP_URL` as `AUTH_URL`) must be the public URL of the app. The server refuses to start in production without it, because Auth.js would otherwise build redirects from the client-supplied `Host` header.
+- **Terminate TLS in a reverse proxy.** The session cookie is `Secure` in production, so it is only sent over HTTPS (browsers also accept it on `http://localhost`).
+- **Tell the app about your proxy: `TRUSTED_PROXY_HOPS`.** Login and signup are rate limited per client address and email. The address comes from `X-Forwarded-For`, which any client can forge, so it is **ignored unless you set `TRUSTED_PROXY_HOPS`** to the number of reverse proxies in front of the app (default `0`: the app is reached directly and every client shares the address "unknown"). Set it to `1` behind one proxy that appends the real client address (nginx `proxy_add_x_forwarded_for`, Caddy, Traefik), `2` behind two, and so on. Setting it higher than the real number lets a client choose its own address. Each account is also capped independently of address, so how many wrong guesses lock an account for 15 minutes depends on that setting: with the default (`0`) every client shares the address "unknown", the per-address-and-email limit is in effect a per-account limit, and the threshold is **10**; once you declare a proxy, one address can make 10 guesses and the account-wide cap of **30** (across all addresses) becomes the threshold. Signup is capped per address.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Runtime spike outcome (spec §9.1)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Question: does Next.js 16 + Prisma 6 work on the Bun runtime, in Docker, against Postgres 16?
+
+**Result: yes. The Bun runtime works; the Node 22 fallback was NOT needed.**
+
+- Bun 1.4.3, Next.js 16.1.3, Prisma / @prisma/client 6.19.3, Vitest 5.0.5, PostgreSQL 16 (`postgres:16-alpine`).
+- The container image is `oven/bun:1.4.3` (pinned to the validated version) end to end, and the Dockerfile runs `bun --bun run build` / `bun --bun run start` so the Bun runtime is explicit rather than relying on the image's `node` symlink. Inside it `node` resolves to Bun (`/usr/local/bun-node-fallback-bin/node -> bun`), so `next start` runs on the Bun runtime (verified: the server process executable is `/usr/local/bin/bun`).
+- `bunx prisma generate`, `bunx prisma migrate deploy` (on container start, against a fresh volume) and `bun run build` all succeed inside the container.
+- `GET /api/health` returns `{"status":"ok","database":"up"}` from the container, and `503 {"status":"error","database":"down"}` when Postgres is stopped.
+- On the host: `bun run dev`, `bun --bun run dev`, `bun run build`, `bunx prisma generate` and `bunx prisma migrate dev --name init` all work. Note that without `--bun`, host commands run under the host's Node via the tools' shebangs; only the container exercises the pure-Bun runtime.
+- Vitest runs fine under Bun (`bun run test`); no switch to `bun test` was needed.
+- Prisma's own postinstall is not blocked on Bun 1.4.3 (`@prisma/client` is on Bun's default trusted list), but nothing here depends on that list: `package.json` has a `postinstall` of `prisma generate`, which a project's own scripts always run, so a fresh `bun install` leaves the generated client in place for `tsc` and the tests. The Dockerfile installs with `--ignore-scripts` (no schema is copied yet at that stage) and runs `prisma generate` in its build stage.

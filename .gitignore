@@ -39,3 +39,16 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# superpowers SDD scratch workspace
+.superpowers/
+
+# keep the example env file tracked
+!.env.example
+
+# playwright
+/test-results/
+/playwright-report/
+
+# local preview account notes (never commit)
+.preview-account.local

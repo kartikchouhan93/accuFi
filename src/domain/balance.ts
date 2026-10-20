@@ -1,0 +1,91 @@
+// Net worth: what the user owns minus what they owe. Spec §5 — reports classify by node KIND, never by the
+// sign of an amount, which is why income and expense totals (flows, not holdings) never enter net worth and a
+// bank-to-bank transfer cannot be double-counted as income.
+
+import type { LedgerKind } from "./ledger-kind"
+import type { Paise } from "./money"
+
+export interface NodeBalance {
+  nodeId: string
+  kind: LedgerKind
+  balance: Paise
+  // Archived nodes are reported, and netWorth counts them: archiving hides a node from pickers and lists, it does not
+  // make its balance disappear (EC-32). The flag exists so a display can still hide them; arithmetic never reads it.
+  archived: boolean
+}
+
+export interface NetWorth {
+  assets: Paise
+  investments: Paise
+  /** The positive magnitude owed: the negation of the summed liability balances (a UI shows "Liabilities ₹45,000"). */
+  liabilities: Paise
+  total: Paise
+  // True when at least one investment could not be valued and so is missing from `total`.
+  isPartial: boolean
+  unvaluedNodeIds: string[]
+}
+
+/**
+ * net worth = Σ ASSET balances + Σ INVESTMENT current values + Σ LIABILITY balances
+ *
+ * Every balance is inflows − outflows, with no per-kind special case (spec §4.2), so a liability you owe on is
+ * NEGATIVE: a card spend is LIABILITY → EXPENSE, an outflow from the card. Net worth therefore ADDS the liability
+ * balances; subtracting an already-negative balance would make borrowing look like wealth. `liabilities` in the result
+ * is the same sum negated, a positive magnitude owed, so a display can read assets + investments − liabilities.
+ *
+ * `valuations` maps an investment node to its current market value:
+ *   - absent from the map  → falls back to its contribution balance (all of M1's behaviour);
+ *   - present with a Paise → that value is used instead of the contribution balance;
+ *   - present with `null`  → the node cannot be valued: it is left out of the total entirely (neither zero nor
+ *     cost, either of which would state a figure the user would believe and that would be wrong), listed in
+ *     `unvaluedNodeIds`, and the result is flagged `isPartial`.
+ */
+export function netWorth(
+  balances: readonly NodeBalance[],
+  valuations: ReadonlyMap<string, Paise | null> = new Map(),
+): NetWorth {
+  let assets = 0n
+  let investments = 0n
+  let liabilityBalances = 0n
+  const unvaluedNodeIds: string[] = []
+
+  for (const { nodeId, kind, balance } of balances) {
+    switch (kind) {
+      case "ASSET":
+        assets += balance
+        break
+      case "LIABILITY":
+        liabilityBalances += balance
+        break
+      case "INVESTMENT": {
+        // `has`, not truthiness: a null value and a 0n value are both falsy, and neither means "absent".
+        const value = valuations.has(nodeId) ? valuations.get(nodeId) : balance
+        if (value === null || value === undefined) {
+          unvaluedNodeIds.push(nodeId)
+        } else {
+          investments += value
+        }
+        break
+      }
+      case "INCOME_SOURCE":
+      case "EXPENSE":
+        // Flows, not holdings.
+        break
+      default: {
+        // Every kind is decided above. A new LedgerKind makes `kind` something other than `never` here, which is a
+        // compile error, so it cannot silently vanish from net worth; the throw is the same refusal at run time.
+        const undecided: never = kind
+        throw new Error(`netWorth has no rule for the kind ${String(undecided)}`)
+      }
+    }
+  }
+
+  return {
+    assets,
+    investments,
+    liabilities: -liabilityBalances,
+    total: assets + investments + liabilityBalances,
+    isPartial: unvaluedNodeIds.length > 0,
+    unvaluedNodeIds,
+  }
+}

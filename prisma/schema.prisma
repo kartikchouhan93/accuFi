@@ -1,0 +1,167 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// createdAt defaults to the database clock (dbgenerated now()), never the app's, so app/DB clock skew cannot reorder
+// history (EC-66). updatedAt is different: `@updatedAt` makes Prisma supply a value itself on create and on update, so
+// the column default never applies. The database clock is enforced by the BEFORE INSERT OR UPDATE trigger on
+// "Transaction" (migration updated_at_on_insert_and_keyset_index), which overwrites whatever the statement sent.
+
+// Everything money can come from, sit in, or go to is a ledger node of one of these kinds.
+enum LedgerKind {
+  INCOME_SOURCE
+  ASSET
+  INVESTMENT
+  EXPENSE
+  LIABILITY
+}
+
+enum AssetSubtype {
+  SAVINGS
+  CURRENT
+  CASH
+  WALLET
+}
+
+enum LiabilitySubtype {
+  CREDIT_CARD
+  LOAN
+}
+
+// How an investment is valued (spec §7.1): lots of quantity x unit cost; a single lot of quantity 1;
+// or net contributions with no lots or prices.
+enum ValuationMode {
+  QUANTITY
+  LUMP
+  CONTRIBUTION_ONLY
+}
+
+// Which lots a disposal consumes first (spec §7.5): FIFO by default.
+enum LotMethod {
+  FIFO
+  LIFO
+  HIGHEST_COST_FIRST
+}
+
+// Nodes the system creates itself, never the user. Mirrors SystemNodeRole in src/domain/ledger-kind.ts
+// (pinned by tests/db/enum-parity.test.ts).
+enum SystemNodeRole {
+  OPENING_BALANCE
+  OPENING_BALANCE_CONTRA
+  REALISED_GAIN
+  REALISED_LOSS
+}
+
+// Only MANUAL_SPLIT is reachable in M1; the rest are declared now because adding an enum value later is a migration.
+enum GroupKind {
+  MANUAL_SPLIT
+  DISPOSAL
+  EMI
+}
+
+model User {
+  id                      String   @id @default(cuid())
+  email                   String   @unique
+  passwordHash            String
+  timezone                String   @default("Asia/Kolkata")
+  financialYearStartMonth Int      @default(4)
+  stalePriceDays          Int      @default(30)
+  createdAt               DateTime @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  nodes             LedgerNode[]
+  transactionGroups TransactionGroup[]
+  transactions      Transaction[]
+}
+
+// One table for every node of the ledger; `kind` says which. There is deliberately no balance column
+// (not even an opening balance): a balance is always the sum of the node's transactions.
+model LedgerNode {
+  id               String            @id @default(cuid())
+  userId           String
+  kind             LedgerKind
+  name             String
+  parentId         String?
+  institution      String?
+  lastFour         String?
+  assetSubtype     AssetSubtype?
+  liabilitySubtype LiabilitySubtype?
+  creditLimitPaise BigInt?
+  statementDay     Int?
+  dueDay           Int?
+  valuationMode    ValuationMode?
+  unitLabel        String?
+  lotMethod        LotMethod?
+  stalePriceDays   Int? // per-node override of User.stalePriceDays
+  blockNegative    Boolean           @default(false)
+  systemRole       SystemNodeRole?
+  archivedAt       DateTime?         @db.Timestamptz(3)
+  createdAt        DateTime          @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user     User          @relation(fields: [userId], references: [id])
+  parent   LedgerNode?   @relation("NodeTree", fields: [parentId], references: [id])
+  children LedgerNode[]  @relation("NodeTree")
+  outgoing Transaction[] @relation("TransactionFrom")
+  incoming Transaction[] @relation("TransactionTo")
+
+  // NULLs are distinct in Postgres, so any number of ordinary nodes (systemRole null) coexist; at most one system node per role.
+  @@unique([userId, systemRole])
+  @@index([userId, kind])
+}
+
+// Ties the transactions of one logical event together (a split bill, a disposal, an EMI schedule).
+model TransactionGroup {
+  id        String    @id @default(cuid())
+  userId    String
+  kind      GroupKind
+  createdAt DateTime  @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user         User          @relation(fields: [userId], references: [id])
+  transactions Transaction[]
+}
+
+// One movement of money from one node to another. An opening balance is just a transaction from the
+// system OPENING_BALANCE node.
+model Transaction {
+  id             String    @id @default(cuid())
+  userId         String
+  fromNodeId     String
+  toNodeId       String
+  amountPaise    BigInt
+  occurredAt     DateTime  @db.Date // a calendar day, not an instant
+  note           String?
+  tags           String[]
+  groupId        String?
+  version        Int       @default(0)
+  idempotencyKey String?
+  deletedAt      DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(dbgenerated("now()")) @db.Timestamptz(3)
+  updatedAt      DateTime  @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
+
+  user     User              @relation(fields: [userId], references: [id])
+  fromNode LedgerNode        @relation("TransactionFrom", fields: [fromNodeId], references: [id])
+  toNode   LedgerNode        @relation("TransactionTo", fields: [toNodeId], references: [id])
+  group    TransactionGroup? @relation(fields: [groupId], references: [id])
+
+  // NULLs are distinct, so any number of transactions without an idempotency key coexist.
+  @@unique([userId, idempotencyKey])
+  @@index([userId, toNodeId, occurredAt])
+  @@index([userId, fromNodeId, occurredAt])
+  @@index([userId, occurredAt, id]) // the listing order: (occurredAt, id). The keyset cursor is filtered, not bounded, by it
+}
+
+// Fixed-window attempt counters for the auth endpoints (spec §9.5), held in Postgres so they survive a restart
+// and need no new infrastructure. `key` is a SHA-256 of scope + IP + email, never the values themselves.
+// `windowStart` is always supplied by consumeAttempt from the database clock (no column default), and the window is
+// evaluated by the database too. The index serves the sweep that deletes expired windows.
+model RateLimitCounter {
+  key         String   @id
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int
+
+  @@index([windowStart])
+}

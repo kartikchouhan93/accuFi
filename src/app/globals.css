@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/*
+ * The look of AccuFi is an accountant's columnar pad: pale green analysis paper, ink in two colours (blue for what you
+ * do, red for what is owed or lost, the way a bookkeeper marks a negative), figures in tabular columns, and a double
+ * rule for a total. Names run to their figures along a dotted leader. Everything else stays quiet so those few things
+ * read as the identity.
+ */
+
+:root {
+  --paper: #e6eedf;
+  --sheet: #f4f8ee;
+  --ink: #17332a;
+  --ink-soft: #4a6557;
+  --rule: #b3c8ad;
+  --rule-strong: #658a6d;
+  --pen: #1d3cae;
+  --pen-ink: #f4f8ee;
+  --red: #a8271c;
+  --red-wash: #f6dcd6;
+  --amber-wash: #f6e8bd;
+  --amber-ink: #5c4300;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0f1d17;
+    --sheet: #162720;
+    --ink: #e3eedc;
+    --ink-soft: #9db5a5;
+    --rule: #2f4b3c;
+    --rule-strong: #5f8d6c;
+    --pen: #9bb0ff;
+    --pen-ink: #0f1d17;
+    --red: #ff9486;
+    --red-wash: #3b1d19;
+    --amber-wash: #3a3014;
+    --amber-ink: #f1d98a;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-sheet: var(--sheet);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-pen: var(--pen);
+  --color-pen-ink: var(--pen-ink);
+  --color-red: var(--red);
+  --color-red-wash: var(--red-wash);
+  --color-amber-wash: var(--amber-wash);
+  --color-amber-ink: var(--amber-ink);
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* Keyboard focus is always visible, in the pen colour, on every control. */
+:focus-visible {
+  outline: 2px solid var(--pen);
+  outline-offset: 2px;
+}
+
+/* Figures line up in columns: same width for every digit. */
+.figures {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* A total: a rule above and a double rule below, as a bookkeeper draws the line under a sum. */
+.double-rule {
+  border-bottom: 4px double var(--ink);
+}
+
+/* The dotted run from a name to its figure. */
+.leader {
+  flex: 1 1 auto;
+  min-width: 1.25rem;
+  border-bottom: 2px dotted var(--rule-strong);
+  transform: translateY(-0.3em);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
