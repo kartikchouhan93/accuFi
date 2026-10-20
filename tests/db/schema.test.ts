@@ -359,23 +359,26 @@ describe("investment lots, lot consumptions and price snapshots", () => {
     await expectUniqueViolation(prisma.investmentLot.create({ data: lotData(tx.id) }))
   })
 
-  it("rejects a consumption with a zero quantity or a non-positive cost basis", async () => {
+  it("rejects a consumption with a zero or negative quantity or a negative cost basis, but accepts a zero basis", async () => {
     const { buy, lotData } = await makeInvestor()
     const lot = await prisma.investmentLot.create({ data: lotData((await buy()).id) })
-    const sale = await buy()
-    const consume = (over: Partial<Prisma.LotConsumptionUncheckedCreateInput>) =>
+    const consume = async (over: Partial<Prisma.LotConsumptionUncheckedCreateInput>) =>
       prisma.lotConsumption.create({
         data: {
           userId: lot.userId,
           lotId: lot.id,
-          transactionId: sale.id,
+          transactionId: (await buy()).id,
           quantity: new Prisma.Decimal("1"),
           costBasisPaise: 700_000n,
           ...over,
         },
       })
     await expectCheckViolation(consume({ quantity: new Prisma.Decimal("0") }))
-    await expectCheckViolation(consume({ costBasisPaise: 0n }))
+    await expectCheckViolation(consume({ quantity: new Prisma.Decimal("-1") }))
+    await expectCheckViolation(consume({ costBasisPaise: -1n }))
+    // The allocator rounds a tiny partial take (1 of 3 units costing 1 paisa) to a 0-paise basis and Task 5 stores it.
+    const zero = await consume({ costBasisPaise: 0n })
+    expect(zero.costBasisPaise).toBe(0n)
   })
 
   it("rejects the same (lot, disposal transaction) consumption twice, but allows one disposal to consume two lots", async () => {
