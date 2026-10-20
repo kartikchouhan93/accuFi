@@ -12,7 +12,7 @@ import type { FailureText } from "@/app/nodes/node-failure"
 import type { ActionFailure } from "@/server/action-support"
 import { editTransactionAction, recordSplitAction, recordTransactionAction } from "./actions"
 import type { Announce } from "./notice"
-import { destinationChoices, groupByKind, groupSources, nodeLabel, sourceChoices, type KindGroup } from "./pickers"
+import { destinationChoices, groupWithSetup, nodeLabel, sourceChoices, type KindGroup } from "./pickers"
 import { describeTransactionFailure } from "./transaction-failure"
 
 // One form for every flow: salary into a bank, groceries on a card, paying the card, moving money between accounts. They
@@ -300,7 +300,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
               {...props}
               value={values.from}
               onChange={chooseSource}
-              groups={groupSources(sources)}
+              groups={groupWithSetup(sources)}
               placeholder="Choose a source"
               data-first-field=""
             />
@@ -314,7 +314,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
                 {...props}
                 value={values.to}
                 onChange={(to) => patch({ to })}
-                groups={groupByKind(destinations)}
+                groups={groupWithSetup(destinations)}
                 placeholder={values.from === "" ? "Choose a source first" : "Choose a destination"}
                 disabled={values.from === ""}
               />
@@ -352,7 +352,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
                       {...props}
                       value={leg.to}
                       onChange={(to) => setLeg(index, { to })}
-                      groups={groupByKind(destinations)}
+                      groups={groupWithSetup(destinations)}
                       placeholder={values.from === "" ? "Choose a source first" : "Choose a destination"}
                       disabled={values.from === ""}
                     />

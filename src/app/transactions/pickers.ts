@@ -3,35 +3,40 @@ import { KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import type { PickerNode } from "@/lib/transaction-list-view"
 
 // Which nodes the form offers. A new entry may use any live node of the user's own; archived nodes (EC-14) are never
-// offered. The application's own system nodes are not offered either, with one exception: the two opening-balance nodes
-// are offered as SOURCES, so a user who forgot an opening balance can record one later (EC-36), and they go only where
-// the node form puts one, an account or a card. Realised gain and loss belong to disposals (M2) and are never offered.
+// offered. The application's own system nodes are not offered either, except the two that carry an opening position
+// (spec "Opening position"), which are mirror images, so a user who forgot one can record it later (EC-36):
+//   - Opening Balance (an income source) is a SOURCE only: a positive opening posts Opening Balance -> account or card.
+//   - Opening Balance Contra (an expense) is a DESTINATION only: a negative opening, a card already owed on or an
+//     overdrawn account, posts account or card -> Opening Balance Contra.
+// Realised gain and loss belong to disposals (M2), which post them themselves; they are never offered in either position.
 // A transaction being edited is the other exception: the nodes it already names stay on offer however they are classed,
-// so a historical row that points at an archived account, or at the contra node, can still be corrected. `keep` is those ids.
+// in either position, so a historical row that points at an archived account, or at a system node, can still be corrected.
+// `keep` is those ids.
 //
 // The destinations are what the flow rules (spec §5, `isFlowAllowed`) permit from the chosen source, and never the
 // source itself. The server checks all of this again; the picker only stops the user being offered what would be refused.
 
-const OPENING_ROLES: ReadonlySet<SystemNodeRole> = new Set(["OPENING_BALANCE", "OPENING_BALANCE_CONTRA"])
-// What an opening balance may go to: the node form's own rule (a node that holds a balance a user can state up front).
-const OPENING_TARGET_KINDS: ReadonlySet<LedgerKind> = new Set(["ASSET", "LIABILITY"])
+// What an opening position goes to or comes from: the node form's own rule (a node that holds a balance a user can state up front).
+const OPENING_KINDS: ReadonlySet<LedgerKind> = new Set(["ASSET", "LIABILITY"])
 
-const isOpening = (node: PickerNode) => node.systemRole !== null && OPENING_ROLES.has(node.systemRole)
+const hasRole = (node: PickerNode, role: SystemNodeRole) => node.systemRole === role
+const isOpening = (node: PickerNode) => hasRole(node, "OPENING_BALANCE") || hasRole(node, "OPENING_BALANCE_CONTRA")
 const isOrdinary = (node: PickerNode) => !node.archived && node.systemRole === null
 
 export const sourceChoices = (nodes: readonly PickerNode[], keep: readonly string[] = []): PickerNode[] =>
-  nodes.filter((node) => keep.includes(node.id) || isOrdinary(node) || (!node.archived && isOpening(node)))
+  nodes.filter((node) => keep.includes(node.id) || isOrdinary(node) || (!node.archived && hasRole(node, "OPENING_BALANCE")))
 
 export function destinationChoices(nodes: readonly PickerNode[], sourceId: string, keep: readonly string[] = []): PickerNode[] {
   const source = nodes.find((node) => node.id === sourceId)
-  if (!source) return []
-  return nodes.filter(
-    (node) =>
-      node.id !== source.id &&
-      (keep.includes(node.id) || isOrdinary(node)) &&
-      isFlowAllowed(source.kind, node.kind) &&
-      (!isOpening(source) || OPENING_TARGET_KINDS.has(node.kind)),
-  )
+  if (!source || hasRole(source, "OPENING_BALANCE_CONTRA")) return []
+  return nodes.filter((node) => {
+    if (node.id === source.id || !isFlowAllowed(source.kind, node.kind)) return false
+    if (keep.includes(node.id)) return true
+    // Opening Balance goes only to an account or a card; the contra comes only from one.
+    if (hasRole(source, "OPENING_BALANCE")) return isOrdinary(node) && OPENING_KINDS.has(node.kind)
+    if (!node.archived && hasRole(node, "OPENING_BALANCE_CONTRA")) return OPENING_KINDS.has(source.kind)
+    return isOrdinary(node)
+  })
 }
 
 export interface KindGroup {
@@ -52,8 +57,8 @@ export function groupByKind(nodes: readonly PickerNode[]): KindGroup[] {
   })).filter((group) => group.nodes.length > 0)
 }
 
-/** The same for the source picker: the opening-balance nodes come first in a group of their own, "Setup", apart from the ordinary kinds. */
-export function groupSources(nodes: readonly PickerNode[]): KindGroup[] {
+/** The same with the opening-balance nodes first, in a group of their own, "Setup", apart from the ordinary kinds. */
+export function groupWithSetup(nodes: readonly PickerNode[]): KindGroup[] {
   const setup = nodes.filter(isOpening).sort(byName)
   const rest = groupByKind(nodes.filter((node) => !isOpening(node)))
   return setup.length > 0 ? [{ kind: "SETUP", label: "Setup", nodes: setup }, ...rest] : rest

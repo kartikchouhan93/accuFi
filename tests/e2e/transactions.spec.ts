@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { Page } from "@playwright/test"
 import { parseRupees } from "@/domain/money"
 import { prisma } from "@/server/db"
+import { sumBalances } from "@/server/repositories/transaction-repository"
 import { archiveLedgerNode } from "@/server/services/node-service"
 import { editTransaction, recordSplit } from "@/server/services/transaction-service"
 import { expect, test } from "./fixtures"
@@ -527,7 +528,7 @@ test("records an opening balance against an account that has none, from the Setu
   const to = form(page).getByLabel("To", { exact: true })
 
   // The opening-balance node is offered, apart from the other sources, and only as a source.
-  await expect(from.locator("optgroup[label='Setup'] option")).toHaveText(["Opening Balance", "Opening Balance Contra"])
+  await expect(from.locator("optgroup[label='Setup'] option")).toHaveText(["Opening Balance"])
   await from.selectOption({ label: "Opening Balance" })
   const destinations = await optionsOf(to)
   expect(destinations).toContain("HDFC Savings")
@@ -542,23 +543,55 @@ test("records an opening balance against an account that has none, from the Setu
   await expect(balances(page).getByRole("listitem").filter({ hasText: "HDFC Savings" })).toContainText("₹25,000.00")
 })
 
-test("never offers the opening-balance contra or any system node as a destination", async ({ session: { page, userId } }) => {
+test("records a forgotten negative opening position on a card, against the contra node, and the card then shows it owed", async ({ session: { page, userId } }) => {
   await account(userId, "HDFC Savings")
-  await card(userId, "Axis card")
-  await incomeSource(userId, "Salary")
+  await card(userId, "Axis card") // created owing nothing; the user now remembers it carried a balance
   await page.goto("/transactions")
-  const from = form(page).getByLabel("From", { exact: true })
+  const cardLine = balances(page).getByRole("listitem").filter({ hasText: "Axis card" })
+  await expect(cardLine).toContainText("₹0.00")
+
+  // A negative opening position posts card -> Opening Balance Contra: the contra is a destination, in Setup.
+  await form(page).getByLabel("From", { exact: true }).selectOption({ label: "Axis card" })
   const to = form(page).getByLabel("To", { exact: true })
-  for (const source of ["HDFC Savings", "Axis card", "Salary", "Groceries"]) {
-    await from.selectOption({ label: source })
-    const offered = await optionsOf(to)
-    for (const name of ["Opening Balance", "Opening Balance Contra", "Realised Gain", "Realised Loss"]) expect(offered, `${source} -> ${name}`).not.toContain(name)
-  }
-  // Realised gain and loss are not sources either: disposals (M2) post them, not this form.
-  const sources = await optionsOf(from)
-  expect(sources).not.toContain("Realised Gain")
-  expect(sources).not.toContain("Realised Loss")
+  await expect(to.locator("optgroup[label='Setup'] option")).toHaveText(["Opening Balance Contra"])
+  await to.selectOption({ label: "Opening Balance Contra" })
+  await form(page).getByLabel("Amount (₹)").fill("12,000")
+  await form(page).getByLabel("Note").fill("Opening balance")
+  await form(page).getByRole("button", { name: "Record transaction" }).click()
+
+  await expect(page.getByRole("status")).toContainText("Recorded Axis card → Opening Balance Contra, ₹12,000.00")
+  // The balance is negative by the amount, which the screen reads as money owed, once.
+  await expect(cardLine).toContainText("₹12,000.00 owed")
+  const stored = await prisma.transaction.findFirstOrThrow({ where: { userId, fromNodeId: await nodeId(userId, "Axis card") } })
+  expect(stored.amountPaise).toBe(1_200_000n)
+  const balance = (await sumBalances(userId)).find((row) => row.nodeId === stored.fromNodeId)?.balance
+  expect(balance).toBe(-1_200_000n)
 })
+
+// The four system roles against both positions: Opening Balance only as a source, the contra only as a destination,
+// the realised gain and loss in neither. Written as a table so a later milestone cannot quietly widen it.
+const SYSTEM_POSITIONS = [
+  { name: "Opening Balance", asSource: true, asDestination: false },
+  { name: "Opening Balance Contra", asSource: false, asDestination: true },
+  { name: "Realised Gain", asSource: false, asDestination: false },
+  { name: "Realised Loss", asSource: false, asDestination: false },
+]
+for (const { name, asSource, asDestination } of SYSTEM_POSITIONS) {
+  test(`offers ${name} ${asSource ? "as a source" : "not as a source"} and ${asDestination ? "as a destination" : "not as a destination"}`, async ({
+    session: { page, userId },
+  }) => {
+    await account(userId, "HDFC Savings")
+    await card(userId, "Axis card")
+    await page.goto("/transactions")
+    const from = form(page).getByLabel("From", { exact: true })
+    const to = form(page).getByLabel("To", { exact: true })
+    expect(await optionsOf(from)).toEqual(asSource ? expect.arrayContaining([name]) : expect.not.arrayContaining([name]))
+    for (const source of ["HDFC Savings", "Axis card"]) {
+      await from.selectOption({ label: source })
+      expect(await optionsOf(to), `${source} -> ${name}`).toEqual(asDestination ? expect.arrayContaining([name]) : expect.not.arrayContaining([name]))
+    }
+  })
+}
 
 test("flags the source field, not the destination, when the source was archived in another tab", async ({ session: { page, userId } }) => {
   const old = await account(userId, "HDFC Savings", "1,000")
