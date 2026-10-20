@@ -188,14 +188,17 @@ export async function insertTransactions(
  * Optimistic-concurrency update: applies only if the row is this user's, live, and still at `expectedVersion`, and
  * bumps `version`. Otherwise throws NotFoundError (not this user's, or deleted) or VersionConflictError carrying the
  * stored row. The conflict is only ever reported for a row the user owns, so it cannot confirm another user's row.
+ * `uow`, when given, is a transaction the caller already opened (see unit-of-work.ts): the update is made inside it and
+ * commits or rolls back with it, and a refusal here leaves the caller's transaction to be rolled back.
  */
 export async function updateTransaction(
   userId: string,
   id: string,
   data: UpdateDraft,
   expectedVersion: number,
+  uow?: UnitOfWork,
 ): Promise<Transaction> {
-  return prisma.$transaction(async (tx) => {
+  const write = async (tx: Prisma.TransactionClient) => {
     const nodeIds = [data.fromNodeId, data.toNodeId].filter((n): n is string => n !== undefined)
     await assertNodesOwned(userId, nodeIds, tx)
     const { count } = await tx.transaction.updateMany({
@@ -216,7 +219,8 @@ export async function updateTransaction(
       throw new VersionConflictError(current)
     }
     return tx.transaction.findFirstOrThrow({ where: { id, userId } })
-  })
+  }
+  return uow ? write(clientOf(uow)) : prisma.$transaction(write)
 }
 
 /** Throws NotFoundError if the transaction is not this user's, or is already deleted. */
@@ -226,6 +230,22 @@ export async function softDeleteTransaction(userId: string, id: string): Promise
     data: { deletedAt: new Date(), version: { increment: 1 } },
   })
   if (count === 0) throw new NotFoundError("transaction")
+}
+
+/**
+ * The inverse of softDeleteTransaction: clears `deletedAt`, bumps `version` and returns the row. Throws NotFoundError
+ * if the transaction is not this user's, or is not deleted. `uow` as for updateTransaction.
+ */
+export async function undeleteTransaction(userId: string, id: string, uow?: UnitOfWork): Promise<Transaction> {
+  const write = async (db: Prisma.TransactionClient) => {
+    const { count } = await db.transaction.updateMany({
+      where: { id, userId, deletedAt: { not: null } },
+      data: { deletedAt: null, version: { increment: 1 } },
+    })
+    if (count === 0) throw new NotFoundError("transaction")
+    return db.transaction.findFirstOrThrow({ where: { id, userId } })
+  }
+  return uow ? write(clientOf(uow)) : prisma.$transaction(write)
 }
 
 interface BalanceRow {
@@ -245,11 +265,13 @@ interface BalanceRow {
  * Starting from LedgerNode and LEFT JOINing the movements is what makes the empty node appear (a GROUP BY over the
  * Transaction table alone has no group for it) and what carries `kind`. Both halves of the UNION and the node
  * side filter on "userId". The sum is cast to text and parsed with BigInt: Postgres returns numeric, and a JS number
- * would silently lose precision above 2^53.
+ * would silently lose precision above 2^53. `uow`, when given, reads inside the caller's open transaction, so the
+ * figure includes that transaction's own uncommitted writes.
  */
-export async function sumBalances(userId: string, asOf?: CalendarDate): Promise<NodeBalance[]> {
+export async function sumBalances(userId: string, asOf?: CalendarDate, uow?: UnitOfWork): Promise<NodeBalance[]> {
   const upTo = asOf === undefined ? Prisma.empty : Prisma.sql`AND "occurredAt" <= ${asOf}::date`
-  const rows = await prisma.$queryRaw<BalanceRow[]>`
+  const db = uow ? clientOf(uow) : prisma
+  const rows = await db.$queryRaw<BalanceRow[]>`
     SELECT n."id" AS "nodeId", n."kind"::text AS "kind", COALESCE(SUM(m."delta"), 0)::text AS "balance",
            (n."archivedAt" IS NOT NULL) AS "archived"
     FROM "LedgerNode" n

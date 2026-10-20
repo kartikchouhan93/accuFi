@@ -9,9 +9,12 @@ import {
   insertTransactions,
   MAX_PAGE_SIZE,
   softDeleteTransaction,
+  sumBalances,
+  undeleteTransaction,
   updateTransaction,
   VersionConflictError,
 } from "@/server/repositories/transaction-repository"
+import { inTransaction } from "@/server/repositories/unit-of-work"
 import { createRegistry } from "./fixtures"
 
 const registry = createRegistry()
@@ -186,6 +189,56 @@ describe("softDeleteTransaction", () => {
     await softDeleteTransaction(user.id, tx.id)
     await expect(softDeleteTransaction(user.id, tx.id)).rejects.toBeInstanceOf(NotFoundError)
     await expect(softDeleteTransaction(user.id, "nope")).rejects.toBeInstanceOf(NotFoundError)
+  })
+})
+
+describe("undeleteTransaction", () => {
+  it("brings a soft-deleted row back, bumps the version and returns it", async () => {
+    const { user, bank, food } = await setup()
+    const [tx] = await insertTransactions(user.id, [{ fromNodeId: bank.id, toNodeId: food.id, amountPaise: 5n, occurredAt: d("2026-04-01") }])
+    await softDeleteTransaction(user.id, tx.id)
+    const deletedVersion = (await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })).version
+    const restored = await undeleteTransaction(user.id, tx.id)
+    expect(restored.deletedAt).toBeNull()
+    expect(restored.version).toBe(deletedVersion + 1)
+    expect((await findTransactionById(user.id, tx.id))?.id).toBe(tx.id)
+  })
+
+  it("throws not-found for an unknown id and for a row that is not deleted", async () => {
+    const { user, bank, food } = await setup()
+    const [tx] = await insertTransactions(user.id, [{ fromNodeId: bank.id, toNodeId: food.id, amountPaise: 5n, occurredAt: d("2026-04-01") }])
+    await expect(undeleteTransaction(user.id, tx.id)).rejects.toBeInstanceOf(NotFoundError)
+    await expect(undeleteTransaction(user.id, "nope")).rejects.toBeInstanceOf(NotFoundError)
+  })
+
+  it("commits or rolls back with the unit of work it is given", async () => {
+    const { user, bank, food } = await setup()
+    const [tx] = await insertTransactions(user.id, [{ fromNodeId: bank.id, toNodeId: food.id, amountPaise: 5n, occurredAt: d("2026-04-01") }])
+    await softDeleteTransaction(user.id, tx.id)
+    await expect(
+      inTransaction(async (uow) => {
+        await undeleteTransaction(user.id, tx.id, uow)
+        throw new Error("abort")
+      }),
+    ).rejects.toThrow("abort")
+    expect(await findTransactionById(user.id, tx.id)).toBeNull()
+  })
+})
+
+describe("with a unit of work", () => {
+  it("updateTransaction and sumBalances see the caller's uncommitted writes and roll back with it", async () => {
+    const { user, bank, food } = await setup()
+    const [tx] = await insertTransactions(user.id, [{ fromNodeId: bank.id, toNodeId: food.id, amountPaise: 5n, occurredAt: d("2026-04-01") }])
+    const balanceOf = (rows: Awaited<ReturnType<typeof sumBalances>>, id: string) => rows.find((r) => r.nodeId === id)?.balance
+    await expect(
+      inTransaction(async (uow) => {
+        await updateTransaction(user.id, tx.id, { amountPaise: 9n }, tx.version, uow)
+        expect(balanceOf(await sumBalances(user.id, undefined, uow), food.id)).toBe(9n)
+        expect(balanceOf(await sumBalances(user.id), food.id)).toBe(5n) // not visible outside until commit
+        throw new Error("abort")
+      }),
+    ).rejects.toThrow("abort")
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })).amountPaise).toBe(5n)
   })
 })
 

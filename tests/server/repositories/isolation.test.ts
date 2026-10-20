@@ -190,6 +190,14 @@ describe("transaction repository", () => {
     expect((await prisma.transaction.findUniqueOrThrow({ where: { id: b.tx.id } })).deletedAt).toBeNull()
   })
 
+  isolation("undeleteTransaction", "does not restore another user's deleted transaction", async () => {
+    const deleted = await registry.makeTransaction(b.user.id, b.bank.id, b.food.id, { deletedAt: new Date() })
+    const before = await snapshotTransactions(b.user.id)
+    await expectNotFound(txRepo.undeleteTransaction(a.user.id, deleted.id))
+    expect(await snapshotTransactions(b.user.id)).toEqual(before)
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: deleted.id } })).deletedAt).not.toBeNull()
+  })
+
   isolation("sumBalances", "excludes another user's transactions", async () => {
     const mine = await txRepo.sumBalances(a.user.id)
     const myNodeIds = new Set((await snapshotNodes(a.user.id)).map((n) => n.id))

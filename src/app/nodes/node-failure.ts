@@ -27,6 +27,10 @@ function textFor(code: ActionErrorCode, serverMessage: string): FailureText {
       return { message: "The kind of an item cannot be changed once it exists.", isFieldProblem: false }
     case "not_found":
       return { message: "That item no longer exists. Reload to see the current ledger.", isFieldProblem: false }
+    case "version_conflict":
+    case "overdraft_blocked":
+      // Transaction refusals: a node action cannot give them, and the transaction screens word them themselves.
+      return { message: serverMessage, isFieldProblem: false }
     case "invalid":
       // The service words these for the user ("An opening balance cannot be zero").
       return { message: serverMessage, isFieldProblem: false }

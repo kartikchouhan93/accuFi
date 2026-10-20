@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
 import type { ZodError } from "zod"
+import type { TransactionView } from "@/lib/transaction-view"
 import { UnauthenticatedError } from "@/server/auth"
 
 // Shared by every Server Action file. It cannot live in one: a "use server" module may export only async functions.
@@ -13,10 +14,18 @@ export type ActionErrorCode =
   | "invalid"
   | "not_found"
   | "kind_immutable"
+  | "version_conflict"
+  | "overdraft_blocked"
 
 export interface ActionFailure {
   ok: false
-  error: { code: ActionErrorCode; message: string; fieldErrors?: Record<string, string[]> }
+  error: {
+    code: ActionErrorCode
+    message: string
+    fieldErrors?: Record<string, string[]>
+    /** With "version_conflict": what is stored now, as plain data, for the screen to show beside the user's edit. */
+    current?: TransactionView
+  }
 }
 
 /** A Server Action's answer. Plain data only: it is serialised to the browser, so no bigint and no Date. */
