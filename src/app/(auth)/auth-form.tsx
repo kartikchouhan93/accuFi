@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useActionState } from "react"
+import { useActionState, useState } from "react"
 import type { AuthFormState } from "./actions"
 
 type Props = {
@@ -19,6 +19,10 @@ const inputClass = "w-full rounded-sm border border-rule-strong bg-paper px-3 py
 
 export function AuthForm({ mode, action }: Props) {
   const [state, formAction, pending] = useActionState(action, { error: null })
+  // Controlled, not left to the browser: React 19 resets an uncontrolled form once its action settles, refusals included,
+  // which would empty both fields after one typo. The password stays in this component and is never sent back by the server.
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
   const copy = COPY[mode]
   return (
     <main className="flex min-h-screen items-center justify-center px-4">
@@ -29,7 +33,16 @@ export function AuthForm({ mode, action }: Props) {
           <h1 className="font-display text-xl font-semibold">{copy.title}</h1>
           <label className="block space-y-1 text-sm font-medium">
             Email
-            <input name="email" type="email" required autoComplete="email" maxLength={254} className={inputClass} />
+            <input
+              name="email"
+              type="email"
+              required
+              autoComplete="email"
+              maxLength={254}
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              className={inputClass}
+            />
           </label>
           <label className="block space-y-1 text-sm font-medium">
             Password
@@ -39,6 +52,8 @@ export function AuthForm({ mode, action }: Props) {
               required
               minLength={mode === "signup" ? 8 : 1}
               maxLength={128}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               autoComplete={mode === "signup" ? "new-password" : "current-password"}
               className={inputClass}
             />

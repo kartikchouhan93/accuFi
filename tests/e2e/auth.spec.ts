@@ -174,12 +174,9 @@ test("refuses a password below the minimum, at the browser and at the server", a
   }
 })
 
-// KNOWN DEFECT (reported in docs/superpowers/decisions/2026-10-20-e2e-coverage-report.md): the signup form is a React 19
-// form action, and React clears an uncontrolled form once its action settles, whether the action refused or not. A refused
-// signup therefore empties the email and password the person typed. The product's intent (and this test's expectation) is
-// that they are kept. `test.fail` keeps the suite green while the defect stands and turns red the day it is fixed, when
-// the marker should be removed.
-test.fail("keeps the email and password after a refused signup", async ({ page }) => {
+// React 19 clears an uncontrolled form once its action settles, refused or not, so the fields are controlled (see
+// AuthForm). A refusal must leave what the person typed, so one mistake costs one correction and not two fields retyped.
+test("keeps the email and password after a refused signup", async ({ page }) => {
   const email = freshEmail()
   try {
     await page.goto("/signup")
@@ -187,11 +184,33 @@ test.fail("keeps the email and password after a refused signup", async ({ page }
     await authForm(page).evaluate((element) => ((element as HTMLFormElement).noValidate = true))
     await submitRefused(page, "Create account")
     await expect(alert(page)).toHaveText("Password must be at least 8 characters")
-    await expect(page.getByLabel("Email")).toHaveValue(email, { timeout: 1000 })
-    await expect(page.getByLabel("Password")).toHaveValue("short", { timeout: 1000 })
+    await expect(page.getByLabel("Email")).toHaveValue(email)
+    await expect(page.getByLabel("Password")).toHaveValue("short")
   } finally {
     await forgetAttempts(email)
   }
+})
+
+test("keeps what was typed after a signup refused for an email already in use", async ({ page }) => {
+  await withUser(async (email) => {
+    await page.goto("/signup")
+    await fillAuthForm(page, email, "another long password")
+    await submitRefused(page, "Create account")
+    await expect(alert(page)).toHaveText("An account with this email already exists.")
+    await expect(page.getByLabel("Email")).toHaveValue(email)
+    await expect(page.getByLabel("Password")).toHaveValue("another long password")
+  })
+})
+
+test("keeps the email and password after a refused login", async ({ page }) => {
+  await withUser(async (email) => {
+    await page.goto("/login")
+    await fillAuthForm(page, email, "wrong horse battery")
+    await submitRefused(page, "Sign in")
+    await expect(alert(page)).toHaveText(WRONG)
+    await expect(page.getByLabel("Email")).toHaveValue(email)
+    await expect(page.getByLabel("Password")).toHaveValue("wrong horse battery")
+  })
 })
 
 test("signs in through the form with the right credentials", async ({ page }) => {
