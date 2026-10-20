@@ -121,6 +121,11 @@ describe("allocateLots", () => {
     }
   })
 
+  it("states the quantities in units, not micro-units, unless the caller words it", () => {
+    expect(new InsufficientQuantityError(q("15"), q("15.000001")).message).toBe("Only 15 is held, so 15.000001 cannot be disposed of.")
+    expect(new InsufficientQuantityError(q("1"), q("2"), "Only 1 g left.").message).toBe("Only 1 g left.")
+  })
+
   it("throws InsufficientQuantityError when there are no lots at all", () => {
     expect(() => allocateLots([], "LIFO", q("1"))).toThrow(InsufficientQuantityError)
   })

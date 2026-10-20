@@ -32,6 +32,7 @@ import {
   assertNotASale,
   assertPurchaseRemovable,
   assertRestoredLotAllowed,
+  assertRestoredSaleCovered,
   lotModeOf,
   lotSourceViolation,
   splitLegViolation,
@@ -130,7 +131,8 @@ export class OverdraftBlockedError extends Error {
   }
 }
 
-async function requireNode(userId: string, nodeId: string): Promise<LedgerNode> {
+/** The caller's node, archived or not; NotFoundError for anyone else's. Shared with the sale path. */
+export async function requireNode(userId: string, nodeId: string): Promise<LedgerNode> {
   const node = await findNodeById(userId, nodeId) // archived nodes included: history still points at them
   if (!node) throw new NotFoundError("node") // someone else's node is simply "not found"
   return node
@@ -144,7 +146,7 @@ async function requireNode(userId: string, nodeId: string): Promise<LedgerNode> 
 const asOfFor = (today: CalendarDate, occurredAt: CalendarDate): CalendarDate =>
   compareDates(occurredAt, today) > 0 ? occurredAt : today
 
-const cleanNote = (note: string | null | undefined): string | null => note?.trim() || null
+export const cleanNote = (note: string | null | undefined): string | null => note?.trim() || null
 const cleanTags = (tags: readonly string[]): string[] => [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))]
 
 const legalityViolations = (from: LedgerNode, to: LedgerNode, amount: Paise, occurredAt: CalendarDate, allowArchived: boolean) =>
@@ -238,7 +240,12 @@ async function warningsFor(userId: string, row: Transaction, touched: readonly L
  * The view of a stored row, with its warnings. `touched` and `today` are passed when the caller already has them
  * (default: the row's source node). A soft-deleted row has no warnings: it moves no money.
  */
-async function viewOf(userId: string, row: Transaction, touched?: readonly LedgerNode[], today?: CalendarDate): Promise<TransactionView> {
+export async function viewOf(
+  userId: string,
+  row: Transaction,
+  touched?: readonly LedgerNode[],
+  today?: CalendarDate,
+): Promise<TransactionView> {
   if (row.deletedAt !== null) return toTransactionView(row)
   const nodes = touched ?? [await requireNode(userId, row.fromNodeId)]
   return toTransactionView(row, await warningsFor(userId, row, nodes, today ?? (await todayFor(userId))))
@@ -394,7 +401,9 @@ export async function removeTransaction(userId: string, id: string): Promise<voi
  * Bring a soft-deleted transaction back, and with it the rest of its split group, if it had one. Archived nodes do not
  * stop it: it is history. A restore is a new debit on its source node, so it is refused if that node blocks overdrafts
  * and the restored rows would take it below zero; a group is then refused whole. A restored purchase's lot counts again,
- * so it is refused if another live purchase already holds the same lump investment (lot-rules.ts).
+ * so it is refused if another live purchase already holds the same lump investment (lot-rules.ts). A restored sale takes
+ * from its lots again with the consumption rows it kept (nothing is re-allocated), so it is refused, whole, if they no
+ * longer hold what it took: InsufficientQuantityError or LotInUseError (assertRestoredSaleCovered).
  */
 export async function restoreTransaction(userId: string, id: string): Promise<TransactionView> {
   const today = await todayFor(userId)
@@ -403,6 +412,7 @@ export async function restoreTransaction(userId: string, id: string): Promise<Tr
     const siblings = restored.groupId === null ? [] : await undeleteGroup(userId, restored.groupId, uow)
     for (const each of [restored, ...siblings]) {
       await assertRestoredLotAllowed(userId, each, uow)
+      await assertRestoredSaleCovered(userId, each, uow)
       const from = await requireNode(userId, each.fromNodeId)
       if (isGuarded(from)) {
         assertNoOverdraft([from], await balancesAt(userId, asOfFor(today, fromDbDate(each.occurredAt)), uow))
@@ -444,7 +454,8 @@ export class SplitTotalMismatchError extends Error {
 // The client's key is validated against the 16-character floor (schemas/transaction.ts) as sent, not these derived
 // forms, which are only ever longer. The legs are written in one database transaction, so a replay finds all of them
 // or none.
-const legKey = (key: string, index: number): string => `${key}:${index}`
+// A sale's legs (investment-service.ts) are keyed the same way.
+export const legKey = (key: string, index: number): string => `${key}:${index}`
 
 /**
  * The stored result of an earlier submission of this split, or null if the key was never used. A match is a replay only

@@ -206,17 +206,38 @@ export async function insertConsumptions(userId: string, rows: readonly Consumpt
   })
 }
 
-/** What the disposal `transactionId` took from each lot, whether or not it is deleted, in the order it was written. */
+/**
+ * What the disposal `transactionId` took from each lot, whether or not it is deleted, in the order it was written, with
+ * the day each lot was acquired (as it is now: an edit of the purchase moves it).
+ */
 export async function findConsumptionsByTransaction(
   userId: string,
   transactionId: string,
   uow?: UnitOfWork,
-): Promise<{ lotId: string; quantity: Quantity; costBasisPaise: Paise }[]> {
+): Promise<{ lotId: string; quantity: Quantity; costBasisPaise: Paise; acquiredAt: CalendarDate }[]> {
   const rows = await dbOf(uow).lotConsumption.findMany({
-    where: { userId, transactionId },
+    where: { userId, transactionId, lot: { userId } },
+    include: { lot: { select: { acquiredAt: true } } },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   })
-  return rows.map((row) => ({ lotId: row.lotId, quantity: toQuantity(row.quantity), costBasisPaise: row.costBasisPaise }))
+  return rows.map((row) => ({
+    lotId: row.lotId,
+    quantity: toQuantity(row.quantity),
+    costBasisPaise: row.costBasisPaise,
+    acquiredAt: fromDbDate(row.lot.acquiredAt),
+  }))
+}
+
+/**
+ * Hold the lots of investment `nodeId` still until the caller's transaction ends: every write that decides from what a
+ * lot still holds (a sale, the restore of one) takes this first and reads the lots after it, so two of them cannot both
+ * take the same units. A row lock on the caller's node (FOR NO KEY UPDATE, which does not block a transaction merely
+ * referring to the node). Throws NotFoundError if the node is not this user's.
+ */
+export async function lockHoldings(userId: string, nodeId: string, uow: UnitOfWork): Promise<void> {
+  const rows = await clientOf(uow).$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "LedgerNode" WHERE "id" = ${nodeId} AND "userId" = ${userId} FOR NO KEY UPDATE`
+  if (rows.length === 0) throw new NotFoundError("node")
 }
 
 /**

@@ -109,7 +109,9 @@ describe("consumptions", () => {
       { quantity: 3n * UNIT, costBasisPaise: 2_100_000n, disposedAt: "2026-03-01" },
     ])
     // ... while the deleted disposal still knows what it took, so a restore can bring it back
-    expect(await findConsumptionsByTransaction(user.id, second.id)).toEqual([{ lotId: lot.id, quantity: 2n * UNIT, costBasisPaise: 0n }])
+    expect(await findConsumptionsByTransaction(user.id, second.id)).toEqual([
+      { lotId: lot.id, quantity: 2n * UNIT, costBasisPaise: 0n, acquiredAt: "2026-01-01" },
+    ])
     expect(await countConsumptionsOfLot(user.id, lot.transactionId)).toBe(2)
   })
 

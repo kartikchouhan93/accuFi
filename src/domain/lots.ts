@@ -5,7 +5,7 @@
 import { compareDates, type CalendarDate } from "./calendar-date"
 import type { LotMethod } from "./ledger-kind"
 import type { Paise } from "./money"
-import type { Quantity } from "./quantity"
+import { formatQuantity, type Quantity } from "./quantity"
 
 export interface OpenLot {
   id: string
@@ -22,12 +22,15 @@ export interface LotAllocation {
   costBasisPaise: Paise
 }
 
-/** More was asked for than the open lots hold (EC-21). */
+/**
+ * More was asked for than the open lots hold (EC-21). The message states both quantities in units (never micro-units),
+ * so it can be shown as it is; a caller that knows the investment's name and unit passes a message of its own.
+ */
 export class InsufficientQuantityError extends Error {
   readonly available: Quantity
   readonly requested: Quantity
-  constructor(available: Quantity, requested: Quantity) {
-    super(`Cannot dispose of ${requested} micro-units: only ${available} are held`)
+  constructor(available: Quantity, requested: Quantity, message?: string) {
+    super(message ?? `Only ${formatQuantity(available)} is held, so ${formatQuantity(requested)} cannot be disposed of.`)
     this.name = "InsufficientQuantityError"
     this.available = available
     this.requested = requested

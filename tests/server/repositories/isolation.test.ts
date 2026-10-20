@@ -441,6 +441,11 @@ describe("lot repository", () => {
     expect(await lotRepo.findConsumptionsByTransaction(theirs.userId, theirs.sale.id)).toHaveLength(1)
   })
 
+  isolation("lockHoldings", "refuses another user's node, and locks the caller's own", async () => {
+    await expectNotFound(inTransaction((uow) => lotRepo.lockHoldings(mine.userId, theirs.gold.id, uow)))
+    await inTransaction((uow) => lotRepo.lockHoldings(mine.userId, mine.gold.id, uow))
+  })
+
   isolation("countConsumptionsOfLot", "counts nothing for another user's purchase", async () => {
     expect(await lotRepo.countConsumptionsOfLot(mine.userId, theirs.buy.id)).toBe(0)
     expect(await inTransaction((uow) => lotRepo.countConsumptionsOfLot(mine.userId, theirs.buy.id, uow))).toBe(0)

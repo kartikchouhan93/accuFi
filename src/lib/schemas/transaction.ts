@@ -51,6 +51,16 @@ const idempotencyKey = z
   .min(IDEMPOTENCY_KEY_MIN_LENGTH, `A request key must be at least ${IDEMPOTENCY_KEY_MIN_LENGTH} characters`)
   .max(IDEMPOTENCY_KEY_MAX_LENGTH)
 
+// The field rules shared with the sale schemas (investment.ts), so a sale's key, day, quantity and note are held to exactly
+// what a transaction's are.
+export {
+  idempotencyKey as idempotencyKeyField,
+  nodeId as nodeIdField,
+  note as noteField,
+  occurredAt as occurredAtField,
+  quantity as quantityField,
+}
+
 export const recordTransactionSchema = z.strictObject({
   fromNodeId: nodeId,
   toNodeId: nodeId,

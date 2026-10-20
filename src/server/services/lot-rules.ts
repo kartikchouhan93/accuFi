@@ -1,5 +1,6 @@
 import type { LedgerNode, Transaction } from "@prisma/client"
-import { compareDates, type CalendarDate } from "@/domain/calendar-date"
+import { compareDates, fromDbDate, type CalendarDate } from "@/domain/calendar-date"
+import { InsufficientQuantityError } from "@/domain/lots"
 import { formatPaise, type Paise } from "@/domain/money"
 import { formatQuantity, QUANTITY_SCALE, type Quantity } from "@/domain/quantity"
 import type { HoldingLot } from "@/domain/valuation"
@@ -10,8 +11,10 @@ import {
   findLiveLots,
   findLotByTransaction,
   insertLot,
+  lockHoldings,
   updateLot,
 } from "@/server/repositories/lot-repository"
+import { NotFoundError } from "@/server/repositories/errors"
 import { findNodeById } from "@/server/repositories/node-repository"
 import { findGroupById } from "@/server/repositories/transaction-repository"
 import type { UnitOfWork } from "@/server/repositories/unit-of-work"
@@ -42,9 +45,9 @@ export function lotModeOf(node: Pick<LedgerNode, "kind" | "valuationMode">): Lot
   return node.valuationMode === "QUANTITY" || node.valuationMode === "LUMP" ? node.valuationMode : null
 }
 
-const ONE_UNIT: Quantity = QUANTITY_SCALE
+export const ONE_UNIT: Quantity = QUANTITY_SCALE
 // Decimal(18,6): at most 12 digits before the point. The schema's parser enforces it too; this is for other callers.
-const QUANTITY_LIMIT: Quantity = 10n ** 18n
+export const QUANTITY_LIMIT: Quantity = 10n ** 18n
 
 function refuse(code: LotRuleCode, message: string): never {
   throw new InvalidTransactionError(message, [{ code, message }])
@@ -123,7 +126,8 @@ async function assertLumpFree(userId: string, to: LedgerNode, uow: UnitOfWork): 
   if ((await findLiveLots(userId, to.id, uow)).length > 0) refuse("LUMP_ALREADY_BOUGHT", lumpBoughtOnce(to))
 }
 
-const unitOf = (node: LedgerNode): string => (node.unitLabel ? ` ${node.unitLabel}` : "")
+/** The node's unit as it follows a quantity: " g", or nothing for a node without one. */
+export const unitOf = (node: LedgerNode): string => (node.unitLabel ? ` ${node.unitLabel}` : "")
 const soldQuantity = (lot: HoldingLot): Quantity => lot.consumptions.reduce((sum, c) => sum + c.quantity, 0n)
 const soldCost = (lot: HoldingLot): Paise => lot.consumptions.reduce((sum, c) => sum + c.costBasisPaise, 0n)
 const alreadySold = (lot: HoldingLot, node: LedgerNode): string =>
@@ -314,4 +318,60 @@ export async function assertRestoredLotAllowed(userId: string, row: Transaction,
   const node = await findNodeById(userId, row.toNodeId)
   if (!node || lotModeOf(node) !== "LUMP") return
   if ((await findLiveLots(userId, node.id, uow)).length > 1) refuse("LUMP_ALREADY_BOUGHT", lumpBoughtOnce(node))
+}
+
+/**
+ * A restored sale takes from its lots again: its consumption rows were kept (call 1), so nothing is re-allocated, and
+ * what it took must still be there. While the sale was deleted nothing protected that: its purchase could be deleted or
+ * edited, and another sale could take the same units. So, inside the restore's database transaction and after the row
+ * is restored, each lot it took from must be live (its purchase not deleted), acquired on or before the sale (call 6),
+ * and hold what the live sales now take with it, cost at least what they take, and cost exactly that if they take all of
+ * it: what assertSalesStillCovered asks of an edit. Throws InsufficientQuantityError when the units are not there and
+ * LotInUseError when the cost no longer fits, so the restore rolls back. Does nothing for a row that took from no lot.
+ */
+export async function assertRestoredSaleCovered(userId: string, row: Transaction, uow: UnitOfWork): Promise<void> {
+  const taken = await findConsumptionsByTransaction(userId, row.id, uow)
+  if (taken.length === 0) return
+  // A lot taken from never leaves its investment (assertLotMovable), so every one is in the sale's source node.
+  await lockHoldings(userId, row.fromNodeId, uow)
+  const node = await findNodeById(userId, row.fromNodeId)
+  if (!node) throw new NotFoundError("node")
+  const lots = new Map((await findLiveLots(userId, node.id, uow)).map((lot) => [lot.id, lot]))
+  const saleDate = fromDbDate(row.occurredAt)
+  const refused = (reason: string): string => `This sale cannot be restored: ${reason}`
+  const units = (quantity: Quantity): string => `${formatQuantity(quantity)}${unitOf(node)}`
+
+  for (const consumption of taken) {
+    const lot = lots.get(consumption.lotId)
+    const took = `${units(consumption.quantity)} of ${node.name}`
+    if (!lot) {
+      const message = refused(`the purchase it took ${took} from has been deleted. Restore that purchase first.`)
+      throw new InsufficientQuantityError(0n, consumption.quantity, message)
+    }
+    if (compareDates(lot.acquiredAt, saleDate) > 0) {
+      const message = refused(`the purchase it took ${took} from is now dated ${lot.acquiredAt}, after this sale on ${saleDate}.`)
+      throw new InsufficientQuantityError(0n, consumption.quantity, message)
+    }
+    // The lot's live consumptions include this sale's own, restored a moment ago.
+    const sold = soldQuantity(lot)
+    if (sold > lot.quantity) {
+      const left = lot.quantity - (sold - consumption.quantity)
+      const available = left > 0n ? left : 0n
+      const message = refused(`it took ${took} from the purchase of ${lot.acquiredAt}, which now has only ${units(available)} left to sell.`)
+      throw new InsufficientQuantityError(available, consumption.quantity, message)
+    }
+    const cost = soldCost(lot)
+    if (lot.costBasisPaise < cost) {
+      const message = refused(
+        `with it, sales would take ${formatPaise(cost)} of the cost of the purchase of ${lot.acquiredAt}, which now costs ${formatPaise(lot.costBasisPaise)} in all.`,
+      )
+      throw new LotInUseError(message, [{ code: "AMOUNT_BELOW_SOLD", message }])
+    }
+    if (sold === lot.quantity && lot.costBasisPaise !== cost) {
+      const message = refused(
+        `with it, all of the purchase of ${lot.acquiredAt} is sold, for a cost of ${formatPaise(cost)}, but that purchase now costs ${formatPaise(lot.costBasisPaise)}.`,
+      )
+      throw new LotInUseError(message, [{ code: "SOLD_COST_CHANGED", message }])
+    }
+  }
 }

@@ -19,6 +19,9 @@ export type LotRuleCode =
   | "AMOUNT_BELOW_SOLD"
   | "SOLD_COST_CHANGED"
   | "DATE_AFTER_SALE"
+  | "NOT_SOLD_BY_LOT"
+  | "SALE_DESTINATION"
+  | "QUANTITY_TOO_SMALL"
 
 export type TransactionViolationCode = ViolationCode | LotRuleCode
 

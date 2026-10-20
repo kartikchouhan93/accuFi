@@ -73,6 +73,10 @@ const FIELD_OF_VIOLATION: Record<TransactionViolationCode, string> = {
   LOT_SWITCH: "toNodeId",
   LOT_SPLIT_LEG: "toNodeId",
   LOT_SOLD: "toNodeId",
+  // Only a sale (investment-service.ts) breaks these; they are here because the record is total over the codes.
+  NOT_SOLD_BY_LOT: "fromNodeId",
+  SALE_DESTINATION: "toNodeId",
+  QUANTITY_TOO_SMALL: "quantity",
 }
 
 /** Violations as `{ field: [messages] }`, a split's under `legs.<index>.<field>` so a form can find the leg's row. */
