@@ -1,7 +1,9 @@
 FROM oven/bun:1.4.3 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# Without scripts: the root postinstall is `prisma generate`, and only package.json and the lockfile are here, so there
+# is no schema to generate from yet. The build stage below generates, once the source is in.
+RUN bun install --frozen-lockfile --ignore-scripts
 
 FROM oven/bun:1.4.3 AS build
 WORKDIR /app

@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "postinstall": "prisma generate",
     "test": "bun run typecheck && sh scripts/test-tz.sh",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
