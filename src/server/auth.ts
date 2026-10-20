@@ -1,6 +1,7 @@
 import NextAuth, { CredentialsSignin } from "next-auth"
 import Credentials from "next-auth/providers/credentials"
 import { authConfig } from "@/server/auth.config"
+import { authLogger } from "@/server/auth-logger"
 import { clientIp } from "@/server/client-ip"
 import { authenticate, RateLimitedError } from "@/server/services/login-service"
 
@@ -20,6 +21,8 @@ export class UnauthenticatedError extends Error {
 // created by createAccount, sessions live in the cookie), and the adapter's own tables would sit empty.
 export const { auth, handlers, signIn, signOut } = NextAuth({
   ...authConfig,
+  // Only `error` is overridden (a wrong password is not one); `warn` and `debug` keep Auth.js's defaults.
+  logger: authLogger,
   providers: [
     Credentials({
       credentials: { email: {}, password: {} },
