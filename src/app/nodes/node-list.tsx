@@ -1,17 +1,25 @@
 "use client"
 
+import { ChevronDown, CircleAlert, Trash2, TriangleAlert } from "lucide-react"
+import { motion } from "motion/react"
 import { useRouter } from "next/navigation"
 import { useId, useState, useTransition } from "react"
+import { Amount } from "@/app/amount"
+import { Collapse } from "@/components/ui/collapse"
+import { SpotlightCard } from "@/components/ui/spotlight-card"
+import { buttonClass, inputClass } from "@/components/ui/styles"
+import { Switch } from "@/components/ui/switch"
 import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
 import { HOLDING_KINDS, KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import { describeBalance, describeResidual, formatPaiseText } from "@/lib/node-money"
 import type { NodeOverview } from "@/lib/node-overview"
 import type { NodeView } from "@/lib/node-view"
+import { cn } from "@/lib/utils"
 import type { ActionResult } from "@/server/action-support"
-import { Amount } from "@/app/amount"
 import { archiveNodeAction, archiveResidualAction, removeNodeAction, renameNodeAction, restoreNodeAction } from "./actions"
 import { choiceLabel } from "./node-fields"
 import { describeFailure, type FailureText } from "./node-failure"
+import { KIND_ICON } from "./kind-icons"
 import type { Notice } from "./node-workspace"
 
 // The ledger, grouped by kind. It is handed EVERY node, archived ones included, and totals that were computed from all
@@ -36,20 +44,15 @@ export function NodeList({ overview, announce, onAdd }: Props) {
 
   return (
     <div>
-      <label className="flex w-fit cursor-pointer items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={showArchived}
-          onChange={(event) => setShowArchived(event.target.checked)}
-          className="size-4 accent-pen"
-        />
+      <Switch checked={showArchived} onChange={setShowArchived}>
         Show archived
-      </label>
-      <div className="mt-6 space-y-10">
-        {KIND_ORDER.map((kind) => (
+      </Switch>
+      <div className="mt-6 space-y-6">
+        {KIND_ORDER.map((kind, index) => (
           <KindSection
             key={kind}
             kind={kind}
+            index={index}
             overview={overview}
             showArchived={showArchived}
             announce={announce}
@@ -63,15 +66,17 @@ export function NodeList({ overview, announce, onAdd }: Props) {
 
 interface SectionProps {
   kind: LedgerKind
+  index: number
   overview: NodeOverview
   showArchived: boolean
   announce: Props["announce"]
   onAdd: Props["onAdd"]
 }
 
-function KindSection({ kind, overview, showArchived, announce, onAdd }: SectionProps) {
+function KindSection({ kind, index, overview, showArchived, announce, onAdd }: SectionProps) {
   const headingId = useId()
   const copy = KIND_COPY[kind]
+  const Icon = KIND_ICON[kind]
   const summary = overview.kinds[kind]
   // Ordinary nodes first, the system ones (which no user action can change) after them.
   const ofKind = overview.nodes
@@ -82,42 +87,47 @@ function KindSection({ kind, overview, showArchived, announce, onAdd }: SectionP
   const total = HOLDING_KINDS.has(kind) ? describeBalance(kind, summary.total) : null
 
   return (
-    <section aria-labelledby={headingId}>
-      <div className="flex items-baseline gap-3 border-b-2 border-fg pb-1">
-        <h2 id={headingId} className="font-display text-xl font-semibold">
+    <SpotlightCard
+      as="section"
+      aria-labelledby={headingId}
+      className="surface rise rounded-3xl p-5 sm:p-6"
+      style={{ "--i": index } as React.CSSProperties}
+      radius={380}
+      strength={9}
+    >
+      <div className="flex items-center gap-3">
+        <span aria-hidden className="grid size-10 shrink-0 place-items-center rounded-xl bg-panel-raised text-fg-soft">
+          <Icon className="size-5" />
+        </span>
+        <h2 id={headingId} className="font-display text-lg font-semibold tracking-tight">
           {copy.plural}
         </h2>
-        {total && (
-          <>
-            <span className="leader" aria-hidden="true" />
-            <Amount text={total} className="text-lg font-medium" />
-          </>
-        )}
+        {total && <Amount text={total} className="ml-auto text-lg font-medium" />}
       </div>
       {/* The figure above counts archived nodes whether or not their rows are drawn; say so when they are not. */}
       {hiddenCount > 0 && (
-        <p className="mt-1 text-sm text-fg-soft">
+        <p className="mt-2 text-sm text-fg-soft">
           {total ? "Includes " : ""}
           {hiddenCount} archived{total ? ", not listed" : " not listed"}.
         </p>
       )}
       {visible.length === 0 ? (
-        <p className="mt-3 text-fg-soft">
-          {ofKind.length === 0 ? copy.empty : "Everything here is archived."}{" "}
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-fg-soft">
+          <p>{ofKind.length === 0 ? copy.empty : "Everything here is archived."}</p>
           {ofKind.length === 0 && (
-            <button type="button" onClick={() => onAdd(kind)} className="font-medium text-link underline underline-offset-4">
+            <button type="button" onClick={() => onAdd(kind)} className={buttonClass({ variant: "secondary", size: "sm" })}>
               Add {copy.indefinite}
             </button>
           )}
-        </p>
+        </div>
       ) : (
-        <ul className="divide-y divide-line">
+        <ul className="-mx-2 mt-3 space-y-0.5">
           {visible.map((node) => (
             <NodeRow key={node.id} node={node} balance={overview.balances[node.id] ?? "0"} announce={announce} />
           ))}
         </ul>
       )}
-    </section>
+    </SpotlightCard>
   )
 }
 
@@ -153,6 +163,9 @@ interface RowProps {
   announce: Props["announce"]
 }
 
+// What replaces the action buttons when a choice needs confirming: it slides in so the change of state is seen.
+const swap = { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.2 } }
+
 function NodeRow({ node, balance, announce }: RowProps) {
   const router = useRouter()
   const panelId = useId()
@@ -172,6 +185,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
   const sub = subtitle(node)
   const shownBalance = isSystem ? null : describeBalance(node.kind, balance)
   const residual = describeResidual(node.kind, residualToConfirm)
+  const lines = details(node)
 
   function run<T>(call: () => Promise<ActionResult<T>>, onSuccess: (data: T) => void, refresh = true) {
     setFailure(null)
@@ -239,39 +253,32 @@ function NodeRow({ node, balance, announce }: RowProps) {
       },
     )
 
-  const buttonClass =
-    "rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium hover:bg-canvas disabled:opacity-60"
-  const primaryClass = "rounded-sm bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-60"
-  const dangerClass = "rounded-sm bg-negative px-3 py-1.5 text-sm font-medium text-panel disabled:opacity-60"
+  const secondary = buttonClass({ variant: "secondary", size: "sm" })
+  const primary = buttonClass({ size: "sm" })
 
   return (
-    <li className={isArchived ? "bg-panel/50" : undefined}>
+    <li className={cn("rounded-2xl transition-colors duration-200", open && "bg-panel-raised/70", isArchived && "opacity-80")}>
       <button
         type="button"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={() => setOpen((current) => !current)}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3 py-3 text-left"
+        className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors duration-200 hover:bg-panel-raised"
       >
-        <span className={`font-medium ${isArchived ? "text-fg-soft" : ""}`}>
-          <span>{node.name}</span>
-          {isSystem && <Tag>System</Tag>}
-          {isArchived && <Tag>Archived</Tag>}
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <span className={cn("font-medium", isArchived && "text-fg-soft")}>{node.name}</span>
+            {isSystem && <Tag>System</Tag>}
+            {isArchived && <Tag>Archived</Tag>}
+          </span>
+          {sub && <span className="mt-0.5 block text-sm text-fg-soft">{sub}</span>}
         </span>
-        {shownBalance ? (
-          <>
-            <span className="leader" aria-hidden="true" />
-            <Amount text={shownBalance} />
-          </>
-        ) : (
-          // A system node has no figure to run a leader to.
-          <span className="col-span-2" aria-hidden="true" />
-        )}
-        {sub && <span className="col-span-3 text-sm text-fg-soft">{sub}</span>}
+        {shownBalance && <Amount text={shownBalance} className="shrink-0 font-medium" />}
+        <ChevronDown aria-hidden className={cn("size-4 shrink-0 text-fg-soft transition-transform duration-200", open && "rotate-180")} />
       </button>
 
-      {open && (
-        <div id={panelId} className="pb-4 text-sm">
+      <Collapse open={open} id={panelId}>
+        <div className="px-3 pb-4 text-sm">
           {isSystem ? (
             <p className="max-w-prose text-fg-soft">
               {SYSTEM_ROLE_NOTE[node.systemRole as SystemNodeRole]} AccuFi keeps this one for you, so it cannot be
@@ -279,9 +286,9 @@ function NodeRow({ node, balance, announce }: RowProps) {
             </p>
           ) : (
             <>
-              {details(node).length > 0 && (
-                <dl className="mb-3 grid max-w-md grid-cols-[auto_1fr] gap-x-6 gap-y-0.5">
-                  {details(node).map(([label, value]) => (
+              {lines.length > 0 && (
+                <dl className="mb-4 grid max-w-md grid-cols-[auto_1fr] gap-x-6 gap-y-1 rounded-xl border border-line bg-canvas/60 p-3">
+                  {lines.map(([label, value]) => (
                     <div key={label} className="contents">
                       <dt className="text-fg-soft">{label}</dt>
                       <dd className="figures">{value}</dd>
@@ -291,27 +298,28 @@ function NodeRow({ node, balance, announce }: RowProps) {
               )}
 
               {mode === "idle" && (
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" className={buttonClass} onClick={() => setMode("rename")}>
+                <motion.div {...swap} className="flex flex-wrap gap-2">
+                  <button type="button" className={secondary} onClick={() => setMode("rename")}>
                     Rename
                   </button>
                   {isArchived ? (
-                    <button type="button" className={buttonClass} disabled={pending} onClick={restore}>
+                    <button type="button" className={secondary} disabled={pending} onClick={restore}>
                       Restore
                     </button>
                   ) : (
-                    <button type="button" className={buttonClass} disabled={pending} onClick={chooseArchive}>
+                    <button type="button" className={secondary} disabled={pending} onClick={chooseArchive}>
                       Archive
                     </button>
                   )}
-                  <button type="button" className={`${buttonClass} text-negative`} onClick={() => setMode("confirm-delete")}>
+                  <button type="button" className={buttonClass({ variant: "danger", size: "sm" })} onClick={() => setMode("confirm-delete")}>
                     Delete
                   </button>
-                </div>
+                </motion.div>
               )}
 
               {mode === "rename" && (
-                <form
+                <motion.form
+                  {...swap}
                   onSubmit={(event) => {
                     event.preventDefault()
                     rename()
@@ -330,20 +338,20 @@ function NodeRow({ node, balance, announce }: RowProps) {
                     autoFocus
                     aria-invalid={nameErrors.length > 0 || undefined}
                     aria-describedby={nameErrors.length > 0 ? `${panelId}-name-error` : undefined}
-                    className="mt-1 w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 aria-[invalid=true]:border-2 aria-[invalid=true]:border-negative"
+                    className={cn(inputClass, "mt-1.5")}
                   />
                   {nameErrors.length > 0 && (
-                    <p id={`${panelId}-name-error`} className="mt-1 font-medium text-negative">
+                    <p id={`${panelId}-name-error`} className="mt-1.5 font-medium text-negative">
                       {nameErrors.join(" ")}
                     </p>
                   )}
-                  <div className="mt-2 flex gap-2">
-                    <button type="submit" className={primaryClass} disabled={pending}>
+                  <div className="mt-3 flex gap-2">
+                    <button type="submit" className={primary} disabled={pending}>
                       Save name
                     </button>
                     <button
                       type="button"
-                      className={buttonClass}
+                      className={secondary}
                       onClick={() => {
                         setMode("idle")
                         setDraftName(node.name)
@@ -354,57 +362,64 @@ function NodeRow({ node, balance, announce }: RowProps) {
                       Cancel
                     </button>
                   </div>
-                </form>
+                </motion.form>
               )}
 
               {mode === "confirm-archive" && (
-                <div className="max-w-lg bg-notice-wash p-3 text-notice-fg">
-                  <p>
-                    {residual
-                      ? `${node.name} ${residual}. Archiving hides it from your lists, but that balance stays in your net worth. Move the money out first if it should leave.`
-                      : `Archive ${node.name}? It leaves your lists and pickers, its history is kept, and you can restore it.`}
+                <motion.div {...swap} className="max-w-lg rounded-2xl bg-notice-wash p-4 text-notice-fg">
+                  <p className="flex items-start gap-2.5">
+                    <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      {residual
+                        ? `${node.name} ${residual}. Archiving hides it from your lists, but that balance stays in your net worth. Move the money out first if it should leave.`
+                        : `Archive ${node.name}? It leaves your lists and pickers, its history is kept, and you can restore it.`}
+                    </span>
                   </p>
                   <div className="mt-3 flex gap-2">
-                    <button type="button" className={primaryClass} disabled={pending} onClick={archive}>
+                    <button type="button" className={primary} disabled={pending} onClick={archive}>
                       Confirm archive
                     </button>
-                    <button type="button" className={buttonClass} onClick={() => setMode("idle")}>
+                    <button type="button" className={secondary} onClick={() => setMode("idle")}>
                       Keep it
                     </button>
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {mode === "confirm-delete" && (
-                <div className="max-w-lg bg-negative-wash p-3 text-negative">
-                  <p>
-                    Delete {node.name}? This cannot be undone. Only something with no transactions can be deleted: if it
-                    has any, archive it instead.
+                <motion.div {...swap} className="max-w-lg rounded-2xl bg-negative-wash p-4 text-negative">
+                  <p className="flex items-start gap-2.5">
+                    <Trash2 aria-hidden className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      Delete {node.name}? This cannot be undone. Only something with no transactions can be deleted: if it
+                      has any, archive it instead.
+                    </span>
                   </p>
                   <div className="mt-3 flex gap-2">
-                    <button type="button" className={dangerClass} disabled={pending} onClick={remove}>
+                    <button type="button" className={buttonClass({ variant: "danger", size: "sm" })} disabled={pending} onClick={remove}>
                       Confirm delete
                     </button>
-                    <button type="button" className={buttonClass} onClick={() => setMode("idle")}>
+                    <button type="button" className={secondary} onClick={() => setMode("idle")}>
                       Keep it
                     </button>
                   </div>
-                </div>
+                </motion.div>
               )}
 
               {failure && !(mode === "rename" && nameErrors.length > 0) && (
-                <p role="alert" className="mt-3 max-w-lg bg-negative-wash px-3 py-2 font-medium text-negative">
-                  {failure.message}
+                <p role="alert" className="mt-3 flex max-w-lg items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 font-medium text-negative">
+                  <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+                  <span>{failure.message}</span>
                 </p>
               )}
             </>
           )}
         </div>
-      )}
+      </Collapse>
     </li>
   )
 }
 
 function Tag({ children }: { children: React.ReactNode }) {
-  return <span className="ml-2 rounded-sm border border-line-strong px-1.5 py-0.5 align-middle text-xs font-normal text-fg-soft">{children}</span>
+  return <span className="rounded-full border border-line-strong px-2 py-0.5 text-[11px] font-medium text-fg-soft">{children}</span>
 }

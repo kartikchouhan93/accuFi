@@ -1,6 +1,9 @@
 "use client"
 
+import { Plus, X } from "lucide-react"
 import { useRef, useState } from "react"
+import { buttonClass } from "@/components/ui/styles"
+import { NoticeToast, type ToastNotice } from "@/components/ui/notice-toast"
 import type { LedgerKind } from "@/domain/ledger-kind"
 import type { NodeOverview } from "@/lib/node-overview"
 import { NodeForm } from "./node-form"
@@ -10,10 +13,7 @@ import { NodeList } from "./node-list"
 // related arrives already computed in `overview`; after any change the server component is asked again (router.refresh
 // in the form and the rows), so what is drawn is never a client-side guess at what the server now holds.
 
-export interface Notice {
-  tone: "success" | "warning"
-  text: string
-}
+export type Notice = ToastNotice
 
 export function NodeWorkspace({ overview, netWorth }: { overview: NodeOverview; netWorth: React.ReactNode }) {
   const [kind, setKind] = useState<LedgerKind>("ASSET")
@@ -28,57 +28,38 @@ export function NodeWorkspace({ overview, netWorth }: { overview: NodeOverview; 
   }
 
   return (
-    <main className="mx-auto max-w-6xl px-4 pb-28 pt-8 sm:px-6">
-      <div className="flex items-end justify-between gap-4">
-        <h1 className="font-display text-4xl font-bold tracking-tight">Ledger</h1>
+    <main className="mx-auto max-w-6xl px-4 pb-28 pt-8 sm:px-8">
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">Ledger</h1>
         <button
           type="button"
           aria-expanded={formOpen}
           onClick={() => setFormOpen((open) => !open)}
-          className="rounded-sm bg-accent px-4 py-2 font-medium text-accent-fg lg:hidden"
+          className={buttonClass({ className: "lg:hidden" })}
         >
+          {formOpen ? <X aria-hidden className="size-4" /> : <Plus aria-hidden className="size-4" />}
           {formOpen ? "Close form" : "Add to ledger"}
         </button>
       </div>
 
-      <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start">
-        <div>
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start">
+        <div className="space-y-8">
           {netWorth}
-          <div className="mt-8">
-            <NodeList
-              overview={overview}
-              announce={announce}
-              onAdd={(next) => {
-                setKind(next)
-                setFormOpen(true)
-              }}
-            />
-          </div>
+          <NodeList
+            overview={overview}
+            announce={announce}
+            onAdd={(next) => {
+              setKind(next)
+              setFormOpen(true)
+            }}
+          />
         </div>
         <aside className={`${formOpen ? "block" : "hidden"} order-first lg:order-none lg:sticky lg:top-6 lg:block lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto`}>
           <NodeForm kind={kind} onKindChange={setKind} announce={announce} />
         </aside>
       </div>
 
-      <div
-        ref={statusRef}
-        role="status"
-        tabIndex={-1}
-        className="fixed inset-x-4 bottom-4 z-10 mx-auto max-w-xl outline-offset-4 empty:hidden"
-      >
-        {notice && (
-          <div
-            className={`flex items-start gap-3 border-l-4 bg-panel px-4 py-3 shadow-[0_2px_0_var(--line-strong)] ${
-              notice.tone === "warning" ? "border-notice-fg" : "border-accent-edge"
-            }`}
-          >
-            <p className="flex-1">{notice.text}</p>
-            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-link underline underline-offset-4">
-              Dismiss
-            </button>
-          </div>
-        )}
-      </div>
+      <NoticeToast notice={notice} onDismiss={() => setNotice(null)} statusRef={statusRef} />
     </main>
   )
 }

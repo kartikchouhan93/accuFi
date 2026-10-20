@@ -1,7 +1,11 @@
 "use client"
 
+import { CircleAlert, LoaderCircle } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useEffect, useId, useRef, useState, useTransition } from "react"
+import { ChoiceGroup } from "@/components/ui/choice-group"
+import { SpotlightCard } from "@/components/ui/spotlight-card"
+import { buttonClass, inputClass } from "@/components/ui/styles"
 import type { LedgerKind } from "@/domain/ledger-kind"
 import { KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import { describeOpening } from "@/lib/node-money"
@@ -28,9 +32,6 @@ interface Outcome {
   fieldErrors: FieldErrors
   failure: FailureText
 }
-
-const inputClass =
-  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 text-fg placeholder:text-fg-soft/70 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
 
 export function NodeForm({ kind, onKindChange, announce }: Props) {
   const router = useRouter()
@@ -91,36 +92,26 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
   }
 
   return (
+    <SpotlightCard className="surface rounded-3xl" radius={340} strength={10}>
     <form
       ref={formRef}
       onSubmit={submit}
       noValidate
       aria-labelledby={`${formId}-title`}
-      className="border border-line border-t-4 border-t-ink bg-panel p-5"
+      className="p-5 sm:p-6"
     >
-      <h2 id={`${formId}-title`} className="font-display text-xl font-semibold">
+      <h2 id={`${formId}-title`} className="font-display text-xl font-semibold tracking-tight">
         Add to your ledger
       </h2>
 
       <fieldset className="mt-4" aria-describedby={`${formId}-kind-hint`}>
         <legend className="mb-2 text-sm font-medium">What are you adding?</legend>
-        <div className="flex flex-wrap gap-2">
-          {KIND_ORDER.map((option) => (
-            <label key={option} className="relative">
-              <input
-                type="radio"
-                name="kind"
-                value={option}
-                checked={kind === option}
-                onChange={() => onKindChange(option)}
-                className="peer absolute inset-0 size-full cursor-pointer opacity-0"
-              />
-              <span className="block cursor-pointer rounded-sm border border-line-strong px-3 py-1.5 text-sm peer-checked:border-fg peer-checked:bg-fg peer-checked:text-panel peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus">
-                {KIND_COPY[option].singular}
-              </span>
-            </label>
-          ))}
-        </div>
+        <ChoiceGroup
+          name="kind"
+          value={kind}
+          onChange={onKindChange}
+          options={KIND_ORDER.map((option) => ({ value: option, label: KIND_COPY[option].singular }))}
+        />
         <p id={`${formId}-kind-hint`} className="mt-2 text-sm text-fg-soft">
           {copy.hint}
         </p>
@@ -144,19 +135,18 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
       </div>
 
       {alertText && (
-        <p role="alert" className="mt-4 bg-negative-wash px-3 py-2 text-sm text-negative">
-          {alertText}
+        <p role="alert" className="mt-4 flex items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 text-sm font-medium text-negative">
+          <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>{alertText}</span>
         </p>
       )}
 
-      <button
-        type="submit"
-        disabled={pending}
-        className="mt-6 w-full rounded-sm bg-accent px-4 py-2.5 font-medium text-accent-fg disabled:opacity-60"
-      >
+      <button type="submit" disabled={pending} className={buttonClass({ className: "mt-6 w-full" })}>
+        {pending && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
         {copy.addLabel}
       </button>
     </form>
+    </SpotlightCard>
   )
 }
 
@@ -216,30 +206,14 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
           {control.label}
           {marker}
         </legend>
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          {choices.map((choice) => (
-            <label
-              key={choice.value}
-              className="flex cursor-pointer items-start gap-2 rounded-sm border border-line-strong px-3 py-2 text-sm has-[:checked]:border-fg has-[:checked]:bg-canvas has-[:checked]:font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
-            >
-              <input
-                type="radio"
-                name={`${idBase}-direction`}
-                value={choice.value}
-                checked={direction === choice.value}
-                onChange={() => onDirectionChange(choice.value)}
-                aria-describedby={`${idBase}-${choice.value}-meaning`}
-                className="mt-1 accent-pen"
-              />
-              <span>
-                {choice.label}
-                <span id={`${idBase}-${choice.value}-meaning`} className="block text-xs font-normal text-fg-soft">
-                  {choice.meaning}
-                </span>
-              </span>
-            </label>
-          ))}
-        </div>
+        <ChoiceGroup
+          name={`${idBase}-direction`}
+          variant="card"
+          value={direction}
+          onChange={onDirectionChange}
+          options={choices.map((choice) => ({ value: choice.value, label: choice.label, description: choice.meaning }))}
+          className="mt-2"
+        />
         <div className="mt-3">
           <label htmlFor={idBase} className="text-sm">
             Amount (₹)
@@ -254,7 +228,7 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
             onChange={(event) => onChange(event.target.value)}
             aria-invalid={invalid || undefined}
             aria-describedby={[`${idBase}-preview`, invalid ? errorId : null].filter(Boolean).join(" ")}
-            className={`${inputClass} figures mt-1`}
+            className={`${inputClass} figures mt-1.5`}
           />
           <p id={`${idBase}-preview`} className="mt-1 text-sm text-fg-soft">
             {preview ?? "Leave this empty to start at zero. You can change it later, it is an ordinary transaction."}
@@ -342,7 +316,7 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
               type="checkbox"
               checked={value === "true"}
               onChange={(event) => onChange(event.target.checked ? "true" : "")}
-              className="mt-0.5 size-4 shrink-0 accent-pen"
+              className="mt-0.5 size-4 shrink-0 accent-accent"
             />
             <span>{control.label}</span>
           </label>
