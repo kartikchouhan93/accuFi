@@ -1,42 +1,60 @@
 @import "tailwindcss";
 
 /*
- * The look of AccuFi is an accountant's columnar pad: pale green analysis paper, ink in two colours (blue for what you
- * do, red for what is owed or lost, the way a bookkeeper marks a negative), figures in tabular columns, and a double
- * rule for a total. Names run to their figures along a dotted leader. Everything else stays quiet so those few things
- * read as the identity.
+ * AccuFi's look: a quiet indigo-black ledger with one warm accent. Gold is the thing being tracked, so marigold is the
+ * colour of every action and of nothing else. Jade and coral are reserved for what money is doing (held, owed); they are
+ * never used as decoration, so a coloured figure always means something. Panels are separated by hairlines and a faint
+ * edge of light rather than drop shadows, and figures use tabular digits so a column of rupees lines up.
+ *
+ * Both themes share one set of names. Pairs that carry text or a control edge are checked for contrast (see
+ * tests/design/contrast.test.ts): text 4.5:1 or better, input borders, focus rings and accent edges 3:1 against the surface
+ * they sit on. A marigold fill is identified by its label, not its edge; wherever marigold is the edge itself it is
+ * --accent-edge, which is darkened on the light theme because the fill alone is only 1.8:1 against white.
  */
 
 :root {
-  --canvas: #e6eedf;
-  --panel: #f4f8ee;
-  --fg: #17332a;
-  --fg-soft: #4a6557;
-  --line: #b3c8ad;
-  --line-strong: #658a6d;
-  --accent: #1d3cae;
-  --accent-fg: #f4f8ee;
-  --negative: #a8271c;
-  --negative-wash: #f6dcd6;
-  --notice-wash: #f6e8bd;
-  --notice-fg: #5c4300;
+  /* Light: a cool lilac-white, not cream. */
+  --canvas: #f4f3fb;
+  --panel: #ffffff;
+  --panel-raised: #faf9fe;
+  --fg: #17142b;
+  --fg-soft: #5e5a7e;
+  --line: #e3e1f1;
+  --line-strong: #8b86b3;
+  --accent: #f5b93e;
+  --accent-fg: #1a1306;
+  --accent-edge: #9a6a00;
+  --link: #4b41d6;
+  --focus: #4b41d6;
+  --positive: #0a7f5c;
+  --negative: #c0262d;
+  --negative-wash: #fde8e8;
+  --notice-wash: #fff1cc;
+  --notice-fg: #6b4a00;
+  --edge: rgb(255 255 255 / 0.9);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --canvas: #0f1d17;
-    --panel: #162720;
-    --fg: #e3eedc;
-    --fg-soft: #9db5a5;
-    --line: #2f4b3c;
-    --line-strong: #5f8d6c;
-    --accent: #9bb0ff;
-    --accent-fg: #0f1d17;
-    --negative: #ff9486;
-    --negative-wash: #3b1d19;
-    --notice-wash: #3a3014;
-    --notice-fg: #f1d98a;
+    --canvas: #0e0c18;
+    --panel: #16132a;
+    --panel-raised: #1d1a36;
+    --fg: #eeebfa;
+    --fg-soft: #9893b8;
+    --line: #2c2850;
+    --line-strong: #6a64a8;
+    --accent: #f5b93e;
+    --accent-fg: #1a1306;
+    --accent-edge: #f5b93e;
+    --link: #a9a3ff;
+    --focus: #a9a3ff;
+    --positive: #41d6a4;
+    --negative: #ff8a8a;
+    --negative-wash: #341826;
+    --notice-wash: #2d2410;
+    --notice-fg: #f5d58a;
+    --edge: rgb(255 255 255 / 0.06);
     color-scheme: dark;
   }
 }
@@ -44,18 +62,23 @@
 @theme inline {
   --color-canvas: var(--canvas);
   --color-panel: var(--panel);
+  --color-panel-raised: var(--panel-raised);
   --color-fg: var(--fg);
   --color-fg-soft: var(--fg-soft);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
+  --color-accent-edge: var(--accent-edge);
+  --color-link: var(--link);
+  --color-focus: var(--focus);
+  --color-positive: var(--positive);
   --color-negative: var(--negative);
   --color-negative-wash: var(--negative-wash);
   --color-notice-wash: var(--notice-wash);
   --color-notice-fg: var(--notice-fg);
-  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-bricolage), var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-geist), ui-sans-serif, system-ui, sans-serif;
 }
 
 body {
@@ -63,12 +86,12 @@ body {
   color: var(--fg);
   font-family: var(--font-sans);
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
-/* Keyboard focus is always visible, in the pen colour, on every control. */
+/* Keyboard focus is always visible, on every control, in a colour that clears 3:1 on both themes. */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -77,12 +100,27 @@ body {
   font-variant-numeric: tabular-nums lining-nums;
 }
 
-/* A total: a rule above and a double rule below, as a bookkeeper draws the line under a sum. */
-.double-rule {
-  border-bottom: 4px double var(--fg);
+/*
+ * A surface: hairline border, and a one-pixel edge of light along the top that lifts it off the canvas without a shadow.
+ * In the components layer on purpose. Tailwind's utilities sit in a later layer, and unlayered CSS beats any layer, so a
+ * plain `.surface` would silently defeat `hover:bg-panel-raised` and every other utility that tries to change it.
+ */
+@layer components {
+  .surface {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    box-shadow: inset 0 1px 0 var(--edge);
+  }
 }
 
-/* The dotted run from a name to its figure. */
+/*
+ * Carried over from the previous look and removed screen by screen as each is redesigned: a dotted run from a name to its
+ * figure, and a double rule under a total. They are restyled in the new tokens so the screens not yet redone stay legible.
+ */
+.double-rule {
+  border-bottom: 4px double var(--line-strong);
+}
+
 .leader {
   flex: 1 1 auto;
   min-width: 1.25rem;
@@ -96,5 +134,27 @@ body {
   *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
   }
+}
+
+/*
+ * The one entrance in the app: the net-worth figure settles into place as the dashboard opens, symbol first, then the
+ * digits, then the paise. Pure CSS, so it plays without JavaScript and the figure is never hidden waiting for a script.
+ * `both` holds the start state during the delay and the end state afterwards, which is the finished figure, so someone
+ * who has asked for less motion (the rule above shortens it to nothing) sees it exactly as it ends.
+ */
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(0.3em);
+    filter: blur(6px);
+  }
+}
+
+.settle {
+  display: inline-block;
+  animation: settle 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: var(--delay, 0ms);
 }

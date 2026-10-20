@@ -1,10 +1,11 @@
 import type { Metadata } from "next"
-import { Bricolage_Grotesque, IBM_Plex_Sans } from "next/font/google"
+import { Bricolage_Grotesque, Geist } from "next/font/google"
 import "./globals.css"
 
-// Plex for everything you read and every figure (it has tabular numerals and the rupee sign); Bricolage Grotesque only
-// for the wordmark and headings, where its width and slightly odd letterforms are the personality.
-const plex = IBM_Plex_Sans({ variable: "--font-plex", subsets: ["latin", "latin-ext"], weight: ["400", "500", "600"] })
+// Geist for everything you read and every figure: its tabular numerals keep a column of rupees aligned and it carries the
+// rupee sign. Bricolage Grotesque only for the wordmark, headings and the net-worth figure, where its width and slightly
+// odd letterforms are the personality.
+const geist = Geist({ variable: "--font-geist", subsets: ["latin", "latin-ext"] })
 const bricolage = Bricolage_Grotesque({ variable: "--font-bricolage", subsets: ["latin", "latin-ext"] })
 
 export const metadata: Metadata = {
@@ -14,8 +15,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body className={`${plex.variable} ${bricolage.variable} antialiased`}>{children}</body>
+    // The font variables go on <html>, not <body>: --font-sans is declared on :root, and a variable can only be substituted
+    // from where it is defined or above. Defined on <body>, the body's own font-family resolved to nothing and fell back to
+    // the system stack, so the typeface was never applied to body text.
+    <html lang="en" className={`${geist.variable} ${bricolage.variable}`}>
+      <body className="antialiased">{children}</body>
     </html>
   )
 }
