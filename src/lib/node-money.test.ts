@@ -24,6 +24,14 @@ describe("describeBalance", () => {
     expect(describeBalance("EXPENSE", "45000")).toMatchObject({ amount: "₹450.00", qualifier: "spent" })
   })
 
+  it("calls an expense that has been refunded past what was spent a net refund, not a negative amount spent", () => {
+    // EC-20 allows the total to go below zero (a refund larger than the spend). "-₹500.00 spent" is the wrong word for it.
+    expect(describeBalance("EXPENSE", "-50000")).toEqual({ amount: "₹500.00", qualifier: "net refund", tone: "neutral" })
+    expect(describeBalance("EXPENSE", "-1")).toMatchObject({ amount: "₹0.01", qualifier: "net refund" })
+    // Anything above zero is still spend.
+    expect(describeBalance("EXPENSE", "1")).toMatchObject({ amount: "₹0.01", qualifier: "spent" })
+  })
+
   it("mutes a zero balance whatever the kind, with no qualifier", () => {
     for (const kind of ["ASSET", "INVESTMENT", "LIABILITY", "INCOME_SOURCE", "EXPENSE"] as const) {
       expect(describeBalance(kind, "0")).toEqual({ amount: "₹0.00", qualifier: null, tone: "muted" })

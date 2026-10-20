@@ -16,7 +16,7 @@ export type Tone = "positive" | "negative" | "neutral" | "muted"
 export interface BalanceText {
   /** "₹1,25,000.50", or "-₹2,000.00" for an overdrawn account. */
   amount: string
-  /** A word that says what the figure is: "owed", "received", "spent". Null when the figure speaks for itself. */
+  /** A word that says what the figure is: "owed", "received", "spent", "net refund". Null when the figure speaks for itself. */
   qualifier: string | null
   tone: Tone
 }
@@ -41,7 +41,11 @@ export function describeBalance(kind: LedgerKind, paise: string): BalanceText {
     case "INCOME_SOURCE":
       return { amount: formatPaise(-balance), qualifier: "received", tone: "neutral" }
     case "EXPENSE":
-      return { amount: formatPaise(balance), qualifier: "spent", tone: "neutral" }
+      // Spend is what flowed in, so a refund larger than the spend (EC-20) leaves the total below zero: said as a net
+      // refund, with the magnitude, as a liability is said as what is owed. "-₹500.00 spent" would be a contradiction.
+      return balance < 0n
+        ? { amount: formatPaise(-balance), qualifier: "net refund", tone: "neutral" }
+        : { amount: formatPaise(balance), qualifier: "spent", tone: "neutral" }
   }
 }
 
