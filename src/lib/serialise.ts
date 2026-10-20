@@ -9,7 +9,8 @@ export function serialisePaise(amount: Paise): string {
 
 /** Throws MoneyParseError (same as parseRupees) so Server Actions catch one type for bad money input. */
 export function deserialisePaise(value: string): Paise {
-  // BigInt() alone would accept "", " 12 ", "0x10" and "1e3"-style oddities; only plain integers pass.
+  // BigInt() alone would accept "" (as 0n), " 12 " and "0x10" (as 16n); it throws on "1e3", but the point holds: only
+  // plain integers pass, so what is stored is exactly what was written.
   if (!/^-?\d+$/.test(value)) {
     throw new MoneyParseError(`Cannot deserialise "${value}" as integer paise`)
   }

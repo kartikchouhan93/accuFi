@@ -71,8 +71,11 @@ export const MAX_PAGE_SIZE = 200
 
 // Listings are newest first on (occurredAt, id). `id` makes the order total, so rows sharing a day never straddle a
 // page boundary ambiguously. The cursor is the last row's pair; the next page is everything strictly after it.
-// Keyset, not OFFSET: rows inserted meanwhile cannot shift a page, and the (userId, occurredAt, id) index serves the
-// order and the cursor condition directly, so deep pages do not scan the pages before them.
+// Keyset, not OFFSET: rows inserted meanwhile cannot shift a page. The (userId, occurredAt, id) index supplies the
+// ordering only, so a page is read in order without a sort. The cursor condition is written as an OR, and Postgres
+// cannot use an OR as a range bound on that index: it is applied as a filter on the way, so a deep page still walks past
+// the rows before it. A row comparison, (occurredAt, id) < (a, b), could be bounded; that is the change to make if deep
+// pages ever matter.
 function encodeCursor(row: Pick<Transaction, "occurredAt" | "id">): string {
   return Buffer.from(JSON.stringify([fromDbDate(row.occurredAt), row.id])).toString("base64url")
 }

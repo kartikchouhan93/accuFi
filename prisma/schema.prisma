@@ -151,7 +151,7 @@ model Transaction {
   @@unique([userId, idempotencyKey])
   @@index([userId, toNodeId, occurredAt])
   @@index([userId, fromNodeId, occurredAt])
-  @@index([userId, occurredAt, id]) // the listing order and keyset cursor: (occurredAt, id)
+  @@index([userId, occurredAt, id]) // the listing order: (occurredAt, id). The keyset cursor is filtered, not bounded, by it
 }
 
 // Fixed-window attempt counters for the auth endpoints (spec §9.5), held in Postgres so they survive a restart
