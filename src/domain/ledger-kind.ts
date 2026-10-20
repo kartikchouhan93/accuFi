@@ -11,6 +11,11 @@ export type LedgerKind = (typeof LEDGER_KINDS)[number]
 export const LOT_METHODS = ["FIFO", "LIFO", "HIGHEST_COST_FIRST"] as const
 export type LotMethod = (typeof LOT_METHODS)[number]
 
+// Where a price snapshot came from. The same members as the Prisma enum PriceSource (pinned by
+// tests/db/enum-parity.test.ts). Only MANUAL is written in M2; FEED is the seam for a future price feed (spec §7.4).
+export const PRICE_SOURCES = ["MANUAL", "FEED"] as const
+export type PriceSource = (typeof PRICE_SOURCES)[number]
+
 // Nodes the system creates itself, never the user.
 export const SYSTEM_NODE_ROLES = ["OPENING_BALANCE", "OPENING_BALANCE_CONTRA", "REALISED_GAIN", "REALISED_LOSS"] as const
 export type SystemNodeRole = (typeof SYSTEM_NODE_ROLES)[number]

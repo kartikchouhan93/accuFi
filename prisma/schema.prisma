@@ -9,8 +9,9 @@ generator client {
 
 // createdAt defaults to the database clock (dbgenerated now()), never the app's, so app/DB clock skew cannot reorder
 // history (EC-66). updatedAt is different: `@updatedAt` makes Prisma supply a value itself on create and on update, so
-// the column default never applies. The database clock is enforced by the BEFORE INSERT OR UPDATE trigger on
-// "Transaction" (migration updated_at_on_insert_and_keyset_index), which overwrites whatever the statement sent.
+// the column default never applies. The database clock is enforced by a BEFORE INSERT OR UPDATE trigger on each table
+// with an updatedAt ("Transaction": migration updated_at_on_insert_and_keyset_index; "PriceSnapshot": migration
+// investments), which overwrites whatever the statement sent.
 
 // Everything money can come from, sit in, or go to is a ledger node of one of these kinds.
 enum LedgerKind {
@@ -48,6 +49,13 @@ enum LotMethod {
   HIGHEST_COST_FIRST
 }
 
+// Where a price snapshot came from (spec §7.4). Mirrors PRICE_SOURCES in src/domain/ledger-kind.ts (pinned by
+// tests/db/enum-parity.test.ts). Only MANUAL is written in M2; FEED is the seam for a future price feed.
+enum PriceSource {
+  MANUAL
+  FEED
+}
+
 // Nodes the system creates itself, never the user. Mirrors SystemNodeRole in src/domain/ledger-kind.ts
 // (pinned by tests/db/enum-parity.test.ts).
 enum SystemNodeRole {
@@ -76,6 +84,9 @@ model User {
   nodes             LedgerNode[]
   transactionGroups TransactionGroup[]
   transactions      Transaction[]
+  lots              InvestmentLot[]
+  lotConsumptions   LotConsumption[]
+  priceSnapshots    PriceSnapshot[]
 }
 
 // One table for every node of the ledger; `kind` says which. There is deliberately no balance column
@@ -102,11 +113,13 @@ model LedgerNode {
   archivedAt       DateTime?         @db.Timestamptz(3)
   createdAt        DateTime          @default(dbgenerated("now()")) @db.Timestamptz(3)
 
-  user     User          @relation(fields: [userId], references: [id])
-  parent   LedgerNode?   @relation("NodeTree", fields: [parentId], references: [id])
-  children LedgerNode[]  @relation("NodeTree")
-  outgoing Transaction[] @relation("TransactionFrom")
-  incoming Transaction[] @relation("TransactionTo")
+  user           User            @relation(fields: [userId], references: [id])
+  parent         LedgerNode?     @relation("NodeTree", fields: [parentId], references: [id])
+  children       LedgerNode[]    @relation("NodeTree")
+  outgoing       Transaction[]   @relation("TransactionFrom")
+  incoming       Transaction[]   @relation("TransactionTo")
+  lots           InvestmentLot[]
+  priceSnapshots PriceSnapshot[]
 
   // NULLs are distinct in Postgres, so any number of ordinary nodes (systemRole null) coexist; at most one system node per role.
   @@unique([userId, systemRole])
@@ -142,10 +155,12 @@ model Transaction {
   createdAt      DateTime  @default(dbgenerated("now()")) @db.Timestamptz(3)
   updatedAt      DateTime  @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
 
-  user     User              @relation(fields: [userId], references: [id])
-  fromNode LedgerNode        @relation("TransactionFrom", fields: [fromNodeId], references: [id])
-  toNode   LedgerNode        @relation("TransactionTo", fields: [toNodeId], references: [id])
-  group    TransactionGroup? @relation(fields: [groupId], references: [id])
+  user         User              @relation(fields: [userId], references: [id])
+  fromNode     LedgerNode        @relation("TransactionFrom", fields: [fromNodeId], references: [id])
+  toNode       LedgerNode        @relation("TransactionTo", fields: [toNodeId], references: [id])
+  group        TransactionGroup? @relation(fields: [groupId], references: [id])
+  lot          InvestmentLot? // the lot this transaction acquired, if it bought into a lot-mode investment
+  consumptions LotConsumption[] // the lots this disposal cost-basis leg consumed
 
   // NULLs are distinct, so any number of transactions without an idempotency key coexist.
   @@unique([userId, idempotencyKey])
@@ -164,4 +179,64 @@ model RateLimitCounter {
   count       Int
 
   @@index([windowStart])
+}
+
+// One lot per acquiring transaction in a QUANTITY or LUMP investment (spec §7.2). There is deliberately no
+// remaining-quantity column (§9.4: nothing cached): remaining = quantity - the sum of the lot's live consumptions, where
+// a lot is live while its acquiring transaction is not deleted and a consumption while its disposal is not deleted.
+// quantity, costBasisPaise > 0 are CHECK constraints (migration investments); Prisma cannot express them.
+model InvestmentLot {
+  id             String   @id @default(cuid())
+  userId         String
+  nodeId         String
+  transactionId  String   @unique // one lot per acquiring transaction
+  quantity       Decimal  @db.Decimal(18, 6)
+  costBasisPaise BigInt // authoritative; equals the acquiring transaction's amount
+  acquiredAt     DateTime @db.Date // a calendar day, copied from the transaction
+  createdAt      DateTime @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user         User             @relation(fields: [userId], references: [id])
+  node         LedgerNode       @relation(fields: [nodeId], references: [id])
+  transaction  Transaction      @relation(fields: [transactionId], references: [id])
+  consumptions LotConsumption[]
+
+  @@index([userId, nodeId, acquiredAt])
+}
+
+// How much of one lot one disposal consumed (spec §7.5). transactionId is the disposal's cost-basis leg, the
+// INVESTMENT -> ASSET transaction; without this table editing or deleting a disposal could not be unwound.
+model LotConsumption {
+  id             String   @id @default(cuid())
+  userId         String
+  lotId          String
+  transactionId  String
+  quantity       Decimal  @db.Decimal(18, 6)
+  costBasisPaise BigInt
+  createdAt      DateTime @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user        User          @relation(fields: [userId], references: [id])
+  lot         InvestmentLot @relation(fields: [lotId], references: [id])
+  transaction Transaction   @relation(fields: [transactionId], references: [id])
+
+  @@unique([lotId, transactionId])
+  @@index([userId, transactionId])
+}
+
+// A manually entered (or, later, fed) price for one unit of an investment on a day (spec §7.3). Re-entering a day
+// overwrites it. updatedAt is stamped by the database clock through the same trigger as Transaction (EC-66).
+model PriceSnapshot {
+  id                String      @id @default(cuid())
+  userId            String
+  nodeId            String
+  asOf              DateTime    @db.Date // a calendar day
+  pricePerUnitPaise BigInt
+  source            PriceSource @default(MANUAL)
+  createdAt         DateTime    @default(dbgenerated("now()")) @db.Timestamptz(3)
+  updatedAt         DateTime    @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
+
+  user User       @relation(fields: [userId], references: [id])
+  node LedgerNode @relation(fields: [nodeId], references: [id])
+
+  @@unique([nodeId, asOf])
+  @@index([userId, nodeId, asOf])
 }

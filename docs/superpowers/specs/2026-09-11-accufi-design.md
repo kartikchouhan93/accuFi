@@ -205,12 +205,13 @@ Every transaction targeting an `INVESTMENT` in `QUANTITY` or `LUMP` mode creates
 
 ```
 quantity           Decimal(18,6)
-quantityRemaining  Decimal(18,6)   -- reduced by disposals (§7.5)
 costBasisPaise     BigInt          -- authoritative; equals the transaction amount
 unitCostPaise      BigInt          -- derived, for display only
 acquiredAt         Date            -- copied from the transaction
 transactionId      FK, unique      -- one lot per acquiring transaction
 ```
+
+There is deliberately no `quantityRemaining` column. The remaining quantity of a lot is **derived**: `quantity − Σ the quantities of its live consumptions` (§7.5), where a lot is live while its acquiring transaction is not deleted and a consumption is live while its disposal transaction is not deleted. This is §9.4 applied to lots: a cached remainder would have to be kept right by every path that creates, edits, deletes or restores a transaction, and one missed path corrupts it invisibly. Derived, deleting or restoring a disposal needs no bookkeeping at all. The remaining cost basis is derived the same way, from the consumptions' `costBasisPaise`.
 
 `costBasisPaise` is authoritative and always equals the acquiring transaction's amount exactly. `unitCostPaise` is derived from it by division and is therefore approximate — `quantity × unitCostPaise` may differ from the cost basis by a paisa or two, and no calculation is ever allowed to depend on that product. The user enters any two of {amount, quantity, unit price} and the third is computed.
 
@@ -252,7 +253,15 @@ INVESTMENT → EXPENSE "Realised Loss"      ₹8,000   (system node)
 
 Both system nodes are created per user at signup, flagged `isSystem`, and cannot be renamed into something else or deleted. The result: the investment node's contribution balance always reduces by exactly the cost basis removed, and gains and losses land in the income and expense reports where they belong.
 
-**Lot consumption** is FIFO by default, configurable per node to LIFO or highest-cost-first. Partial consumption is supported: selling 8g when lots are 10g @ ₹7,000 and 5g @ ₹7,400 consumes all of the first lot and 3g of the second, for a cost basis of ₹70,000 + ₹22,200 = ₹92,200. Each `InvestmentLot` carries `quantityRemaining`, and a `LotConsumption` join table records which disposal consumed which lots and how much — without it, editing or deleting a disposal cannot be unwound correctly.
+**Lot consumption** is FIFO by default, configurable per node to LIFO or highest-cost-first. Partial consumption is supported: selling 13g when lots are 10g @ ₹7,000 and 5g @ ₹7,400 consumes all of the first lot and 3g of the second, for a cost basis of ₹70,000 + ₹22,200 = ₹92,200. A `LotConsumption` join table (lot, the disposal's cost-basis leg, quantity, cost basis) records which disposal consumed which lots and how much — without it, editing or deleting a disposal cannot be unwound correctly.
+
+**M2 rulings.** Decisions made while planning M2 that the sections above leave open:
+
+1. **Selling has its own form.** A "Sell / redeem" form on the investment records a disposal. A transaction *out of* a `QUANTITY` or `LUMP` investment through the generic transaction form is refused with a pointer to Sell, so lots cannot drift from the ledger. Fund switches (`INVESTMENT → INVESTMENT` where an end is lot-mode) and fees out of a lot-mode investment are refused in M2 ("sell, then buy"). `CONTRIBUTION_ONLY` investments keep every existing flow.
+2. **Disposal postings follow this section exactly.** A gain posts a cost-basis leg plus a Realised Gain leg; a loss posts a proceeds leg plus a Realised Loss leg; break-even posts one plain leg. A disposal is deleted and restored as a unit and **cannot be edited** in M2 ("delete it and enter it again").
+3. **Valuation is "as of a day".** Open quantity at day *D* counts lots acquired on or before *D* and consumptions disposed on or before *D*. A disposal may only consume lots acquired on or before its own date. Net worth values at today, and the "projected" figure reuses today's valuation.
+4. **Existing investment data is never guessed.** A lot-mode node whose live inflows lack a lot, or that has an outflow with no consumption, is "not valued" (reason "needs quantity") until the user edits those entries to add a quantity. Nothing is backfilled.
+5. **A price cannot be dated after today** (a forecast is not a price); any earlier date is accepted (EC-25). Re-entering a date overwrites it (EC-26).
 
 ---
 
@@ -423,7 +432,7 @@ These are requirements, not notes. Each gets a test.
 | EC-10 | Future-dated transaction | Allowed. Excluded from "current balance"; surfaced separately as a projected balance. Reports default to excluding the future. |
 | EC-11 | Overdrawing an asset account | Warned, not blocked — out-of-order entry is normal. An opt-in per-account `blockNegative` flag is available. |
 | EC-12 | Card spend beyond the credit limit | Warned, not blocked. |
-| EC-13 | Deleting a transaction | Soft delete. Balances recompute. If the transaction created a lot, the lot is removed; if it consumed lots, the consumption is reversed and `quantityRemaining` restored. Blocked if reversal would leave a later disposal without enough quantity — the later disposal must be corrected first. |
+| EC-13 | Deleting a transaction | Soft delete. Balances recompute. If the transaction created a lot, the lot is removed; if it consumed lots, the consumption stops counting and the lots' remaining quantities (derived, §7.2) recover with it. Blocked if reversal would leave a later disposal without enough quantity — the later disposal must be corrected first. |
 | EC-14 | Editing a transaction that references an archived node | Permitted, so history stays correctable. Archived nodes never appear in pickers for new entries. |
 | EC-15 | Editing amount, quantity, or date of a lot-creating transaction | The lot updates in lockstep. Rejected if the lot is already partly consumed and the new quantity is smaller than what has been consumed. |
 | EC-16 | Editing a transaction's `from` or `to` | Revalidated against the matrix. Changing the target away from an `INVESTMENT` deletes the lot, subject to EC-15. |

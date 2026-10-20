@@ -27,6 +27,9 @@ async function makeUserWithNodes() {
 }
 
 afterAll(async () => {
+  await prisma.lotConsumption.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.investmentLot.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.priceSnapshot.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.transaction.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.transactionGroup.deleteMany({ where: { userId: { in: createdUserIds } } })
   // Children before parents: a node may reference a parent node.
@@ -35,6 +38,42 @@ afterAll(async () => {
   await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } })
   await prisma.$disconnect()
 })
+
+/** A user with an INVESTMENT node, plus a helper that books a transaction into it from a bank node. */
+async function makeInvestor() {
+  const user = await makeUser()
+  const bank = await prisma.ledgerNode.create({ data: { userId: user.id, kind: "ASSET", name: "Bank" } })
+  const node = await prisma.ledgerNode.create({
+    data: { userId: user.id, kind: "INVESTMENT", name: "Gold", valuationMode: "QUANTITY", unitLabel: "g" },
+  })
+  const buy = () =>
+    prisma.transaction.create({
+      data: {
+        userId: user.id,
+        fromNodeId: bank.id,
+        toNodeId: node.id,
+        amountPaise: 7_000_000n,
+        occurredAt: toDbDate(calendarDate("2026-04-01")),
+      },
+    })
+  const lotData = (transactionId: string, over: Partial<Prisma.InvestmentLotUncheckedCreateInput> = {}) => ({
+    userId: user.id,
+    nodeId: node.id,
+    transactionId,
+    quantity: new Prisma.Decimal("10"),
+    costBasisPaise: 7_000_000n,
+    acquiredAt: toDbDate(calendarDate("2026-04-01")),
+    ...over,
+  })
+  const priceData = (over: Partial<Prisma.PriceSnapshotUncheckedCreateInput> = {}) => ({
+    userId: user.id,
+    nodeId: node.id,
+    asOf: toDbDate(calendarDate("2026-04-01")),
+    pricePerUnitPaise: 710_000n,
+    ...over,
+  })
+  return { user, bank, node, buy, lotData, priceData }
+}
 
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002"
@@ -273,6 +312,137 @@ describe("column types and defaults", () => {
     for (const table of ["User", "LedgerNode", "TransactionGroup", "Transaction"]) {
       const names = (await columns(table)).map((c) => c.column_name.toLowerCase())
       expect(names.filter((n) => n.includes("balance")), table).toEqual([])
+    }
+  })
+})
+
+// The CHECK constraints are the last line of defence: a zero or negative quantity, cost or price must never be stored,
+// whatever the application layer does.
+describe("investment lots, lot consumptions and price snapshots", () => {
+  async function expectCheckViolation(promise: Promise<unknown>) {
+    const error = await promise.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error, "expected the insert to be rejected").toBeDefined()
+    expect(String(error)).toMatch(/check constraint/i)
+  }
+
+  it("stores a lot and reads back its quantity exactly, with acquiredAt as the same calendar day", async () => {
+    const { buy, lotData } = await makeInvestor()
+    const tx = await buy()
+    const lot = await prisma.investmentLot.create({
+      data: lotData(tx.id, { quantity: new Prisma.Decimal("10.123456"), costBasisPaise: 9_007_199_254_740_993n }),
+    })
+    const read = await prisma.investmentLot.findUniqueOrThrow({ where: { id: lot.id } })
+    expect(read.quantity.toFixed(6)).toBe("10.123456")
+    expect(read.costBasisPaise).toBe(9_007_199_254_740_993n)
+    expect(fromDbDate(read.acquiredAt)).toBe("2026-04-01")
+  })
+
+  it("rejects a lot with a zero or negative quantity", async () => {
+    const { buy, lotData } = await makeInvestor()
+    await expectCheckViolation(prisma.investmentLot.create({ data: lotData((await buy()).id, { quantity: new Prisma.Decimal("0") }) }))
+    await expectCheckViolation(prisma.investmentLot.create({ data: lotData((await buy()).id, { quantity: new Prisma.Decimal("-1") }) }))
+  })
+
+  it("rejects a lot with a zero or negative cost basis", async () => {
+    const { buy, lotData } = await makeInvestor()
+    await expectCheckViolation(prisma.investmentLot.create({ data: lotData((await buy()).id, { costBasisPaise: 0n }) }))
+    await expectCheckViolation(prisma.investmentLot.create({ data: lotData((await buy()).id, { costBasisPaise: -1n }) }))
+  })
+
+  it("rejects a second lot for the same acquiring transaction", async () => {
+    const { buy, lotData } = await makeInvestor()
+    const tx = await buy()
+    await prisma.investmentLot.create({ data: lotData(tx.id) })
+    await expectUniqueViolation(prisma.investmentLot.create({ data: lotData(tx.id) }))
+  })
+
+  it("rejects a consumption with a zero quantity or a non-positive cost basis", async () => {
+    const { buy, lotData } = await makeInvestor()
+    const lot = await prisma.investmentLot.create({ data: lotData((await buy()).id) })
+    const sale = await buy()
+    const consume = (over: Partial<Prisma.LotConsumptionUncheckedCreateInput>) =>
+      prisma.lotConsumption.create({
+        data: {
+          userId: lot.userId,
+          lotId: lot.id,
+          transactionId: sale.id,
+          quantity: new Prisma.Decimal("1"),
+          costBasisPaise: 700_000n,
+          ...over,
+        },
+      })
+    await expectCheckViolation(consume({ quantity: new Prisma.Decimal("0") }))
+    await expectCheckViolation(consume({ costBasisPaise: 0n }))
+  })
+
+  it("rejects the same (lot, disposal transaction) consumption twice, but allows one disposal to consume two lots", async () => {
+    const { buy, lotData, user } = await makeInvestor()
+    const lotA = await prisma.investmentLot.create({ data: lotData((await buy()).id) })
+    const lotB = await prisma.investmentLot.create({ data: lotData((await buy()).id) })
+    const sale = await buy()
+    const consume = (lotId: string) =>
+      prisma.lotConsumption.create({
+        data: { userId: user.id, lotId, transactionId: sale.id, quantity: new Prisma.Decimal("1"), costBasisPaise: 700_000n },
+      })
+    await consume(lotA.id)
+    await expectUniqueViolation(consume(lotA.id))
+    await expect(consume(lotB.id)).resolves.toBeDefined()
+  })
+
+  it("rejects two price snapshots for the same (node, asOf), and allows other days", async () => {
+    const { priceData } = await makeInvestor()
+    await prisma.priceSnapshot.create({ data: priceData() })
+    await expectUniqueViolation(prisma.priceSnapshot.create({ data: priceData({ pricePerUnitPaise: 720_000n }) }))
+    await expect(
+      prisma.priceSnapshot.create({ data: priceData({ asOf: toDbDate(calendarDate("2026-04-02")) }) }),
+    ).resolves.toBeDefined()
+  })
+
+  it("rejects a price snapshot with a zero or negative price", async () => {
+    const { priceData } = await makeInvestor()
+    await expectCheckViolation(prisma.priceSnapshot.create({ data: priceData({ pricePerUnitPaise: 0n }) }))
+    await expectCheckViolation(prisma.priceSnapshot.create({ data: priceData({ pricePerUnitPaise: -5n }) }))
+  })
+
+  it("defaults a snapshot's source to MANUAL and its asOf to a calendar day", async () => {
+    const { priceData } = await makeInvestor()
+    const snap = await prisma.priceSnapshot.create({ data: priceData() })
+    expect(snap.source).toBe("MANUAL")
+    expect(fromDbDate(snap.asOf)).toBe("2026-04-01")
+  })
+
+  it("stamps a snapshot's updatedAt from the database clock on insert and on update (EC-66)", async () => {
+    const { priceData } = await makeInvestor()
+    const snap = await prisma.priceSnapshot.create({
+      data: priceData({ updatedAt: new Date("2000-01-01T00:00:00Z") }),
+    })
+    const [row] = await prisma.$queryRaw<{ same: boolean }[]>`
+      SELECT "updatedAt" = "createdAt" AS same FROM "PriceSnapshot" WHERE "id" = ${snap.id}`
+    expect(row.same).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const updated = await prisma.priceSnapshot.update({
+      where: { id: snap.id },
+      data: { pricePerUnitPaise: 720_000n, updatedAt: new Date("2000-01-01T00:00:00Z") },
+    })
+    expect(updated.updatedAt.getTime()).toBeGreaterThan(snap.updatedAt.getTime())
+  })
+
+  it("has no stored remaining-quantity column on lots (remaining is derived, spec §7.2)", async () => {
+    const cols = await prisma.$queryRaw<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'InvestmentLot'`
+    expect(cols.length).toBeGreaterThan(0)
+    expect(cols.map((c) => c.column_name.toLowerCase()).filter((n) => n.includes("remaining"))).toEqual([])
+  })
+
+  it("defaults createdAt on the three new tables to the database clock (EC-66)", async () => {
+    for (const table of ["InvestmentLot", "LotConsumption", "PriceSnapshot"]) {
+      const [col] = await prisma.$queryRaw<{ column_default: string | null }[]>`
+        SELECT column_default FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ${table} AND column_name = 'createdAt'`
+      expect(col?.column_default, `${table}.createdAt`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
     }
   })
 })
