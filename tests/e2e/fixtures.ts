@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { test as base, expect, type Page } from "@playwright/test"
+import { test as base, expect, type BrowserContext, type Page } from "@playwright/test"
 import { prisma } from "@/server/db"
 import { createAccount } from "@/server/services/signup-service"
 
@@ -10,7 +10,8 @@ import { createAccount } from "@/server/services/signup-service"
 
 const PASSWORD = "correct horse battery"
 
-async function deleteUser(userId: string) {
+/** Deletes a user and everything it owns. Exported for tests that create their own users (through the signup form). */
+export async function deleteUser(userId: string) {
   await prisma.transaction.deleteMany({ where: { userId } })
   await prisma.transactionGroup.deleteMany({ where: { userId } })
   await prisma.ledgerNode.deleteMany({ where: { userId, parentId: { not: null } } })
@@ -36,7 +37,9 @@ async function signIn(page: Page): Promise<string> {
   return userId
 }
 
-export const test = base.extend<{ ledger: Page; session: { page: Page; userId: string } }>({
+type Session = { page: Page; userId: string }
+
+export const test = base.extend<{ ledger: Page; session: Session; pair: { a: Session; b: Session } }>({
   // Named `provide`, not `use`: React's hooks lint treats a call to `use` as a hook.
   ledger: async ({ page }, provide) => {
     const userId = await signIn(page)
@@ -54,6 +57,28 @@ export const test = base.extend<{ ledger: Page; session: { page: Page; userId: s
       await provide({ page, userId })
     } finally {
       await deleteUser(userId)
+    }
+  },
+  // Two independent users, each in a browser context of its own, so their cookies cannot reach each other. A signs in
+  // first. A context made with browser.newContext() does not inherit the project's baseURL, so it is passed explicitly.
+  pair: async ({ browser, baseURL }, provide) => {
+    const users: string[] = []
+    const contexts: BrowserContext[] = []
+    try {
+      const open = async (): Promise<Session> => {
+        const context = await browser.newContext({ baseURL })
+        contexts.push(context)
+        const page = await context.newPage()
+        const userId = await signIn(page)
+        users.push(userId)
+        return { page, userId }
+      }
+      const a = await open()
+      const b = await open()
+      await provide({ a, b })
+    } finally {
+      await Promise.all(contexts.map((context) => context.close()))
+      for (const userId of users) await deleteUser(userId)
     }
   },
 })
