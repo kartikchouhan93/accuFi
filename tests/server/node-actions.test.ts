@@ -10,6 +10,9 @@ const { requireUserId, UnauthenticatedError } = vi.hoisted(() => {
   return { requireUserId: vi.fn(), UnauthenticatedError }
 })
 vi.mock("@/server/auth", () => ({ requireUserId, UnauthenticatedError }))
+// revalidatePath needs a request to belong to; here it is replaced by a spy so a test can say which pages a write invalidates.
+const { revalidatePath } = vi.hoisted(() => ({ revalidatePath: vi.fn() }))
+vi.mock("next/cache", () => ({ revalidatePath }))
 
 const actions = await import("@/app/nodes/actions")
 const nodeService = await import("@/server/services/node-service")
@@ -18,6 +21,7 @@ const registry = createRegistry()
 afterAll(registry.cleanup)
 beforeEach(() => {
   requireUserId.mockReset()
+  revalidatePath.mockReset()
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -271,5 +275,50 @@ describe("archiveNodeAction, restoreNodeAction and removeNodeAction", () => {
       expect(await action({ nodeId: "" })).toMatchObject({ ok: false, error: { code: "invalid_input" } })
       expect(await action("not-an-object")).toMatchObject({ ok: false, error: { code: "invalid_input" } })
     }
+  })
+})
+
+describe("cache invalidation", () => {
+  const revalidated = () => revalidatePath.mock.calls.map(([path]) => path).sort()
+  const everywhere = ["/", "/nodes", "/transactions"]
+
+  // A node write changes what other screens show: net worth on "/" and the balances and pickers on "/transactions" move
+  // with an opening balance, an archive or a rename. router.refresh() renews only the page the user is on.
+  it("invalidates the ledger, the transaction screen and the home page after every write that succeeds", async () => {
+    await signedInSeededUser()
+    const created = await actions.createNodeAction({ ...bankInput, openingBalance: "500" })
+    expect(created.ok).toBe(true)
+    expect(revalidated()).toEqual(everywhere)
+    const id = created.ok ? created.data.node.id : ""
+    const scratch = await actions.createNodeAction({ kind: "EXPENSE", name: "Scratch" })
+    const scratchId = scratch.ok ? scratch.data.node.id : ""
+
+    const writes: [string, () => Promise<unknown>][] = [
+      ["rename", () => actions.renameNodeAction({ nodeId: id, name: "HDFC Current" })],
+      ["archive", () => actions.archiveNodeAction({ nodeId: id })],
+      ["restore", () => actions.restoreNodeAction({ nodeId: id })],
+      ["remove", () => actions.removeNodeAction({ nodeId: scratchId })],
+    ]
+    for (const [name, write] of writes) {
+      revalidatePath.mockReset()
+      expect(await write(), name).toMatchObject({ ok: true })
+      expect(revalidated(), name).toEqual(everywhere)
+    }
+  })
+
+  it("invalidates nothing when the write was refused, and nothing for a read", async () => {
+    const user = await signedInSeededUser()
+    const opening = await prisma.ledgerNode.findFirstOrThrow({ where: { userId: user.id, systemRole: "OPENING_BALANCE" } })
+    const created = await actions.createNodeAction({ ...bankInput, openingBalance: "500" })
+    const id = created.ok ? created.data.node.id : ""
+    revalidatePath.mockReset()
+
+    await actions.createNodeAction({ kind: "ASSET", name: "" }) // invalid input
+    await actions.renameNodeAction({ nodeId: opening.id, name: "Mine" }) // system node
+    await actions.removeNodeAction({ nodeId: id }) // has history
+    await actions.archiveNodeAction({ nodeId: "no-such-node" }) // not found
+    expect(revalidatePath).not.toHaveBeenCalled()
+    expect(await actions.archiveResidualAction({ nodeId: id })).toMatchObject({ ok: true })
+    expect(revalidatePath).not.toHaveBeenCalled()
   })
 })

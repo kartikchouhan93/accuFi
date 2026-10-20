@@ -4,7 +4,7 @@ import type { z } from "zod"
 import { serialisePaise } from "@/lib/serialise"
 import { toNodeView, type NodeView } from "@/lib/node-view"
 import { createNodeSchema, nodeIdSchema, renameNodeSchema } from "@/lib/schemas/node"
-import { failed, fieldErrorsOf, ok, redirectIfUnauthenticated, type ActionFailure, type ActionResult } from "@/server/action-support"
+import { failed, fieldErrorsOf, ok, redirectIfUnauthenticated, wrote, type ActionFailure, type ActionResult } from "@/server/action-support"
 import { requireUserId } from "@/server/auth"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
@@ -29,6 +29,9 @@ import {
 //
 // Expected refusals come back as `{ ok: false }` so a form can show them; an unexpected error is rethrown for Next to
 // log (and mask in production). A missing session redirects to /login.
+//
+// Every write that succeeds ends with `wrote()` (action-support.ts), as the transaction actions do: a node write moves
+// figures on other screens (an opening balance is a transaction), and router.refresh() renews only the current page.
 
 type Failure = ActionFailure
 
@@ -60,6 +63,7 @@ export async function createNodeAction(
     // Looked up before the create so the new node cannot match itself. A duplicate is a warning, never a refusal (EC-35).
     const duplicates = await findDuplicateNodes(userId, parsed.data.kind, parsed.data.name)
     const node = await createLedgerNode(userId, parsed.data)
+    wrote()
     return ok({ node: toNodeView(node), duplicateName: duplicates.length > 0 })
   } catch (error) {
     return toFailure(error)
@@ -74,6 +78,7 @@ export async function renameNodeAction(
     const parsed = parseInput(renameNodeSchema, input)
     if ("ok" in parsed) return parsed
     const node = await renameLedgerNode(userId, parsed.data.nodeId, parsed.data.name)
+    wrote()
     const duplicates = await findDuplicateNodes(userId, node.kind, node.name, node.id)
     return ok({ node: toNodeView(node), duplicateName: duplicates.length > 0 })
   } catch (error) {
@@ -89,6 +94,7 @@ export async function archiveNodeAction(
     const parsed = parseInput(nodeIdSchema, input)
     if ("ok" in parsed) return parsed
     const { node, residualBalance } = await archiveLedgerNode(userId, parsed.data.nodeId)
+    wrote()
     return ok({ node: toNodeView(node), residualBalance: serialisePaise(residualBalance) })
   } catch (error) {
     return toFailure(error)
@@ -115,7 +121,9 @@ export async function restoreNodeAction(input: unknown): Promise<ActionResult<{ 
     const userId = await requireUserId()
     const parsed = parseInput(nodeIdSchema, input)
     if ("ok" in parsed) return parsed
-    return ok({ node: toNodeView(await restoreLedgerNode(userId, parsed.data.nodeId)) })
+    const node = await restoreLedgerNode(userId, parsed.data.nodeId)
+    wrote()
+    return ok({ node: toNodeView(node) })
   } catch (error) {
     return toFailure(error)
   }
@@ -127,6 +135,7 @@ export async function removeNodeAction(input: unknown): Promise<ActionResult<nul
     const parsed = parseInput(nodeIdSchema, input)
     if ("ok" in parsed) return parsed
     await removeLedgerNode(userId, parsed.data.nodeId)
+    wrote()
     return ok(null)
   } catch (error) {
     return toFailure(error)

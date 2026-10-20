@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import type { TransactionView } from "@/lib/transaction-view"
 import { UnauthenticatedError } from "@/server/auth"
@@ -46,6 +47,19 @@ export const failed = (code: ActionErrorCode, message: string, fieldErrors?: Rec
  */
 export function redirectIfUnauthenticated(error: unknown): void {
   if (error instanceof UnauthenticatedError) redirect("/login")
+}
+
+/**
+ * Called by a write, after it has committed, so no screen that shows money is served stale: the transaction list, the
+ * ledger with its balances, and the home page with net worth. One list for every action file, because a write in one
+ * place moves figures in the others (an account created with an opening balance changes net worth on "/" and the
+ * balances on "/transactions"), and `router.refresh()` renews only the page the user happens to be on. Reads and
+ * refused writes do not call it.
+ */
+export function wrote(): void {
+  revalidatePath("/transactions")
+  revalidatePath("/nodes")
+  revalidatePath("/")
 }
 
 // Lives in src/lib so a service can use it without importing the session; every action file still gets it from here.

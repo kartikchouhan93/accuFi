@@ -1,6 +1,5 @@
 "use server"
 
-import { revalidatePath } from "next/cache"
 import type { z } from "zod"
 import type { ViolationCode } from "@/domain/transaction-rules"
 import {
@@ -12,7 +11,7 @@ import {
 } from "@/lib/schemas/transaction"
 import type { TransactionPage } from "@/lib/transaction-list-view"
 import { toTransactionView, type TransactionView, type Warning } from "@/lib/transaction-view"
-import { failed, fieldErrorsOf, ok, redirectIfUnauthenticated, type ActionFailure, type ActionResult } from "@/server/action-support"
+import { failed, fieldErrorsOf, ok, redirectIfUnauthenticated, wrote, type ActionFailure, type ActionResult } from "@/server/action-support"
 import { requireUserId } from "@/server/auth"
 import { InvalidCursorError, NotFoundError } from "@/server/repositories/errors"
 import { VersionConflictError } from "@/server/repositories/transaction-repository"
@@ -40,20 +39,13 @@ import {
 // Expected refusals come back as `{ ok: false }` so a form can show them; an unexpected error is rethrown for Next to
 // log (and mask in production). A missing session redirects to /login.
 //
-// Every write ends by invalidating the screens that show money (see `wrote`): the transaction list, the ledger with its
-// balances, and the home page. Reads (`listTransactionsAction`) do not.
+// Every write ends by invalidating the screens that show money (`wrote`, in action-support.ts, shared with the node
+// actions). Reads (`listTransactionsAction`) do not.
 
 function parseInput<S extends z.ZodType>(schema: S, input: unknown): { data: z.output<S> } | ActionFailure {
   const parsed = schema.safeParse(input)
   if (parsed.success) return { data: parsed.data }
   return failed("invalid_input", "Check the highlighted fields", fieldErrorsOf(parsed.error))
-}
-
-/** Called after a write has committed, so a stale page is never served from the cache. */
-function wrote(): void {
-  revalidatePath("/transactions")
-  revalidatePath("/nodes")
-  revalidatePath("/")
 }
 
 // The form field a broken rule belongs to. A rule about the pair of nodes or the flow is filed under the destination:
