@@ -1,4 +1,5 @@
 import type { CalendarDate } from "./calendar-date"
+import { KIND_COPY } from "../lib/node-kinds"
 import { isFlowAllowed, type LedgerKind, type SystemNodeRole } from "./ledger-kind"
 import type { Paise } from "./money"
 
@@ -44,7 +45,9 @@ export function validateTransaction(
   if (!isFlowAllowed(fromNode.kind, toNode.kind)) {
     violations.push({
       code: "ILLEGAL_FLOW",
-      message: `Money cannot flow from ${fromNode.kind} to ${toNode.kind}.`,
+      // This reaches the user as it is (the action files it under the destination field), so it says "an income
+      // source" and not INCOME_SOURCE: the words are the ones the ledger's own headings and pickers use.
+      message: `Money cannot flow from ${KIND_COPY[fromNode.kind].indefinite} to ${KIND_COPY[toNode.kind].indefinite}.`,
     })
   }
   if (!allowArchived) {

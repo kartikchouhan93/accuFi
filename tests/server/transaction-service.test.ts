@@ -97,7 +97,7 @@ describe("recordTransaction", () => {
     const before = await rowCount(user.id)
     const error = await rejection(record(user.id, bank, income, 100n))
     expect(error).toBeInstanceOf(InvalidTransactionError)
-    expect((error as InvalidTransactionError).message).toBe("Money cannot flow from ASSET to INCOME_SOURCE.")
+    expect((error as InvalidTransactionError).message).toBe("Money cannot flow from an account to an income source.")
     expect((error as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ILLEGAL_FLOW"])
     expect((error as InvalidTransactionError).violations.map((v) => v.leg)).toEqual([undefined]) // a single transaction has no legs
     expect(await rowCount(user.id)).toBe(before)
@@ -357,7 +357,7 @@ describe("editTransaction", () => {
     const view = await record(user.id, bank, food, 100_00n)
     const error = await rejection(editTransaction(user.id, view.id, { toNodeId: income.id }, view.version))
     expect(error).toBeInstanceOf(InvalidTransactionError)
-    expect((error as InvalidTransactionError).message).toBe("Money cannot flow from ASSET to INCOME_SOURCE.")
+    expect((error as InvalidTransactionError).message).toBe("Money cannot flow from an account to an income source.")
     expect(await balanceOf(user.id, food)).toBe(100_00n) // unchanged
     const same = await rejection(editTransaction(user.id, view.id, { toNodeId: bank.id }, view.version))
     expect((same as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["SAME_NODE"])

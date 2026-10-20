@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 // Value import through the `@/` alias, so this suite fails if vitest cannot resolve it.
 import { calendarDate } from "@/domain/calendar-date"
+import { LEDGER_KINDS } from "@/domain/ledger-kind"
+import { KIND_COPY } from "@/lib/node-kinds"
 import {
   validateTransaction,
   type NodeSummary,
@@ -43,13 +45,25 @@ describe("validateTransaction", () => {
     expect(codes(draft({ amount: -1n }))).toEqual(["NON_POSITIVE_AMOUNT"])
   })
 
-  it("rejects an illegal kind pair naming both kinds in the message", () => {
+  it("rejects an illegal kind pair naming both kinds, in the words the screens use for them", () => {
     const violations = validateTransaction(
       draft({ fromNode: node("rent", "EXPENSE"), toNode: node("fund", "INVESTMENT") }),
     )
     expect(violations.map((v) => v.code)).toEqual(["ILLEGAL_FLOW"])
-    expect(violations[0].message).toContain("EXPENSE")
-    expect(violations[0].message).toContain("INVESTMENT")
+    expect(violations[0].message).toBe("Money cannot flow from an expense category to an investment.")
+  })
+
+  it("never prints an enum name: this message reaches the user as it is", () => {
+    for (const from of LEDGER_KINDS) {
+      for (const to of LEDGER_KINDS) {
+        const violations = validateTransaction(draft({ fromNode: node("a", from), toNode: node("b", to) }))
+        for (const violation of violations.filter((v) => v.code === "ILLEGAL_FLOW")) {
+          expect(violation.message, `${from} to ${to}`).not.toMatch(/[A-Z]{3,}_?[A-Z]*/)
+          expect(violation.message).toContain(KIND_COPY[from].indefinite)
+          expect(violation.message).toContain(KIND_COPY[to].indefinite)
+        }
+      }
+    }
   })
 
   it("rejects an archived node by default", () => {

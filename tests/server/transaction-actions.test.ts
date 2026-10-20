@@ -123,7 +123,7 @@ describe("recordTransactionAction", () => {
   it("reports an illegal flow as a result carrying the domain's message", async () => {
     const { bank, income, input } = await signedInWorld()
     const result = await actions.recordTransactionAction(input({ fromNodeId: bank.id, toNodeId: income.id }))
-    expect(result).toMatchObject({ ok: false, error: { code: "invalid", message: "Money cannot flow from ASSET to INCOME_SOURCE." } })
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid", message: "Money cannot flow from an account to an income source." } })
   })
 
   it("reports a blocked overdraft as a result", async () => {
@@ -340,7 +340,7 @@ describe("recordSplitAction", () => {
         ],
       }),
     )
-    expect(result).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { "legs.1.toNodeId": [expect.stringContaining("INCOME_SOURCE")], "legs.2.toNodeId": [expect.stringContaining("itself")] } } })
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { "legs.1.toNodeId": [expect.stringContaining("an income source")], "legs.2.toNodeId": [expect.stringContaining("itself")] } } })
     expect(!result.ok && Object.keys(result.error.fieldErrors ?? {}).sort()).toEqual(["legs.1.toNodeId", "legs.2.toNodeId"])
     expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(0)
   })

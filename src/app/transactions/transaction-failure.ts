@@ -10,7 +10,7 @@ function textFor(code: ActionErrorCode, serverMessage: string, hasFieldErrors: b
     case "invalid_input":
       return { message: "Check the highlighted fields.", isFieldProblem: true }
     case "invalid":
-      // The service words these for the user ("Money cannot flow from ASSET to INCOME_SOURCE"). When the action could
+      // The service words these for the user ("Money cannot flow from an account to an income source"). When the action could
       // place them on a field they are shown beside it; otherwise the whole sentence is shown once.
       return { message: serverMessage, isFieldProblem: hasFieldErrors }
     case "overdraft_blocked":

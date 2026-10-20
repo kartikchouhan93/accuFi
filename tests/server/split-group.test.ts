@@ -119,7 +119,7 @@ describe("recordSplit", () => {
     const groups = await groupCount(user.id)
     const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n), leg(income, 300n)]))
     expect(error).toBeInstanceOf(InvalidTransactionError)
-    expect((error as InvalidTransactionError).message).toBe("Leg 3: Money cannot flow from ASSET to INCOME_SOURCE.")
+    expect((error as InvalidTransactionError).message).toBe("Leg 3: Money cannot flow from an account to an income source.")
     expect(await rowCount(user.id)).toBe(rows)
     expect(await groupCount(user.id)).toBe(groups)
   })
@@ -201,7 +201,7 @@ describe("recordSplit", () => {
     expect(error).toBeInstanceOf(InvalidTransactionError)
     const violations = (error as InvalidTransactionError).violations
     expect(violations.map((v) => [v.code, v.message])).toEqual([
-      ["ILLEGAL_FLOW", "Leg 2: Money cannot flow from ASSET to INCOME_SOURCE."],
+      ["ILLEGAL_FLOW", "Leg 2: Money cannot flow from an account to an income source."],
       ["SAME_NODE", "Leg 4: A transaction cannot move money from a node to itself."],
     ])
     expect((error as InvalidTransactionError).message).toBe(violations.map((v) => v.message).join(" "))
