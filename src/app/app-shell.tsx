@@ -2,15 +2,16 @@ import Link from "next/link"
 import { auth } from "@/server/auth"
 import { signOutAction } from "./sign-out-action"
 
-// The frame around a signed-in screen: wordmark, where you are, who you are, and a way out. Deliberately minimal. The
-// dashboard and the later screens will add their own links here.
+// The frame around a signed-in screen: wordmark, where you are, who you are, and a way out. Deliberately minimal: a
+// later screen adds its own entry to DESTINATIONS.
 
 const DESTINATIONS: { key: Destination; href: string; label: string }[] = [
+  { key: "dashboard", href: "/", label: "Dashboard" },
   { key: "ledger", href: "/nodes", label: "Ledger" },
   { key: "transactions", href: "/transactions", label: "Transactions" },
 ]
 
-export type Destination = "ledger" | "transactions"
+export type Destination = "dashboard" | "ledger" | "transactions"
 
 export async function AppShell({ children, current = "ledger" }: { children: React.ReactNode; current?: Destination }) {
   const email = (await auth())?.user?.email
@@ -18,7 +19,7 @@ export async function AppShell({ children, current = "ledger" }: { children: Rea
     <div className="min-h-screen">
       <header className="border-b-4 border-double border-ink">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3 sm:px-6">
-          <Link href="/nodes" className="font-display text-xl font-bold tracking-tight">
+          <Link href="/" className="font-display text-xl font-bold tracking-tight">
             AccuFi
           </Link>
           <nav aria-label="Main" className="flex flex-1 gap-5">

@@ -219,9 +219,3 @@ test("deletes a node with no history, and points to archiving when there is hist
   await expect(used.getByRole("alert")).toContainText("Archive it instead")
   await expect(row(page, "Used account")).toBeVisible()
 })
-
-test("sends a signed-in user from the home page to the ledger", async ({ ledger: page }) => {
-  await page.goto("/")
-  await expect(page).toHaveURL(/\/nodes$/)
-  await expect(page.getByRole("heading", { level: 1, name: "Ledger" })).toBeVisible()
-})
