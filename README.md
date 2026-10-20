@@ -23,8 +23,12 @@ bunx prisma migrate dev       # or: bun run db:migrate
 bun run dev
 ```
 
-Scripts: `dev`, `build`, `start`, `lint`, `test`, `test:watch`, `db:migrate`, `db:deploy`, `db:studio`.
+Scripts: `dev`, `build`, `start`, `lint`, `test`, `test:watch`, `test:e2e`, `db:migrate`, `db:deploy`, `db:studio`.
 Always use Bun (`bun install`, `bun run ...`); do not use npm.
+
+### End-to-end tests
+
+`bun run test:e2e` drives the real screens in a browser (Playwright). It is separate from `bun run test` because it boots a server and a browser. It uses the installed Google Chrome (no browser download), starts its own `next dev` on port `E2E_PORT` (default 3200, not `APP_PORT`, which belongs to the Docker stack), and uses the `<database>_test` database like the Vitest suites, never the dev database. A focused run: `bunx playwright test tests/e2e/nodes.spec.ts`.
 
 ## Deployment
 

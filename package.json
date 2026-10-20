@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun run typecheck && sh scripts/test-tz.sh",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio"
@@ -25,6 +26,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
