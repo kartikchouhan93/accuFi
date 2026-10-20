@@ -113,7 +113,7 @@ export function Filters({ filter, problems, nodes }: Props) {
         <button type="submit" className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-fg">
           Apply filters
         </button>
-        <Link href="/transactions" className="text-sm font-medium text-accent underline underline-offset-4">
+        <Link href="/transactions" className="text-sm font-medium text-link underline underline-offset-4">
           Reset to this month
         </Link>
       </div>

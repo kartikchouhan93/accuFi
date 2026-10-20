@@ -81,7 +81,7 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
         {notice && (
           <div
             className={`flex items-start gap-3 border-l-4 bg-panel px-4 py-3 shadow-[0_2px_0_var(--line-strong)] ${
-              notice.tone === "warning" ? "border-notice-fg" : "border-accent"
+              notice.tone === "warning" ? "border-notice-fg" : "border-accent-edge"
             }`}
           >
             <div className="flex-1 space-y-1">
@@ -96,12 +96,12 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
                   notice.undo?.run()
                   setNotice(null)
                 }}
-                className="text-sm font-medium text-accent underline underline-offset-4"
+                className="text-sm font-medium text-link underline underline-offset-4"
               >
                 {notice.undo.label}
               </button>
             )}
-            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-accent underline underline-offset-4">
+            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-link underline underline-offset-4">
               Dismiss
             </button>
           </div>

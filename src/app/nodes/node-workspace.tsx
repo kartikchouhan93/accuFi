@@ -69,11 +69,11 @@ export function NodeWorkspace({ overview, netWorth }: { overview: NodeOverview; 
         {notice && (
           <div
             className={`flex items-start gap-3 border-l-4 bg-panel px-4 py-3 shadow-[0_2px_0_var(--line-strong)] ${
-              notice.tone === "warning" ? "border-notice-fg" : "border-accent"
+              notice.tone === "warning" ? "border-notice-fg" : "border-accent-edge"
             }`}
           >
             <p className="flex-1">{notice.text}</p>
-            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-accent underline underline-offset-4">
+            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-link underline underline-offset-4">
               Dismiss
             </button>
           </div>

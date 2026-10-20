@@ -7,6 +7,17 @@ import { createAccount } from "@/server/services/signup-service"
 import { deleteUser, expect, row, test } from "./fixtures"
 import { watchActions } from "./screens"
 
+// Who is signed in is shown in the sidebar: an initial always, and the address once the rail opens. Opening it is part of
+// what is checked, since a collapsed rail clips the address, and the address must be what is shown rather than merely
+// present in the markup.
+async function expectSignedInAs(page: Page, email: string) {
+  const sidebar = page.getByRole("complementary")
+  await sidebar.hover()
+  const shown = sidebar.getByText(email, { exact: true })
+  await expect(shown).toBeVisible()
+  await expect(shown).toHaveCSS("opacity", "1")
+}
+
 // The authentication journey, driven through the real forms. Every other spec signs in through the signup service and
 // the login form; this one is the only place the signup form, the failure paths, the lockout and sign-out are used.
 //
@@ -103,7 +114,7 @@ test("signs up through the form, lands signed in, and starts with the four syste
     // The dashboard of the account just made: signed in as that address, and a ledger with nothing of the user's own yet.
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible()
-    await expect(page.getByRole("banner").getByText(email, { exact: true })).toBeVisible()
+    await expectSignedInAs(page, email)
     await expect(page.getByRole("heading", { name: "Start with your first account" })).toBeVisible()
     expect(await sessionCookies(page)).toHaveLength(1)
 
@@ -219,7 +230,7 @@ test("signs in through the form with the right credentials", async ({ page }) =>
 
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole("heading", { level: 1, name: "Dashboard" })).toBeVisible()
-    await expect(page.getByRole("banner").getByText(email, { exact: true })).toBeVisible()
+    await expectSignedInAs(page, email)
     expect(await sessionCookies(page)).toHaveLength(1)
     // Signed in, the protected pages open and the sign-in page is no longer where you belong.
     await page.goto("/transactions")

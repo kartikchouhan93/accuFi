@@ -1,37 +1,83 @@
+import { CalendarClock } from "lucide-react"
 import { PartialNote } from "@/app/partial-note"
-import { describeBalance, formatPaiseText } from "@/lib/node-money"
 import type { DashboardView } from "@/lib/dashboard-view"
+import { holdingsSplit } from "@/lib/holdings-split"
+import { describeBalance, formatPaiseText } from "@/lib/node-money"
 import { formatDay } from "@/lib/transaction-text"
+import { cn } from "@/lib/utils"
 
 // What you own less what you owe, as the dashboard opens with it. The figures arrive as paise text from the server, which
 // summed every account, archived ones included. `liabilities` is already the positive amount owed (the total has
 // subtracted it), so it is printed as it comes. When an investment could not be valued the total leaves it out, and the
 // card says so in words next to the figure rather than letting a lower number pass for the whole picture.
+//
+// The figure is the one thing on the page set large, and its type does the work: the rupee sign and the paise are smaller
+// and dimmer than the digits between them, because ₹1,09,749 is what matters at a glance and the .75 is not. The text is
+// unbroken for anything that reads it; only the styling is split.
 
 interface Props {
   netWorth: DashboardView["netWorth"]
   projected: DashboardView["projected"]
 }
 
-export function NetWorthCard({ netWorth, projected }: Props) {
-  const total = describeBalance("ASSET", netWorth.total) // a signed amount: negative reads in red with its minus sign
+function Dot({ className }: { className: string }) {
+  return <span aria-hidden className={cn("mr-1.5 inline-block size-2 rounded-full align-middle", className)} />
+}
+
+// "-₹1,09,749.75" as sign and symbol, whole rupees, paise. Anything that does not look like that is printed as it is.
+function Figure({ text }: { text: string }) {
+  const match = /^(-?)(₹)([\d,]+)(\.\d{2})$/.exec(text)
+  if (!match) return <>{text}</>
+  const [, sign, symbol, whole, paise] = match
   return (
-    <section aria-labelledby="net-worth-heading">
-      <h2 id="net-worth-heading" className="font-display text-lg font-semibold">
+    <>
+      <span className="settle mr-1 align-top text-[0.5em] leading-[1.6] text-fg-soft">
+        {sign}
+        {symbol}
+      </span>
+      <span className="settle" style={{ "--delay": "90ms" } as React.CSSProperties}>
+        {whole}
+      </span>
+      <span className="settle text-[0.5em] text-fg-soft" style={{ "--delay": "220ms" } as React.CSSProperties}>
+        {paise}
+      </span>
+    </>
+  )
+}
+
+export function NetWorthCard({ netWorth, projected }: Props) {
+  const total = describeBalance("ASSET", netWorth.total) // a signed amount: negative reads in the negative colour with its minus sign
+  const split = holdingsSplit(netWorth.assets, netWorth.investments)
+  return (
+    <section aria-labelledby="net-worth-heading" className="surface relative overflow-hidden rounded-3xl p-6 sm:p-8">
+      <span aria-hidden className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-accent-edge/70 to-transparent" />
+      <h2 id="net-worth-heading" className="text-sm font-medium text-fg-soft">
         Net worth
       </h2>
-      <p className={`figures mt-1 pb-2 text-4xl font-medium sm:text-5xl ${total.tone === "negative" ? "text-negative" : ""} double-rule`}>
-        {total.amount}
+      <p className={cn("figures mt-2 font-display text-5xl font-semibold tracking-tight sm:text-7xl", total.tone === "negative" && "text-negative")}>
+        <Figure text={total.amount} />
       </p>
       {netWorth.isPartial && <PartialNote names={netWorth.unvaluedNames} />}
-      <p className="figures mt-2 text-sm text-fg-soft">
-        {formatPaiseText(netWorth.assets)} in accounts, {formatPaiseText(netWorth.investments)} invested, {formatPaiseText(netWorth.liabilities)}{" "}
-        owed.
-        {netWorth.archivedCount > 0 && ` Includes ${netWorth.archivedCount} archived.`}
+      {split && (
+        <div aria-hidden className="mt-7 flex h-2 w-full gap-1">
+          {split.accounts > 0 && <span className="rounded-full bg-positive" style={{ flex: `${split.accounts} 1 0` }} />}
+          {split.invested > 0 && <span className="rounded-full bg-link" style={{ flex: `${split.invested} 1 0` }} />}
+        </div>
+      )}
+      <p className={cn("figures text-sm text-fg-soft", split ? "mt-3" : "mt-6")}>
+        <Dot className="bg-positive" />
+        <span className="font-medium text-fg">{formatPaiseText(netWorth.assets)}</span> in accounts, <Dot className="bg-link" />
+        <span className="font-medium text-fg">{formatPaiseText(netWorth.investments)}</span> invested, <Dot className="bg-negative" />
+        <span className="font-medium text-negative">{formatPaiseText(netWorth.liabilities)}</span> owed.
+        {netWorth.archivedCount > 0 && <span className="mt-1 block">Includes {netWorth.archivedCount} archived.</span>}
       </p>
       {projected && (
-        <p className="figures mt-1 text-sm text-fg-soft">
-          Projected {formatPaiseText(projected.total)} once everything dated up to {formatDay(projected.asOf)} has happened. Not counted above.
+        <p className="figures mt-4 flex items-start gap-2 border-t border-line pt-4 text-sm text-fg-soft">
+          <CalendarClock aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>
+            Projected <span className="font-medium text-fg">{formatPaiseText(projected.total)}</span> once everything dated up to{" "}
+            {formatDay(projected.asOf)} has happened. Not counted above.
+          </span>
         </p>
       )}
     </section>

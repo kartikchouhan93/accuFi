@@ -22,10 +22,16 @@ const netWorth: DashboardView["netWorth"] = {
 const card = (over: Partial<DashboardView["netWorth"]> = {}, projected: DashboardView["projected"] = null) =>
   renderToStaticMarkup(createElement(NetWorthCard, { netWorth: { ...netWorth, ...over }, projected }))
 
+// What a reader sees, not how it is built: the figure's rupee sign, digits and paise are styled as separate spans, so the
+// markup is split while the text is not. The figure is the card's first paragraph; the browser test reads it the same way.
+const visibleText = (html: string) => html.replace(/<[^>]+>/g, "")
+const figureOf = (html: string) => visibleText(/<p[^>]*>([\s\S]*?)<\/p>/.exec(html)?.[1] ?? "")
+
 describe("NetWorthCard", () => {
   it("prints the total and its three parts", () => {
     const html = card()
-    expect(html).toContain("₹1,09,749.75")
+    expect(figureOf(html)).toBe("₹1,09,749.75")
+    expect(visibleText(html)).toContain("₹1,00,999.50 in accounts, ₹10,000.00 invested, ₹1,249.75 owed.")
     expect(html).toContain("₹1,00,999.50")
     expect(html).toContain("₹10,000.00")
     expect(html).toContain("₹1,249.75")
@@ -44,7 +50,7 @@ describe("NetWorthCard", () => {
 
   it("shows a negative net worth in red with its sign", () => {
     const html = card({ total: "-24975", assets: "100000", investments: "0", liabilities: "124975" })
-    expect(html).toContain("-₹249.75")
+    expect(figureOf(html)).toBe("-₹249.75")
     expect(html).toContain("text-negative")
   })
 

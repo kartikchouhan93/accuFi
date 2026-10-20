@@ -105,7 +105,7 @@ function KindSection({ kind, overview, showArchived, announce, onAdd }: SectionP
         <p className="mt-3 text-fg-soft">
           {ofKind.length === 0 ? copy.empty : "Everything here is archived."}{" "}
           {ofKind.length === 0 && (
-            <button type="button" onClick={() => onAdd(kind)} className="font-medium text-accent underline underline-offset-4">
+            <button type="button" onClick={() => onAdd(kind)} className="font-medium text-link underline underline-offset-4">
               Add {copy.indefinite}
             </button>
           )}

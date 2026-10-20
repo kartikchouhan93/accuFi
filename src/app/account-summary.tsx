@@ -1,12 +1,13 @@
 import Link from "next/link"
 import { Amount } from "@/app/amount"
+import { GlowingEffect } from "@/components/ui/glowing-effect"
 import type { DashboardView } from "@/lib/dashboard-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
 
-// Every live account, investment and liability with what it holds or owes, grouped by kind. The figure at the head of a
-// group is the server's total for the kind, which counts archived nodes; the rows are only the ones still in use, so a
-// group says how many are not listed rather than letting the rows and the total quietly disagree.
+// Every live account, investment and liability with what it holds or owes, grouped by kind, each as a tile. The figure at
+// the head of a group is the server's total for the kind, which counts archived nodes; the tiles are only the ones still
+// in use, so a group says how many are not listed rather than letting the tiles and the total quietly disagree.
 
 interface Props {
   accounts: DashboardView["accounts"]
@@ -15,7 +16,7 @@ interface Props {
 
 export function AccountSummary({ accounts, kindTotals }: Props) {
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
       {kindTotals.map(({ kind, total, archivedCount }) => {
         const rows = accounts.filter((account) => account.kind === kind)
         if (rows.length === 0 && archivedCount === 0) return null
@@ -23,24 +24,26 @@ export function AccountSummary({ accounts, kindTotals }: Props) {
         const headingId = `summary-${kind}`
         return (
           <section key={kind} aria-labelledby={headingId}>
-            <div className="flex items-baseline gap-3 border-b-2 border-fg pb-1">
-              <h3 id={headingId} className="font-display text-xl font-semibold">
+            <div className="flex items-baseline justify-between gap-4">
+              <h2 id={headingId} className="font-display text-lg font-semibold tracking-tight">
                 {copy.plural}
-              </h3>
-              <span className="leader" aria-hidden="true" />
+              </h2>
               <Amount text={describeBalance(kind, total)} className="text-lg font-medium" />
             </div>
             {archivedCount > 0 && <p className="mt-1 text-sm text-fg-soft">Includes {archivedCount} archived, not listed.</p>}
             {rows.length > 0 && (
-              <ul className="divide-y divide-line">
+              <ul className="mt-4 grid gap-3 sm:grid-cols-2">
                 {rows.map((account) => (
-                  <li key={account.id} className="flex items-baseline gap-3 py-2.5">
-                    {/* The transactions screen, filtered to this account across every month. */}
-                    <Link href={`/transactions?node=${account.id}&from=&to=`} className="font-medium underline-offset-4 hover:underline">
+                  <li key={account.id} className="surface group relative rounded-2xl p-4 transition-colors hover:bg-panel-raised">
+                    <GlowingEffect />
+                    {/* The transactions screen, filtered to this account across every month. The whole tile is the link. */}
+                    <Link
+                      href={`/transactions?node=${account.id}&from=&to=`}
+                      className="block rounded-lg font-medium after:absolute after:inset-0 after:rounded-2xl"
+                    >
                       {account.name}
                     </Link>
-                    <span className="leader" aria-hidden="true" />
-                    <Amount text={describeBalance(account.kind, account.balance)} />
+                    <Amount text={describeBalance(account.kind, account.balance)} className="mt-4 block text-2xl font-medium tracking-tight" />
                   </li>
                 ))}
               </ul>

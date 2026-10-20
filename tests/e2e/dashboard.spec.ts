@@ -138,8 +138,24 @@ test("sign-in and sign-up use the app's own look, not a default one", async ({ p
   ] as const) {
     await page.goto(path)
     await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible()
-    // The sheet takes the pad's own colours, not a framework default: its background is the paper green, not white or zinc.
-    const sheet = await page.locator("form").evaluate((el) => getComputedStyle(el).backgroundColor)
-    expect(sheet).toBe("rgb(244, 248, 238)")
+    // The card is the app's own surface, not a framework default. Its background is the --panel token, resolved by the
+    // browser the same way for the probe as for the form so the test holds in either theme; and since the light theme's panel
+    // is plain white, the typefaces carry the rest of the claim: headings in Bricolage Grotesque, body text in Geist.
+    const { card, panel, heading: headingFont, body } = await page.evaluate(() => {
+      const probe = document.createElement("div")
+      probe.style.background = "var(--panel)"
+      document.body.append(probe)
+      const panel = getComputedStyle(probe).backgroundColor
+      probe.remove()
+      return {
+        card: getComputedStyle(document.querySelector("form") as HTMLElement).backgroundColor,
+        panel,
+        heading: getComputedStyle(document.querySelector("h1") as HTMLElement).fontFamily,
+        body: getComputedStyle(document.body).fontFamily,
+      }
+    })
+    expect(card).toBe(panel)
+    expect(headingFont).toContain("Bricolage")
+    expect(body).toContain("Geist")
   }
 })

@@ -317,7 +317,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                   <>
                     <button
                       type="button"
-                      className="text-sm font-medium text-accent underline underline-offset-4"
+                      className="text-sm font-medium text-link underline underline-offset-4"
                       aria-label={`Edit the ${nameOf(nodes, leg.toNodeId)} leg`}
                       onClick={() => onEdit(leg)}
                     >
@@ -325,7 +325,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                     </button>
                     <button
                       type="button"
-                      className="text-sm font-medium text-accent underline underline-offset-4 disabled:opacity-60"
+                      className="text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
                       disabled={pending}
                       aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
                       onClick={() => takeOut(leg)}

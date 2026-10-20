@@ -115,7 +115,7 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
                 onChange={() => onKindChange(option)}
                 className="peer absolute inset-0 size-full cursor-pointer opacity-0"
               />
-              <span className="block cursor-pointer rounded-sm border border-line-strong px-3 py-1.5 text-sm peer-checked:border-fg peer-checked:bg-fg peer-checked:text-panel peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent">
+              <span className="block cursor-pointer rounded-sm border border-line-strong px-3 py-1.5 text-sm peer-checked:border-fg peer-checked:bg-fg peer-checked:text-panel peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus">
                 {KIND_COPY[option].singular}
               </span>
             </label>
@@ -220,7 +220,7 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
           {choices.map((choice) => (
             <label
               key={choice.value}
-              className="flex cursor-pointer items-start gap-2 rounded-sm border border-line-strong px-3 py-2 text-sm has-[:checked]:border-fg has-[:checked]:bg-canvas has-[:checked]:font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent"
+              className="flex cursor-pointer items-start gap-2 rounded-sm border border-line-strong px-3 py-2 text-sm has-[:checked]:border-fg has-[:checked]:bg-canvas has-[:checked]:font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
             >
               <input
                 type="radio"

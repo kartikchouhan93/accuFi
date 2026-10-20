@@ -76,7 +76,7 @@ const draftOf = (transaction: TransactionView): Draft => ({
 const inputClass =
   "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 text-fg placeholder:text-fg-soft/70 disabled:opacity-60 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
 const buttonClass = "rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium hover:bg-canvas disabled:opacity-60"
-const linkButtonClass = "rounded-sm text-sm font-medium text-accent underline underline-offset-4 disabled:opacity-60"
+const linkButtonClass = "rounded-sm text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
 
 const unique = (messages: string[]) => [...new Set(messages)]
 
