@@ -12,8 +12,21 @@ function tokens(source: string): Record<string, string> {
   return Object.fromEntries([...source.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})\b/gi)].map((m) => [m[1], m[2].toLowerCase()]))
 }
 
+// Every custom property in a block as written, hex or not (--edge is an rgb()), for the checks that the three blocks agree.
+function everyToken(source: string): Record<string, string> {
+  return Object.fromEntries([...source.matchAll(/--([\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]))
+}
+
 const light = tokens(css.match(/:root\s*\{([^}]*)\}/)?.[1] ?? "")
-const dark = { ...light, ...tokens(css.match(/prefers-color-scheme:\s*dark\)\s*\{\s*:root\s*\{([^}]*)\}/)?.[1] ?? "") }
+const darkChosen = tokens(css.match(/:root\[data-theme="dark"\]\s*\{([^}]*)\}/)?.[1] ?? "")
+const darkSystem = tokens(css.match(/prefers-color-scheme:\s*dark\)\s*\{\s*:root:not\(\[data-theme="light"\]\)\s*\{([^}]*)\}/)?.[1] ?? "")
+const dark = { ...light, ...darkChosen }
+
+const block = {
+  light: css.match(/:root\s*\{([^}]*)\}/)?.[1] ?? "",
+  chosen: css.match(/:root\[data-theme="dark"\]\s*\{([^}]*)\}/)?.[1] ?? "",
+  system: css.match(/prefers-color-scheme:\s*dark\)\s*\{\s*:root:not\(\[data-theme="light"\]\)\s*\{([^}]*)\}/)?.[1] ?? "",
+}
 
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((i) => {
@@ -65,5 +78,23 @@ describe.each([
 
   it.each(PAIRS)("%s on %s is at least %s:1 (%s)", (fg, bg, minimum) => {
     expect(contrast(theme[fg], theme[bg])).toBeGreaterThanOrEqual(minimum)
+  })
+})
+
+describe("the two copies of the dark theme", () => {
+  it("are both present", () => {
+    expect(Object.keys(everyToken(block.chosen)).length).toBeGreaterThan(10)
+    expect(Object.keys(everyToken(block.system)).length).toBeGreaterThan(10)
+  })
+
+  // Dark exists twice, once for a visitor who chose it and once for a system that prefers it. If one is edited and the
+  // other is not, the app would look different depending on how someone arrived at dark.
+  it("are identical, so choosing dark and following a dark system look the same", () => {
+    expect(everyToken(block.system)).toEqual(everyToken(block.chosen))
+  })
+
+  // A token left out of dark would silently keep its light value there: pale text on a dark page.
+  it("override every token the light theme defines", () => {
+    expect(Object.keys(everyToken(block.chosen)).sort()).toEqual(Object.keys(everyToken(block.light)).sort())
   })
 })

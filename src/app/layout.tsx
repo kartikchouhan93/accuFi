@@ -1,5 +1,6 @@
 import type { Metadata } from "next"
 import { Bricolage_Grotesque, Geist } from "next/font/google"
+import { THEME_SCRIPT } from "@/lib/theme"
 import "./globals.css"
 
 // Geist for everything you read and every figure: its tabular numerals keep a column of rupees aligned and it carries the
@@ -18,7 +19,12 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     // The font variables go on <html>, not <body>: --font-sans is declared on :root, and a variable can only be substituted
     // from where it is defined or above. Defined on <body>, the body's own font-family resolved to nothing and fell back to
     // the system stack, so the typeface was never applied to body text.
-    <html lang="en" className={`${geist.variable} ${bricolage.variable}`}>
+    <html lang="en" className={`${geist.variable} ${bricolage.variable}`} suppressHydrationWarning>
+      <head>
+        {/* Applies a saved theme choice before first paint, so dark never flashes light. suppressHydrationWarning above is for
+            the attribute this sets, which React did not render. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
       <body className="antialiased">{children}</body>
     </html>
   )

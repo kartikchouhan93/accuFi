@@ -1,60 +1,86 @@
 @import "tailwindcss";
 
 /*
- * AccuFi's look: a quiet indigo-black ledger with one warm accent. Gold is the thing being tracked, so marigold is the
- * colour of every action and of nothing else. Jade and coral are reserved for what money is doing (held, owed); they are
- * never used as decoration, so a coloured figure always means something. Panels are separated by hairlines and a faint
- * edge of light rather than drop shadows, and figures use tabular digits so a column of rupees lines up.
+ * AccuFi's look: graphite neutrals with one clear blue for actions. Blue is the colour of what you can do; jade and rose are
+ * reserved for what money is doing (held, owed) and never used as decoration, so a coloured figure always means something.
+ * Panels are separated by hairlines and a faint edge of light rather than drop shadows, and figures use tabular digits so a
+ * column of rupees lines up.
  *
- * Both themes share one set of names. Pairs that carry text or a control edge are checked for contrast (see
- * tests/design/contrast.test.ts): text 4.5:1 or better, input borders, focus rings and accent edges 3:1 against the surface
- * they sit on. A marigold fill is identified by its label, not its edge; wherever marigold is the edge itself it is
- * --accent-edge, which is darkened on the light theme because the fill alone is only 1.8:1 against white.
+ * Three theme states share one set of names: follow the system (no attribute), or the visitor's own choice, which sets
+ * data-theme="light" or "dark" on <html> (see ThemeToggle). The dark values therefore appear twice, once for the system
+ * preference and once for the explicit choice, and tests/design/contrast.test.ts fails if the two copies ever differ.
+ *
+ * Pairs that carry text or a control edge are checked for contrast in both themes: text 4.5:1 or better, input borders,
+ * focus rings and accent edges 3:1 against the surface they sit on.
  */
 
 :root {
-  /* Light: a cool lilac-white, not cream. */
-  --canvas: #f4f3fb;
+  /* Light: a cool grey-white. */
+  --canvas: #f4f6fa;
   --panel: #ffffff;
-  --panel-raised: #faf9fe;
-  --fg: #17142b;
-  --fg-soft: #5e5a7e;
-  --line: #e3e1f1;
-  --line-strong: #8b86b3;
-  --accent: #f5b93e;
-  --accent-fg: #1a1306;
-  --accent-edge: #9a6a00;
-  --link: #4b41d6;
-  --focus: #4b41d6;
-  --positive: #0a7f5c;
+  --panel-raised: #f9fafc;
+  --fg: #0f1420;
+  --fg-soft: #586174;
+  --line: #e2e6ee;
+  --line-strong: #7b869b;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+  --accent-edge: #1d4ed8;
+  --link: #1d4ed8;
+  --focus: #1d4ed8;
+  --positive: #0b7f58;
   --negative: #c0262d;
-  --negative-wash: #fde8e8;
-  --notice-wash: #fff1cc;
-  --notice-fg: #6b4a00;
+  --negative-wash: #fde8ea;
+  --notice-wash: #ffedd5;
+  --notice-fg: #7a3e00;
   --edge: rgb(255 255 255 / 0.9);
   color-scheme: light;
 }
 
+/* The visitor chose dark. */
+:root[data-theme="dark"] {
+  --canvas: #0a0b0f;
+  --panel: #12141a;
+  --panel-raised: #1a1d26;
+  --fg: #f1f3f8;
+  --fg-soft: #9aa3b5;
+  --line: #252936;
+  --line-strong: #667087;
+  --accent: #5b9bff;
+  --accent-fg: #07111f;
+  --accent-edge: #5b9bff;
+  --link: #8bb8ff;
+  --focus: #8bb8ff;
+  --positive: #3fdc9a;
+  --negative: #ff7c86;
+  --negative-wash: #2b141a;
+  --notice-wash: #2a1b0e;
+  --notice-fg: #ffb86b;
+  --edge: rgb(255 255 255 / 0.05);
+  color-scheme: dark;
+}
+
+/* No choice made: follow the system. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #0e0c18;
-    --panel: #16132a;
-    --panel-raised: #1d1a36;
-    --fg: #eeebfa;
-    --fg-soft: #9893b8;
-    --line: #2c2850;
-    --line-strong: #6a64a8;
-    --accent: #f5b93e;
-    --accent-fg: #1a1306;
-    --accent-edge: #f5b93e;
-    --link: #a9a3ff;
-    --focus: #a9a3ff;
-    --positive: #41d6a4;
-    --negative: #ff8a8a;
-    --negative-wash: #341826;
-    --notice-wash: #2d2410;
-    --notice-fg: #f5d58a;
-    --edge: rgb(255 255 255 / 0.06);
+  :root:not([data-theme="light"]) {
+    --canvas: #0a0b0f;
+    --panel: #12141a;
+    --panel-raised: #1a1d26;
+    --fg: #f1f3f8;
+    --fg-soft: #9aa3b5;
+    --line: #252936;
+    --line-strong: #667087;
+    --accent: #5b9bff;
+    --accent-fg: #07111f;
+    --accent-edge: #5b9bff;
+    --link: #8bb8ff;
+    --focus: #8bb8ff;
+    --positive: #3fdc9a;
+    --negative: #ff7c86;
+    --negative-wash: #2b141a;
+    --notice-wash: #2a1b0e;
+    --notice-fg: #ffb86b;
+    --edge: rgb(255 255 255 / 0.05);
     color-scheme: dark;
   }
 }

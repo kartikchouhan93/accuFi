@@ -5,7 +5,9 @@ import { LogOut, Menu, X } from "lucide-react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import Link from "next/link"
 import { useEffect, useId, useRef, useState } from "react"
+import { THEME_LABEL } from "@/lib/theme"
 import { cn } from "@/lib/utils"
+import { ThemeIcon, ThemeToggle, useTheme } from "./theme-toggle"
 
 // Navigation as a slim rail that opens over the page. Adapted from Aceternity UI's sidebar, with the parts that would
 // not survive a keyboard or a screen reader replaced:
@@ -72,6 +74,7 @@ function DesktopRail({ items, current, brand, email, signOut }: SidebarProps) {
         </nav>
         <div className="flex flex-col gap-1 border-t border-line px-3 py-3">
           {email && <Account email={email} revealed={open} />}
+          <ThemeRow revealed={open} />
           <SignOutButton signOut={signOut} revealed={open} />
         </div>
       </motion.div>
@@ -125,17 +128,20 @@ function MobileBar({ items, current, brand, email, signOut }: SidebarProps) {
   return (
     <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-line bg-panel px-4 md:hidden">
       {brand}
-      <button
-        ref={toggleRef}
-        type="button"
-        aria-label="Open menu"
-        aria-expanded={open}
-        aria-controls={drawerId}
-        onClick={() => setOpen(true)}
-        className="-mr-2 grid size-10 place-items-center rounded-lg text-fg hover:bg-panel-raised"
-      >
-        <Menu aria-hidden className="size-5" />
-      </button>
+      <div className="-mr-2 flex items-center">
+        <ThemeToggle />
+        <button
+          ref={toggleRef}
+          type="button"
+          aria-label="Open menu"
+          aria-expanded={open}
+          aria-controls={drawerId}
+          onClick={() => setOpen(true)}
+          className="grid size-10 place-items-center rounded-xl text-fg hover:bg-panel-raised"
+        >
+          <Menu aria-hidden className="size-5" />
+        </button>
+      </div>
       <AnimatePresence>
         {open && (
           <>
@@ -181,6 +187,7 @@ function MobileBar({ items, current, brand, email, signOut }: SidebarProps) {
               </nav>
               <div className="flex flex-col gap-1 border-t border-line px-3 py-3">
                 {email && <Account email={email} revealed />}
+                <ThemeRow revealed />
                 <SignOutButton signOut={signOut} revealed />
               </div>
             </motion.div>
@@ -220,6 +227,23 @@ function Account({ email, revealed }: { email: string; revealed: boolean }) {
       </span>
       <p title={email} className={cn("truncate text-xs text-fg-soft transition-opacity duration-150", revealed ? "opacity-100" : "opacity-0")}>{email}</p>
     </div>
+  )
+}
+
+// The theme, as a row in the same shape as a link: system, light or dark, one step per press.
+function ThemeRow({ revealed }: { revealed: boolean }) {
+  const { theme, cycle, label } = useTheme()
+  return (
+    <button
+      type="button"
+      onClick={cycle}
+      aria-label={label}
+      title={label}
+      className="flex h-11 w-full items-center gap-3 overflow-hidden rounded-xl px-[13px] text-sm font-medium text-fg-soft transition-colors hover:bg-panel-raised hover:text-fg"
+    >
+      <ThemeIcon theme={theme} />
+      <Label revealed={revealed}>Theme: {THEME_LABEL[theme]}</Label>
+    </button>
   )
 }
 

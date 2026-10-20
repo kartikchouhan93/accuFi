@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useActionState, useState } from "react"
 import { BackgroundBeams } from "@/components/ui/background-beams"
 import { buttonClass, inputClass } from "@/components/ui/styles"
+import { ThemeToggle } from "@/components/ui/theme-toggle"
 import type { AuthFormState } from "./actions"
 
 type Props = {
@@ -29,6 +30,7 @@ export function AuthForm({ mode, action }: Props) {
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10">
       <BackgroundBeams />
+      <ThemeToggle className="absolute right-4 top-4 z-10" />
       <div className="relative z-10 w-full max-w-sm">
         <div className="mb-6 flex items-center gap-3">
           <span aria-hidden className="grid size-11 place-items-center rounded-2xl bg-accent font-display text-xl font-bold text-accent-fg">
