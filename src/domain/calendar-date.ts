@@ -68,6 +68,16 @@ export function compareDates(a: CalendarDate, b: CalendarDate): number {
   return a < b ? -1 : a > b ? 1 : 0
 }
 
+const MS_PER_DAY = 86_400_000
+
+/**
+ * Whole calendar days from `from` to `to`; negative when `to` is earlier. Both dates become UTC midnight, which
+ * has no daylight-saving gaps, so every day is exactly 86,400,000 ms and the process timezone cannot matter.
+ */
+export function daysBetween(from: CalendarDate, to: CalendarDate): number {
+  return (toDbDate(to).getTime() - toDbDate(from).getTime()) / MS_PER_DAY
+}
+
 function assertMonth(month: number): void {
   if (!Number.isInteger(month) || month < 1 || month > 12) {
     throw new CalendarDateError(`Month must be an integer from 1 to 12, got ${month}`)

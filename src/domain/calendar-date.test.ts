@@ -3,6 +3,7 @@ import {
   CalendarDateError,
   calendarDate,
   compareDates,
+  daysBetween,
   financialYearRange,
   fromDbDate,
   monthRange,
@@ -89,6 +90,37 @@ describe("compareDates", () => {
   it("sorts across month and year boundaries", () => {
     const dates = ["2027-01-01", "2026-12-31", "2026-02-01", "2026-10-01"].map(calendarDate)
     expect([...dates].sort(compareDates)).toEqual(["2026-02-01", "2026-10-01", "2026-12-31", "2027-01-01"])
+  })
+})
+
+describe("daysBetween", () => {
+  it("counts whole days from the first date to the second", () => {
+    expect(daysBetween(calendarDate("2026-03-01"), calendarDate("2026-03-31"))).toBe(30)
+    expect(daysBetween(calendarDate("2026-03-31"), calendarDate("2026-04-01"))).toBe(1)
+  })
+
+  it("is zero for the same day", () => {
+    expect(daysBetween(calendarDate("2026-03-01"), calendarDate("2026-03-01"))).toBe(0)
+  })
+
+  it("is negative when the second date is earlier", () => {
+    expect(daysBetween(calendarDate("2026-03-31"), calendarDate("2026-03-01"))).toBe(-30)
+  })
+
+  it("counts a leap day, and not a missing one", () => {
+    expect(daysBetween(calendarDate("2028-02-28"), calendarDate("2028-03-01"))).toBe(2)
+    expect(daysBetween(calendarDate("2027-02-28"), calendarDate("2027-03-01"))).toBe(1)
+    expect(daysBetween(calendarDate("2027-12-31"), calendarDate("2028-12-31"))).toBe(366)
+  })
+
+  it("crosses month and year ends", () => {
+    expect(daysBetween(calendarDate("2026-12-25"), calendarDate("2027-01-05"))).toBe(11)
+  })
+
+  it("is whole days across a daylight-saving change, whatever the process timezone", () => {
+    // 2026-03-08 is 23 hours long in America/New_York; calendar days must not notice
+    expect(daysBetween(calendarDate("2026-03-07"), calendarDate("2026-03-09"))).toBe(2)
+    expect(daysBetween(calendarDate("2026-10-31"), calendarDate("2026-11-02"))).toBe(2)
   })
 })
 
