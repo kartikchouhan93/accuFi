@@ -39,7 +39,9 @@ import { todayFor } from "@/server/services/clock"
 //
 // Scope: warnings and the guard read balances at one day (`asOf`, today or the transaction's own later day), not across
 // history. A backdated spend that holds an account negative for three weeks in the past and is covered by a later
-// deposit warns about nothing: M1 judges the position as it stands, not every day it passed through.
+// deposit warns about nothing: M1 judges the position as it stands, not every day it passed through. That is what the
+// account form's switch promises and no more: "Block entries that would leave this account overdrawn as of today".
+// Widening the guard to every day in between is a later milestone's decision; if it is made, change that label with it.
 //
 // Split groups (spec §4.1, EC-3, EC-13, EC-19). A split is two or more transactions that are one real-world event,
 // written together in one database transaction under a shared `groupId`, and deleted, restored and displayed as a

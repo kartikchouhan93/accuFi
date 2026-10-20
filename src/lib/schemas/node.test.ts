@@ -19,6 +19,21 @@ describe("createNodeSchema", () => {
     })
   })
 
+  it("lets an account ask not to be overdrawn, and nothing else", () => {
+    const base = { kind: "ASSET", name: "Bank", assetSubtype: "CASH" }
+    const on = parse({ ...base, blockNegative: true })
+    expect(on.success && on.data).toMatchObject({ blockNegative: true })
+    const off = parse({ ...base, blockNegative: false })
+    expect(off.success && off.data).toMatchObject({ blockNegative: false })
+    const plain = parse(base)
+    expect(plain.success && "blockNegative" in plain.data).toBe(false)
+    // A form value, not a flag: the text a checkbox might carry is refused instead of coerced.
+    expect(parse({ ...base, blockNegative: "true" }).success).toBe(false)
+    // Only an asset can be overdrawn (EC-11), so no other kind takes it.
+    expect(parse({ kind: "LIABILITY", name: "Card", liabilitySubtype: "LOAN", blockNegative: true }).success).toBe(false)
+    expect(parse({ kind: "EXPENSE", name: "Food", blockNegative: true }).success).toBe(false)
+  })
+
   it("requires assetSubtype for an ASSET", () => {
     expect(fieldsWithIssues({ kind: "ASSET", name: "Bank" })).toEqual(["assetSubtype"])
   })

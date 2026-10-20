@@ -39,6 +39,10 @@ const asset = z.strictObject({
   institution: institution.optional(),
   lastFour: lastFour.optional(),
   openingBalance: signedRupees.optional(),
+  // Refuse any entry that would leave this account below zero (EC-11). Only an asset can be overdrawn: a liability is
+  // meant to be negative and the other kinds are flow totals. Judged on one day, not across history; see
+  // src/server/services/transaction-service.ts.
+  blockNegative: z.boolean().optional(),
 })
 
 const liability = z.strictObject({

@@ -332,6 +332,23 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
         />
       )
       break
+    case "checkbox":
+      // Its own label wraps the box, so the words are the click target; no "optional" marker, an unticked box is no answer.
+      return (
+        <div>
+          <label className="flex cursor-pointer items-start gap-2 text-sm font-medium">
+            <input
+              {...common}
+              type="checkbox"
+              checked={value === "true"}
+              onChange={(event) => onChange(event.target.checked ? "true" : "")}
+              className="mt-0.5 size-4 shrink-0 accent-pen"
+            />
+            <span>{control.label}</span>
+          </label>
+          {messages}
+        </div>
+      )
     case "none":
       return null
   }

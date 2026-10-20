@@ -37,6 +37,8 @@ export type Control = Common &
     | { type: "choice"; choices: Choice[]; emptyLabel?: string }
     | { type: "day" }
     | { type: "rupees"; placeholder?: string }
+    // An on/off switch. Its value is "true" when ticked and empty otherwise, like every other value on the form.
+    | { type: "checkbox" }
     // The signed one: an unsigned amount plus a direction, so the sign is a choice with words rather than a minus a
     // user might or might not type.
     | { type: "opening" }
@@ -84,6 +86,13 @@ export const CONTROLS: Record<FieldName, Control> = {
   statementDay: { type: "day", label: "Statement day", hint: "Day of the month" },
   dueDay: { type: "day", label: "Due day", hint: "Day of the month" },
   openingBalance: { type: "opening", label: "Opening balance" },
+  // Worded for what the guard does, which is to look at one day: see the header of transaction-service.ts, which says
+  // the same thing in the same words (a test holds the two together).
+  blockNegative: {
+    type: "checkbox",
+    label: "Block entries that would leave this account overdrawn as of today",
+    hint: "Judged on the day of the entry, today or a later date, not across the past: a backdated spend that held it below zero earlier is still allowed.",
+  },
   valuationMode: { type: "choice", label: "Valuation", choices: choices(VALUATION_MODES, VALUATION_LABEL) },
   unitLabel: { type: "text", label: "Unit", maxLength: 20, placeholder: "gram, unit, share", hint: "What one of it is called" },
   lotMethod: {

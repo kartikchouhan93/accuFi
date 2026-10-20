@@ -97,6 +97,27 @@ test("warns about what an account holds today, not about a deposit that is dated
   await expect(page.getByRole("status")).not.toContainText("still holds")
 })
 
+test("lets an account refuse to be overdrawn, says as of when, and then refuses", async ({ ledger: page }) => {
+  await addNode(page, "Account", { Name: "Guarded", "Account type": "Savings", "Amount (₹)": "100" })
+  const guard = page.getByRole("checkbox", { name: "Block entries that would leave this account overdrawn as of today" })
+  await expect(guard).not.toBeChecked()
+  // The control says what it does and what it does not: one day, not the past.
+  await expect(page.getByText("not across the past")).toBeVisible()
+  await guard.check()
+  await page.getByRole("button", { name: "Add account" }).click()
+  await expect(page.getByRole("status")).toContainText("Added Guarded.")
+  await expect(guard).not.toBeChecked() // the form starts again
+
+  // It is the account's own setting from now on: a spend past what it holds is refused.
+  await page.goto("/transactions")
+  const record = page.getByRole("form", { name: "Record a transaction" })
+  await record.getByLabel("From", { exact: true }).selectOption({ label: "Guarded" })
+  await record.getByLabel("To", { exact: true }).selectOption({ label: "Groceries" })
+  await record.getByLabel("Amount (₹)").fill("500")
+  await record.getByRole("button", { name: "Record transaction" }).click()
+  await expect(record.getByRole("alert")).toContainText("does not allow a negative balance")
+})
+
 test("shows archived accounts when the filter is toggled", async ({ ledger: page }) => {
   await addNode(page, "Account", { Name: "Old savings", "Account type": "Savings", "Amount (₹)": "5,000" })
   await page.getByRole("button", { name: "Add account" }).click()

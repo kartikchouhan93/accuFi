@@ -40,6 +40,7 @@ export function buildInput(kind: LedgerKind, fields: KindField[], values: Record
     if (field.name === "name") input.name = text // required: an empty one is refused by the server with its own message
     else if (text === "") continue
     else if (field.control.type === "day") input[field.name] = Number(text)
+    else if (field.control.type === "checkbox") input[field.name] = true // unticked is `""`, skipped above
     else if (field.control.type === "opening") input[field.name] = direction === "negative" ? `-${text}` : text
     else input[field.name] = text
   }

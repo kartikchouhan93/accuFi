@@ -93,6 +93,24 @@ describe("createNodeAction", () => {
     expect(row.amountPaise).toBe(123_450n)
   })
 
+  it("stores the overdraft guard when it is asked for, and leaves it off otherwise", async () => {
+    await signedInSeededUser()
+    const guarded = await actions.createNodeAction({ ...bankInput, blockNegative: true })
+    expect(guarded).toMatchObject({ ok: true, data: { node: { blockNegative: true } } })
+    const plain = await actions.createNodeAction({ ...bankInput, name: "Plain" })
+    expect(plain).toMatchObject({ ok: true, data: { node: { blockNegative: false } } })
+    const stored = await prisma.ledgerNode.findFirstOrThrow({ where: { id: guarded.ok ? guarded.data.node.id : "" } })
+    expect(stored.blockNegative).toBe(true)
+  })
+
+  it("refuses the guard on a kind that cannot be overdrawn", async () => {
+    await signedInSeededUser()
+    expect(await actions.createNodeAction({ kind: "EXPENSE", name: "Food", blockNegative: true })).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    })
+  })
+
   it("posts a negative opening balance as node -> contra, so a card you owe on starts negative", async () => {
     const user = await signedInSeededUser()
     const result = await actions.createNodeAction({
