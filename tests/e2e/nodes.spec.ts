@@ -1,4 +1,5 @@
 import { addNode, expect, openRow, row, section, test } from "./fixtures"
+import { account, incomeSource, post } from "./seed"
 
 // The node management screen, driven through a real browser against a real server and database. Money is checked as
 // the text the user reads (Indian grouping, a rupee sign, red "owed" wording) because that is the contract of this
@@ -76,6 +77,24 @@ test("archives an account and hides it from the list by default", async ({ ledge
   await expect(page.getByRole("region", { name: "Net worth" })).toContainText("₹5,000.00")
   await expect(section(page, "Accounts")).toContainText("₹5,000.00")
   await expect(section(page, "Accounts")).toContainText("1 archived")
+})
+
+test("warns about what an account holds today, not about a deposit that is dated later", async ({ session: { page, userId } }) => {
+  await incomeSource(userId, "Salary")
+  await account(userId, "Waiting for pay")
+  await post(userId, "Salary", "Waiting for pay", "5,000", { date: "2099-01-01" })
+  await page.goto("/nodes")
+  // Every balance on screen is as of today, so the account is at nothing and the dated deposit is in no figure.
+  await expect(row(page, "Waiting for pay")).toContainText("₹0.00")
+
+  const waiting = await openRow(page, "Waiting for pay")
+  await waiting.getByRole("button", { name: "Archive", exact: true }).click()
+  await expect(waiting.getByRole("button", { name: "Confirm archive" })).toBeVisible()
+  await expect(waiting).toContainText("Archive Waiting for pay?")
+  await expect(waiting).not.toContainText("still holds")
+  await waiting.getByRole("button", { name: "Confirm archive" }).click()
+  await expect(page.getByRole("status")).toContainText("Archived Waiting for pay.")
+  await expect(page.getByRole("status")).not.toContainText("still holds")
 })
 
 test("shows archived accounts when the filter is toggled", async ({ ledger: page }) => {

@@ -9,6 +9,7 @@ import { requireUserId } from "@/server/auth"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
   archiveLedgerNode,
+  archiveResidual,
   createLedgerNode,
   findDuplicateNodes,
   HierarchyDepthError,
@@ -89,6 +90,21 @@ export async function archiveNodeAction(
     if ("ok" in parsed) return parsed
     const { node, residualBalance } = await archiveLedgerNode(userId, parsed.data.nodeId)
     return ok({ node: toNodeView(node), residualBalance: serialisePaise(residualBalance) })
+  } catch (error) {
+    return toFailure(error)
+  }
+}
+
+/**
+ * What archiving this node would leave in it, as of today, from the server: the figure the confirm step shows, so it is
+ * the one archiving then reports and not whatever the page was holding when it loaded. Writes nothing.
+ */
+export async function archiveResidualAction(input: unknown): Promise<ActionResult<{ residualBalance: string }>> {
+  try {
+    const userId = await requireUserId()
+    const parsed = parseInput(nodeIdSchema, input)
+    if ("ok" in parsed) return parsed
+    return ok({ residualBalance: serialisePaise(await archiveResidual(userId, parsed.data.nodeId)) })
   } catch (error) {
     return toFailure(error)
   }

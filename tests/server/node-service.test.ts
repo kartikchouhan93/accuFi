@@ -9,6 +9,7 @@ import { sumBalances } from "@/server/repositories/transaction-repository"
 import { seedAccountNodes } from "@/server/services/account-seed"
 import {
   archiveLedgerNode,
+  archiveResidual,
   createLedgerNode,
   findDuplicateNodes,
   HierarchyDepthError,
@@ -427,6 +428,30 @@ describe("archiveLedgerNode and restoreLedgerNode", () => {
     const food = await createLedgerNode(user.id, { kind: "EXPENSE", name: "Food" })
     await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 300n, deletedAt: new Date() })
     expect((await archiveLedgerNode(user.id, bank.id)).residualBalance).toBe(0n)
+  })
+
+  it("reports the residual as of today, like every balance on screen: a future-dated deposit is not in it", async () => {
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    const salary = await createLedgerNode(user.id, { kind: "INCOME_SOURCE", name: "Salary" })
+    await registry.makeTransaction(user.id, salary.id, bank.id, { amountPaise: 5_000_00n, occurredAt: "2099-01-01" })
+    await registry.makeTransaction(user.id, salary.id, bank.id, { amountPaise: 1_200_00n, occurredAt: "2020-01-01" })
+
+    expect(await archiveResidual(user.id, bank.id)).toBe(1_200_00n)
+    expect((await archiveLedgerNode(user.id, bank.id)).residualBalance).toBe(1_200_00n)
+    // The projected figure is still what sumBalances gives with no day: the two differ, and only today's is shown.
+    expect((await sumBalances(user.id)).find((row) => row.nodeId === bank.id)?.balance).toBe(6_200_00n)
+  })
+
+  it("reads the residual without archiving, and refuses a system node and another user's node", async () => {
+    const { user, systemNode } = await makeSeededUser()
+    const bank = await createLedgerNode(user.id, { ...bankInput, openingBalance: 800_00n })
+    expect(await archiveResidual(user.id, bank.id)).toBe(800_00n)
+    expect((await findNodeById(user.id, bank.id))?.archivedAt).toBeNull()
+    await expect(archiveResidual(user.id, (await systemNode("OPENING_BALANCE")).id)).rejects.toThrow(SystemNodeError)
+    const stranger = await registry.makeUser()
+    const theirs = await createLedgerNode(stranger.id, bankInput)
+    await expect(archiveResidual(user.id, theirs.id)).rejects.toThrow(NotFoundError)
   })
 
   it("archiving a node twice changes nothing and still reports the residual", async () => {

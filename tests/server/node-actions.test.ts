@@ -233,6 +233,21 @@ describe("archiveNodeAction, restoreNodeAction and removeNodeAction", () => {
     expectNoBigint(removed)
   })
 
+  it("tells the screen what archiving would leave behind, as of today, without archiving", async () => {
+    const user = await signedInSeededUser()
+    const created = await actions.createNodeAction({ ...bankInput, openingBalance: "500" })
+    const id = created.ok ? created.data.node.id : ""
+    const salary = await registry.makeNode(user.id, "INCOME_SOURCE", "Salary")
+    await registry.makeTransaction(user.id, salary.id, id, { amountPaise: 9_999_00n, occurredAt: "2099-01-01" })
+
+    const residual = await actions.archiveResidualAction({ nodeId: id })
+    expect(residual).toEqual({ ok: true, data: { residualBalance: "50000" } })
+    expectNoBigint(residual)
+    expect((await prisma.ledgerNode.findUniqueOrThrow({ where: { id } })).archivedAt).toBeNull()
+    // The figure it gives is the figure archiving reports.
+    expect(await actions.archiveNodeAction({ nodeId: id })).toMatchObject({ ok: true, data: { residualBalance: "50000" } })
+  })
+
   it("answers has_history, not an exception, for a node with transactions", async () => {
     // NodeHasHistoryError, EC-33
     await signedInSeededUser()
@@ -246,12 +261,13 @@ describe("archiveNodeAction, restoreNodeAction and removeNodeAction", () => {
     const user = await signedInSeededUser()
     const opening = await prisma.ledgerNode.findFirstOrThrow({ where: { userId: user.id, systemRole: "OPENING_BALANCE" } })
     expect(await actions.archiveNodeAction({ nodeId: opening.id })).toMatchObject({ ok: false, error: { code: "system_node" } })
+    expect(await actions.archiveResidualAction({ nodeId: opening.id })).toMatchObject({ ok: false, error: { code: "system_node" } })
     expect(await actions.removeNodeAction({ nodeId: opening.id })).toMatchObject({ ok: false, error: { code: "system_node" } })
   })
 
   it("rejects a malformed payload", async () => {
     await signedInUser()
-    for (const action of [actions.archiveNodeAction, actions.restoreNodeAction, actions.removeNodeAction]) {
+    for (const action of [actions.archiveNodeAction, actions.archiveResidualAction, actions.restoreNodeAction, actions.removeNodeAction]) {
       expect(await action({ nodeId: "" })).toMatchObject({ ok: false, error: { code: "invalid_input" } })
       expect(await action("not-an-object")).toMatchObject({ ok: false, error: { code: "invalid_input" } })
     }

@@ -9,7 +9,7 @@ import type { NodeOverview } from "@/lib/node-overview"
 import type { NodeView } from "@/lib/node-view"
 import type { ActionResult } from "@/server/action-support"
 import { Amount } from "@/app/amount"
-import { archiveNodeAction, removeNodeAction, renameNodeAction, restoreNodeAction } from "./actions"
+import { archiveNodeAction, archiveResidualAction, removeNodeAction, renameNodeAction, restoreNodeAction } from "./actions"
 import { choiceLabel } from "./node-fields"
 import { describeFailure, type FailureText } from "./node-failure"
 import type { Notice } from "./node-workspace"
@@ -161,6 +161,9 @@ function NodeRow({ node, balance, announce }: RowProps) {
   const [draftName, setDraftName] = useState(node.name)
   const [failure, setFailure] = useState<FailureText | null>(null)
   const [nameErrors, setNameErrors] = useState<string[]>([])
+  // What archiving would leave in the node, as of today, asked of the server when the user chose Archive. Not the figure
+  // on the row: that is the page as it was loaded, and this is the one the confirm step has to be honest about.
+  const [residualToConfirm, setResidualToConfirm] = useState("0")
   const [pending, startTransition] = useTransition()
 
   const isSystem = node.systemRole !== null
@@ -168,9 +171,9 @@ function NodeRow({ node, balance, announce }: RowProps) {
   const copy = KIND_COPY[node.kind]
   const sub = subtitle(node)
   const shownBalance = isSystem ? null : describeBalance(node.kind, balance)
-  const residual = describeResidual(node.kind, balance)
+  const residual = describeResidual(node.kind, residualToConfirm)
 
-  function run<T>(call: () => Promise<ActionResult<T>>, onSuccess: (data: T) => void) {
+  function run<T>(call: () => Promise<ActionResult<T>>, onSuccess: (data: T) => void, refresh = true) {
     setFailure(null)
     setNameErrors([])
     startTransition(async () => {
@@ -182,9 +185,19 @@ function NodeRow({ node, balance, announce }: RowProps) {
         return
       }
       onSuccess(result.data)
-      router.refresh()
+      if (refresh) router.refresh()
     })
   }
+
+  const chooseArchive = () =>
+    run(
+      () => archiveResidualAction({ nodeId: node.id }),
+      ({ residualBalance }) => {
+        setResidualToConfirm(residualBalance)
+        setMode("confirm-archive")
+      },
+      false, // a read: nothing changed, so there is nothing to refresh
+    )
 
   const archive = () =>
     run(
@@ -287,7 +300,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
                       Restore
                     </button>
                   ) : (
-                    <button type="button" className={buttonClass} onClick={() => setMode("confirm-archive")}>
+                    <button type="button" className={buttonClass} disabled={pending} onClick={chooseArchive}>
                       Archive
                     </button>
                   )}

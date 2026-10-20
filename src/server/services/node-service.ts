@@ -14,6 +14,7 @@ import {
   updateNode,
 } from "@/server/repositories/node-repository"
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
+import { todayFor } from "@/server/services/clock"
 import { inTransaction } from "@/server/repositories/unit-of-work"
 import { findUserTimezone } from "@/server/repositories/user-repository"
 
@@ -235,19 +236,36 @@ export function renameLedgerNode(userId: string, nodeId: string, name: string): 
 }
 
 /**
- * Archive a node and report what it still holds. Archiving is allowed whatever the balance (EC-32): the residue stays
- * in history and in net worth (balances are summed over archived nodes too), and it is the caller's job to warn the
- * user. Archiving an archived node changes nothing and reports the same residual, so a retried request succeeds.
+ * What archiving this node would leave in it: its balance as of today in the user's own timezone, the basis of every
+ * balance on screen (a transaction dated after today is projected and in none of them, EC-10). A deposit dated next
+ * week is therefore not "still held": warning about it would name a figure that appears nowhere else and is not true
+ * today. Reads only; throws what archiving would throw for a system node or one that is not the user's.
+ */
+export async function archiveResidual(userId: string, nodeId: string): Promise<Paise> {
+  await requireMutableNode(userId, nodeId)
+  return residualOf(userId, nodeId)
+}
+
+async function residualOf(userId: string, nodeId: string): Promise<Paise> {
+  const row = (await sumBalances(userId, await todayFor(userId))).find((b) => b.nodeId === nodeId)
+  if (!row) throw new NotFoundError("node") // deleted between the two reads
+  return row.balance
+}
+
+/**
+ * Archive a node and report what it still holds (`archiveResidual`: as of today). Archiving is allowed whatever the
+ * balance (EC-32): the residue stays in history and in net worth (balances are summed over archived nodes too), and it
+ * is the caller's job to warn the user. Archiving an archived node changes nothing and reports the same residual, so a
+ * retried request succeeds.
  */
 export async function archiveLedgerNode(
   userId: string,
   nodeId: string,
 ): Promise<{ node: LedgerNode; residualBalance: Paise }> {
   const current = await requireMutableNode(userId, nodeId)
-  const row = (await sumBalances(userId)).find((b) => b.nodeId === nodeId)
-  if (!row) throw new NotFoundError("node") // deleted between the two reads
+  const residualBalance = await residualOf(userId, nodeId)
   const node = current.archivedAt !== null ? current : await updateNode(userId, nodeId, { archivedAt: new Date() })
-  return { node, residualBalance: row.balance }
+  return { node, residualBalance }
 }
 
 export async function restoreLedgerNode(userId: string, nodeId: string): Promise<LedgerNode> {
