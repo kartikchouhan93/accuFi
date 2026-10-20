@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation"
-import type { ZodError } from "zod"
 import type { TransactionView } from "@/lib/transaction-view"
 import { UnauthenticatedError } from "@/server/auth"
 
@@ -16,6 +15,7 @@ export type ActionErrorCode =
   | "kind_immutable"
   | "version_conflict"
   | "overdraft_blocked"
+  | "request_conflict"
 
 export interface ActionFailure {
   ok: false
@@ -48,12 +48,5 @@ export function redirectIfUnauthenticated(error: unknown): void {
   if (error instanceof UnauthenticatedError) redirect("/login")
 }
 
-/** Zod issues as `{ fieldName: [messages] }`; an issue about the input as a whole is filed under "form". */
-export function fieldErrorsOf(error: ZodError): Record<string, string[]> {
-  const out: Record<string, string[]> = {}
-  for (const issue of error.issues) {
-    const key = issue.path.length > 0 ? issue.path.join(".") : "form"
-    ;(out[key] ??= []).push(issue.message)
-  }
-  return out
-}
+// Lives in src/lib so a service can use it without importing the session; every action file still gets it from here.
+export { fieldErrorsOf } from "@/lib/field-errors"

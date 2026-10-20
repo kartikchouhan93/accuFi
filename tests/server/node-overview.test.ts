@@ -37,6 +37,19 @@ describe("loadNodeOverview", () => {
     expect(after.balances[bank.id]).toBe("5000000")
   })
 
+  it("counts today's figures only: a future-dated transaction is not in the balance, the kind total or net worth (EC-10)", async () => {
+    const user = await registry.makeUser()
+    await prisma.$transaction((tx) => seedAccountNodes(tx, user.id))
+    const bank = await createLedgerNode(user.id, { kind: "ASSET", name: "Bank", assetSubtype: "SAVINGS", openingBalance: 5_000_000n })
+    const rent = await prisma.ledgerNode.findFirstOrThrow({ where: { userId: user.id, name: "Rent" } })
+    await registry.makeTransaction(user.id, bank.id, rent.id, { amountPaise: 3_000_000n, occurredAt: "2099-01-01" })
+
+    const overview = await loadNodeOverview(user.id)
+    expect(overview.balances[bank.id]).toBe("5000000")
+    expect(overview.kinds.ASSET.total).toBe("5000000")
+    expect(overview.netWorth.total).toBe("5000000")
+  })
+
   it("is plain data and covers the seeded system nodes", async () => {
     const user = await registry.makeUser()
     await prisma.$transaction((tx) => seedAccountNodes(tx, user.id))

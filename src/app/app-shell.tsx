@@ -3,10 +3,16 @@ import { auth } from "@/server/auth"
 import { signOutAction } from "./sign-out-action"
 
 // The frame around a signed-in screen: wordmark, where you are, who you are, and a way out. Deliberately minimal. The
-// dashboard and the later screens will add their own links here; today the ledger is the only destination, and sign
-// out had no home anywhere before this.
+// dashboard and the later screens will add their own links here.
 
-export async function AppShell({ children }: { children: React.ReactNode }) {
+const DESTINATIONS: { key: Destination; href: string; label: string }[] = [
+  { key: "ledger", href: "/nodes", label: "Ledger" },
+  { key: "transactions", href: "/transactions", label: "Transactions" },
+]
+
+export type Destination = "ledger" | "transactions"
+
+export async function AppShell({ children, current = "ledger" }: { children: React.ReactNode; current?: Destination }) {
   const email = (await auth())?.user?.email
   return (
     <div className="min-h-screen">
@@ -15,10 +21,17 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
           <Link href="/nodes" className="font-display text-xl font-bold tracking-tight">
             AccuFi
           </Link>
-          <nav aria-label="Main" className="flex-1">
-            <Link href="/nodes" aria-current="page" className="border-b-2 border-pen pb-0.5 font-medium">
-              Ledger
-            </Link>
+          <nav aria-label="Main" className="flex flex-1 gap-5">
+            {DESTINATIONS.map(({ key, href, label }) => (
+              <Link
+                key={key}
+                href={href}
+                aria-current={key === current ? "page" : undefined}
+                className={`pb-0.5 font-medium ${key === current ? "border-b-2 border-pen" : "text-ink-soft hover:text-ink"}`}
+              >
+                {label}
+              </Link>
+            ))}
           </nav>
           {email && <span className="hidden text-sm text-ink-soft sm:inline">{email}</span>}
           <form action={signOutAction}>

@@ -4,10 +4,11 @@ import { useRouter } from "next/navigation"
 import { useId, useState, useTransition } from "react"
 import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
 import { HOLDING_KINDS, KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
-import { describeBalance, describeResidual, formatPaiseText, type BalanceText, type Tone } from "@/lib/node-money"
+import { describeBalance, describeResidual, formatPaiseText } from "@/lib/node-money"
 import type { NodeOverview } from "@/lib/node-overview"
 import type { NodeView } from "@/lib/node-view"
 import type { ActionResult } from "@/server/action-support"
+import { Amount } from "@/app/amount"
 import { archiveNodeAction, removeNodeAction, renameNodeAction, restoreNodeAction } from "./actions"
 import { choiceLabel } from "./node-fields"
 import { describeFailure, type FailureText } from "./node-failure"
@@ -23,32 +24,11 @@ interface Props {
   onAdd: (kind: LedgerKind) => void
 }
 
-const TONE_CLASS: Record<Tone, string> = {
-  positive: "text-ink",
-  negative: "text-red",
-  neutral: "text-ink",
-  muted: "text-ink-soft",
-}
-
 const SYSTEM_ROLE_NOTE: Record<SystemNodeRole, string> = {
   OPENING_BALANCE: "Opening balances you enter come from here.",
   OPENING_BALANCE_CONTRA: "An opening balance that is overdrawn or owed is recorded against this.",
   REALISED_GAIN: "What you gain when you sell an investment is recorded here.",
   REALISED_LOSS: "What you lose when you sell an investment is recorded here.",
-}
-
-function Amount({ text, className = "" }: { text: BalanceText; className?: string }) {
-  return (
-    <span className={`figures whitespace-nowrap ${TONE_CLASS[text.tone]} ${className}`}>
-      {text.amount}
-      {text.qualifier && (
-        <>
-          {" "}
-          <span className="text-sm font-normal text-ink-soft">{text.qualifier}</span>
-        </>
-      )}
-    </span>
-  )
 }
 
 export function NodeList({ overview, announce, onAdd }: Props) {

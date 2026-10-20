@@ -75,14 +75,35 @@ export interface EditTransactionInput {
   tags?: string[]
 }
 
+/**
+ * A rule the request broke. For a split, `leg` is the zero-based position in `legs` of the leg that broke it, so a form
+ * can put the problem on that leg's row without reading the message; it is absent for a single transaction.
+ */
+export interface TransactionViolation extends RuleViolation {
+  leg?: number
+}
+
 /** The request breaks a transaction rule. The message is the domain's own, safe to show the user. */
 export class InvalidTransactionError extends Error {
   constructor(
     message: string,
-    readonly violations: RuleViolation[] = [],
+    readonly violations: TransactionViolation[] = [],
   ) {
     super(message)
     this.name = "InvalidTransactionError"
+  }
+}
+
+/**
+ * The request key was already used for something other than exactly this request. For a split that is a replay with a
+ * different shape, or a replay of a group that has since been broken up: in the second case the earlier request did
+ * succeed, which is why this is its own type and not just a message. A subclass, so everything that handles
+ * InvalidTransactionError still does.
+ */
+export class RequestKeyConflictError extends InvalidTransactionError {
+  constructor() {
+    super("This request key was already used for a different request.")
+    this.name = "RequestKeyConflictError"
   }
 }
 
@@ -100,7 +121,7 @@ async function requireNode(userId: string, nodeId: string): Promise<LedgerNode> 
   return node
 }
 
-async function todayFor(userId: string): Promise<CalendarDate> {
+export async function todayFor(userId: string): Promise<CalendarDate> {
   const timezone = await findUserTimezone(userId)
   if (timezone === null) throw new NotFoundError("user")
   return todayIn(timezone)
@@ -411,7 +432,7 @@ async function storedSplit(userId: string, key: string, legCount: number): Promi
   const isReplay =
     rows.length === legCount &&
     rows.every((row, index) => row.idempotencyKey === keys[index] && row.groupId !== null && row.groupId === first.groupId)
-  if (!isReplay) throw new InvalidTransactionError("This request key was already used for a different request.")
+  if (!isReplay) throw new RequestKeyConflictError()
   const today = await todayFor(userId)
   const views: TransactionView[] = []
   for (const row of rows) views.push(await viewOf(userId, row, undefined, today))
@@ -423,8 +444,9 @@ async function storedSplit(userId: string, key: string, legCount: number): Promi
  * MANUAL_SPLIT. Returns the legs' views in the order given.
  *
  * The legs must be legal and add up to `total` if it is stated, or `SplitTotalMismatchError` / `InvalidTransactionError`
- * is thrown with nothing written. Every leg is checked, and every violation reported with its leg number, before any
- * row is written. Archived nodes are refused, as for a new transaction (EC-14).
+ * is thrown with nothing written. Every leg is checked, and every violation reported with its leg (the structured
+ * `TransactionViolation.leg`, and "Leg N" in the message), before any row is written. Archived nodes are refused, as for
+ * a new transaction (EC-14).
  *
  * The group row and all legs are written in one database transaction, so a failure anywhere (a duplicate key, an
  * overdraft) leaves neither. The overdraft guard reads the source before and after the whole group, so legs that each
@@ -452,10 +474,9 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
   if (replay) return replay
 
   const violations = input.legs.flatMap((leg, index) =>
-    legalityViolations(from, destinations[index], leg.amount, input.occurredAt, false).map((violation) => ({
-      ...violation,
-      message: `Leg ${index + 1}: ${violation.message}`,
-    })),
+    legalityViolations(from, destinations[index], leg.amount, input.occurredAt, false).map(
+      (violation): TransactionViolation => ({ ...violation, leg: index, message: `Leg ${index + 1}: ${violation.message}` }),
+    ),
   )
   if (violations.length > 0) throw new InvalidTransactionError(violations.map((v) => v.message).join(" "), violations)
 

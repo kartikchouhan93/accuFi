@@ -12,24 +12,46 @@ const PASSWORD = "correct horse battery"
 
 async function deleteUser(userId: string) {
   await prisma.transaction.deleteMany({ where: { userId } })
+  await prisma.transactionGroup.deleteMany({ where: { userId } })
   await prisma.ledgerNode.deleteMany({ where: { userId, parentId: { not: null } } })
   await prisma.ledgerNode.deleteMany({ where: { userId } })
   await prisma.user.deleteMany({ where: { id: userId } })
 }
 
-export const test = base.extend<{ ledger: Page }>({
+// Creates the account, signs the page in through the real login form, and returns the user's id for tests that seed data
+// straight through the services. The caller deletes the user afterwards.
+async function signIn(page: Page): Promise<string> {
+  const email = `${randomUUID()}@e2e.test`
+  const { userId } = await createAccount({ email, password: PASSWORD })
+  try {
+    await page.goto("/login")
+    await page.getByLabel("Email").fill(email)
+    await page.getByLabel("Password").fill(PASSWORD)
+    await page.getByRole("button", { name: "Sign in" }).click()
+    await page.waitForURL((url) => url.pathname !== "/login")
+  } catch (error) {
+    await deleteUser(userId)
+    throw error
+  }
+  return userId
+}
+
+export const test = base.extend<{ ledger: Page; session: { page: Page; userId: string } }>({
   // Named `provide`, not `use`: React's hooks lint treats a call to `use` as a hook.
   ledger: async ({ page }, provide) => {
-    const email = `${randomUUID()}@e2e.test`
-    const { userId } = await createAccount({ email, password: PASSWORD })
+    const userId = await signIn(page)
     try {
-      await page.goto("/login")
-      await page.getByLabel("Email").fill(email)
-      await page.getByLabel("Password").fill(PASSWORD)
-      await page.getByRole("button", { name: "Sign in" }).click()
-      await page.waitForURL((url) => url.pathname !== "/login")
       await page.goto("/nodes")
       await provide(page)
+    } finally {
+      await deleteUser(userId)
+    }
+  },
+  // The same signed-in page, with the user's id so a test can put the ledger into a known state before it looks at it.
+  session: async ({ page }, provide) => {
+    const userId = await signIn(page)
+    try {
+      await provide({ page, userId })
     } finally {
       await deleteUser(userId)
     }

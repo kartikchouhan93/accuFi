@@ -99,6 +99,7 @@ describe("recordTransaction", () => {
     expect(error).toBeInstanceOf(InvalidTransactionError)
     expect((error as InvalidTransactionError).message).toBe("Money cannot flow from ASSET to INCOME_SOURCE.")
     expect((error as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ILLEGAL_FLOW"])
+    expect((error as InvalidTransactionError).violations.map((v) => v.leg)).toEqual([undefined]) // a single transaction has no legs
     expect(await rowCount(user.id)).toBe(before)
   })
 

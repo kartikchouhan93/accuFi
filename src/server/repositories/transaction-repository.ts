@@ -15,6 +15,8 @@ import { clientOf, type UnitOfWork } from "./unit-of-work"
 export interface TransactionFilter {
   /** Transactions that touch any of these nodes, as source or destination. */
   nodeIds?: string[]
+  /** Transactions that touch a node of any of these kinds, as source or destination. */
+  kinds?: LedgerKind[]
   /** Inclusive bounds on the transaction day. */
   from?: CalendarDate
   to?: CalendarDate
@@ -87,6 +89,9 @@ function filterConditions(filter: TransactionFilter): Prisma.TransactionWhereInp
   if (filter.nodeIds) {
     conditions.push({ OR: [{ fromNodeId: { in: filter.nodeIds } }, { toNodeId: { in: filter.nodeIds } }] })
   }
+  if (filter.kinds) {
+    conditions.push({ OR: [{ fromNode: { kind: { in: filter.kinds } } }, { toNode: { kind: { in: filter.kinds } } }] })
+  }
   if (filter.from) conditions.push({ occurredAt: { gte: toDbDate(filter.from) } })
   if (filter.to) conditions.push({ occurredAt: { lte: toDbDate(filter.to) } })
   if (filter.minAmount !== undefined) conditions.push({ amountPaise: { gte: filter.minAmount } })
@@ -119,6 +124,20 @@ export async function findTransactions(
   })
   const items = rows.slice(0, pageSize)
   return { items, nextCursor: rows.length > pageSize ? encodeCursor(items[items.length - 1]) : null }
+}
+
+/**
+ * Every live member of each of these groups, whatever filter found the group: a page of `findTransactions` can end in
+ * the middle of a split, and the legs that did not fit are still part of it. Ordered as the legs were written (all of a
+ * split's legs are inserted in one database transaction, so they share a creation time and `id` breaks the tie).
+ * Groups that are not this user's, or have no live member, contribute nothing.
+ */
+export function findGroupMembers(userId: string, groupIds: readonly string[]): Promise<Transaction[]> {
+  if (groupIds.length === 0) return Promise.resolve([])
+  return prisma.transaction.findMany({
+    where: { userId, deletedAt: null, groupId: { in: [...groupIds] } },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  })
 }
 
 /** A soft-deleted transaction is not found. `uow`, when given, reads inside the caller's open transaction. */

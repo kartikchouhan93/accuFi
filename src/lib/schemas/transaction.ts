@@ -1,6 +1,7 @@
 import { z } from "zod"
-import { calendarDate, CalendarDateError, type CalendarDate } from "../../domain/calendar-date"
-import { positiveRupees } from "./rupees"
+import { calendarDate, CalendarDateError, compareDates, type CalendarDate } from "../../domain/calendar-date"
+import { LEDGER_KINDS } from "../../domain/ledger-kind"
+import { positiveRupees, rupees } from "./rupees"
 
 // What a client may send to record, edit, delete or restore a transaction. Strict like the node schemas: `userId`,
 // `groupId`, `version` and the like are errors, not silently dropped, so the form a user filled in and the row that is
@@ -52,15 +53,16 @@ export const SPLIT_LEGS_MAX = 50
 
 const splitLeg = z.strictObject({ toNodeId: nodeId, amount: positiveRupees, note: note.optional() })
 
-// A split: one source, one day, one request key, two or more legs. `total` is what the user said the event cost in all;
-// when present the legs must add up to it. The key is the client's one key for the whole submission and holds to the
-// same length floor as a single transaction's: the service derives each leg's own key from it (`<key>:<index>`), and
-// those derived forms are never what is validated.
+// A split: one source, one day, one request key, two or more legs. `total` is what the user said the event cost in all,
+// and it is required here although the service treats it as optional: the legs-add-up check only runs when a total is
+// stated, so a client that could leave it out could skip the one check that catches a mistyped leg (EC-3). The key is the
+// client's one key for the whole submission and holds to the same length floor as a single transaction's: the service
+// derives each leg's own key from it (`<key>:<index>`), and those derived forms are never what is validated.
 export const recordSplitSchema = z.strictObject({
   fromNodeId: nodeId,
   occurredAt,
   legs: z.array(splitLeg).min(SPLIT_LEGS_MIN, `A split needs at least ${SPLIT_LEGS_MIN} legs`).max(SPLIT_LEGS_MAX),
-  total: positiveRupees.optional(),
+  total: positiveRupees,
   tags: tags.optional(),
   idempotencyKey,
 })
@@ -87,3 +89,43 @@ export const editTransactionSchema = z.strictObject({
 })
 
 export const transactionIdSchema = z.strictObject({ id: transactionId })
+
+// What narrows the list: every field is text exactly as it was typed or sat in the URL, and blank means "no filter". It
+// becomes typed values here, as validation issues, so a bad date or amount is shown beside its field instead of being
+// silently ignored (a list that quietly shows everything while the filter says otherwise is worse than an error).
+// `node` and `kind` both match a transaction at either end. `tag` is comma separated and requires every tag.
+const blank = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (typeof value === "string" && value.trim() === "" ? undefined : value), schema.optional())
+
+const filterAmount = rupees.refine((paise) => paise >= 0n, "Enter an amount of zero or more")
+
+const filterFields = {
+  node: blank(nodeId),
+  kind: blank(z.enum(LEDGER_KINDS)),
+  from: blank(occurredAt),
+  to: blank(occurredAt),
+  min: blank(filterAmount),
+  max: blank(filterAmount),
+  tag: blank(z.string().transform((text) => text.split(",").map((tag) => tag.trim()).filter((tag) => tag !== ""))),
+  q: blank(z.string().trim().max(NOTE_MAX_LENGTH, `At most ${NOTE_MAX_LENGTH} characters`)),
+}
+
+function checkRanges(
+  value: { from?: CalendarDate; to?: CalendarDate; min?: bigint; max?: bigint },
+  ctx: { addIssue: (issue: { code: "custom"; message: string; path: string[] }) => void },
+): void {
+  if (value.from !== undefined && value.to !== undefined && compareDates(value.from, value.to) > 0) {
+    ctx.addIssue({ code: "custom", message: "The end date is before the start date", path: ["to"] })
+  }
+  if (value.min !== undefined && value.max !== undefined && value.min > value.max) {
+    ctx.addIssue({ code: "custom", message: "The largest amount is below the smallest", path: ["max"] })
+  }
+}
+
+/** The filters in a page's URL. Unknown parameters are ignored: a link may carry others (tracking, a stale bookmark). */
+export const transactionQuerySchema = z.object(filterFields).superRefine(checkRanges)
+
+/** A "load more" call: the same filters, already resolved by the page that is showing them, and where the last page ended. */
+export const listTransactionsSchema = z
+  .strictObject({ ...filterFields, cursor: blank(z.string().max(512)) })
+  .superRefine(checkRanges)

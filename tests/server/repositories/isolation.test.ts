@@ -136,6 +136,17 @@ describe("transaction repository", () => {
     expect(asA.items.every((t) => t.userId === a.user.id)).toBe(true)
   })
 
+  isolation("findGroupMembers", "never returns another user's group, however it is named", async () => {
+    // Worlds of their own: the legs written here must not change what the shared `a` and `b` show the tests below.
+    const mine = await registry.makeWorld()
+    const theirs = await registry.makeWorld()
+    const [mineRow] = await txRepo.insertTransactions(mine.user.id, [draftTo(mine.bank.id, mine.food.id)], mine.group.id)
+    const [theirRow] = await txRepo.insertTransactions(theirs.user.id, [draftTo(theirs.bank.id, theirs.food.id)], theirs.group.id)
+    expect((await txRepo.findGroupMembers(mine.user.id, [mine.group.id, theirs.group.id])).map((row) => row.id)).toEqual([mineRow.id])
+    expect(await txRepo.findGroupMembers(mine.user.id, [theirs.group.id])).toEqual([])
+    expect((await txRepo.findGroupMembers(theirs.user.id, [theirs.group.id])).map((row) => row.id)).toEqual([theirRow.id])
+  })
+
   isolation("findTransactionById", "returns null for another user's transaction", async () => {
     expect(await txRepo.findTransactionById(a.user.id, b.tx.id)).toBeNull()
     expect(await txRepo.findTransactionById(a.user.id, a.tx.id)).not.toBeNull()

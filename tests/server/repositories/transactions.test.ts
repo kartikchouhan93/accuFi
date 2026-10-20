@@ -4,6 +4,7 @@ import { calendarDate, fromDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { DuplicateIdempotencyKeyError, InvalidCursorError, NotFoundError } from "@/server/repositories/errors"
 import {
+  findGroupMembers,
   findTransactionById,
   findTransactions,
   insertTransactions,
@@ -242,6 +243,45 @@ describe("with a unit of work", () => {
   })
 })
 
+describe("findGroupMembers", () => {
+  async function grouped() {
+    const { user, bank, food, rent } = await setup()
+    const group = await prisma.transactionGroup.create({ data: { userId: user.id, kind: "MANUAL_SPLIT" } })
+    const [a, b, c] = await insertTransactions(
+      user.id,
+      [
+        { fromNodeId: bank.id, toNodeId: food.id, amountPaise: 100n, occurredAt: d("2026-04-01") },
+        { fromNodeId: bank.id, toNodeId: rent.id, amountPaise: 200n, occurredAt: d("2026-04-01") },
+        { fromNodeId: bank.id, toNodeId: food.id, amountPaise: 300n, occurredAt: d("2026-04-01") },
+      ],
+      group.id,
+    )
+    return { user, group, a, b, c }
+  }
+
+  it("returns every live member of the group in the order the legs were written", async () => {
+    const { user, group, a, b, c } = await grouped()
+    expect((await findGroupMembers(user.id, [group.id])).map((row) => row.id)).toEqual([a.id, b.id, c.id])
+  })
+
+  it("leaves out deleted members, and a group with none live gives nothing", async () => {
+    const { user, group, a, b, c } = await grouped()
+    await softDeleteTransaction(user.id, b.id)
+    expect((await findGroupMembers(user.id, [group.id])).map((row) => row.id)).toEqual([a.id, c.id])
+    await softDeleteTransaction(user.id, a.id)
+    await softDeleteTransaction(user.id, c.id)
+    expect(await findGroupMembers(user.id, [group.id])).toEqual([])
+  })
+
+  it("reads several groups at once, and nothing for no groups or an unknown one", async () => {
+    const one = await grouped()
+    expect(await findGroupMembers(one.user.id, [])).toEqual([])
+    expect(await findGroupMembers(one.user.id, ["no-such-group"])).toEqual([])
+    const members = await findGroupMembers(one.user.id, [one.group.id, "no-such-group"])
+    expect(members).toHaveLength(3)
+  })
+})
+
 describe("findTransactions", () => {
   async function seeded() {
     const ctx = await setup()
@@ -297,6 +337,19 @@ describe("findTransactions", () => {
   it("combines filters with AND", async () => {
     const { user, food, t2 } = await seeded()
     expect(await ids(user.id, { nodeIds: [food.id], tags: ["social"], from: d("2026-04-01"), to: d("2026-04-30"), search: "lunch" })).toEqual([t2.id])
+  })
+
+  it("filters by the kind of a node at either end", async () => {
+    const { user, t1, t2, t3, t4 } = await seeded()
+    // Income appears only at the start of t1; expenses at the end of the other three.
+    expect(await ids(user.id, { kinds: ["INCOME_SOURCE"] })).toEqual([t1.id])
+    expect(await ids(user.id, { kinds: ["EXPENSE"] })).toEqual([t4.id, t3.id, t2.id])
+    expect(await ids(user.id, { kinds: ["INCOME_SOURCE", "EXPENSE"] })).toEqual([t4.id, t3.id, t2.id, t1.id])
+    expect(await ids(user.id, { kinds: ["LIABILITY"] })).toEqual([])
+    expect(await ids(user.id, { kinds: [] })).toEqual([])
+    // ANDed with a node filter: a transaction must touch that node and a node of that kind.
+    const { bank } = await setup()
+    expect(await ids(user.id, { kinds: ["EXPENSE"], nodeIds: [bank.id] })).toEqual([])
   })
 
   it("rejects a cursor it did not issue", async () => {

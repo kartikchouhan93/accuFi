@@ -13,6 +13,7 @@ import {
   recordSplit,
   recordTransaction,
   removeTransaction,
+  RequestKeyConflictError,
   restoreTransaction,
   SplitTotalMismatchError,
   ungroupTransaction,
@@ -204,20 +205,22 @@ describe("recordSplit", () => {
       ["SAME_NODE", "Leg 4: A transaction cannot move money from a node to itself."],
     ])
     expect((error as InvalidTransactionError).message).toBe(violations.map((v) => v.message).join(" "))
+    // The leg is a structured field, zero-based like `legs`, so a screen never has to read it out of the message.
+    expect(violations.map((v) => v.leg)).toEqual([1, 3])
     expect(await rowCount(user.id)).toBe(1) // the opening deposit
   })
 
   it("rejects a zero leg", async () => {
     const { user, bank, groceries, clothes } = await setup()
     const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 0n)]))
-    expect((error as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["NON_POSITIVE_AMOUNT"])
+    expect((error as InvalidTransactionError).violations.map((v) => [v.code, v.leg])).toEqual([["NON_POSITIVE_AMOUNT", 1]])
   })
 
   it("refuses an archived destination, as a new entry would (EC-14)", async () => {
     const { user, bank, groceries, clothes } = await setup()
     await archiveLedgerNode(user.id, clothes.id)
     const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)]))
-    expect((error as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    expect((error as InvalidTransactionError).violations.map((v) => [v.code, v.leg])).toEqual([["ARCHIVED_NODE", 1]])
     expect(await groupCount(user.id)).toBe(0)
   })
 
@@ -292,6 +295,8 @@ describe("recordSplit", () => {
     const rows = await rowCount(user.id)
     const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)], { idempotencyKey: key }))
     expect(error).toBeInstanceOf(InvalidTransactionError)
+    // Its own type, so a screen can word it for what it may mean (the earlier request may well have succeeded).
+    expect(error).toBeInstanceOf(RequestKeyConflictError)
     expect((error as Error).message).toBe("This request key was already used for a different request.")
     expect(await rowCount(user.id)).toBe(rows)
     expect(await groupCount(user.id)).toBe(0)
@@ -305,10 +310,10 @@ describe("recordSplit", () => {
     await split(user.id, bank, three, { idempotencyKey: key })
     const rows = await rowCount(user.id)
     // fewer legs: its keys all exist, but the original had more
-    expect(await rejection(split(user.id, bank, three.slice(0, 2), { idempotencyKey: key }))).toBeInstanceOf(InvalidTransactionError)
+    expect(await rejection(split(user.id, bank, three.slice(0, 2), { idempotencyKey: key }))).toBeInstanceOf(RequestKeyConflictError)
     // more legs: the extra key does not exist
     expect(await rejection(split(user.id, bank, [...three, leg(groceries, 1n)], { idempotencyKey: key }))).toBeInstanceOf(
-      InvalidTransactionError,
+      RequestKeyConflictError,
     )
     expect(await rowCount(user.id)).toBe(rows)
     expect(await groupCount(user.id)).toBe(1)

@@ -10,6 +10,9 @@ const { requireUserId, UnauthenticatedError } = vi.hoisted(() => {
   return { requireUserId: vi.fn(), UnauthenticatedError }
 })
 vi.mock("@/server/auth", () => ({ requireUserId, UnauthenticatedError }))
+// revalidatePath needs a request to belong to; here it is replaced by a spy so a test can say which pages a write invalidates.
+const { revalidatePath } = vi.hoisted(() => ({ revalidatePath: vi.fn() }))
+vi.mock("next/cache", () => ({ revalidatePath }))
 
 const actions = await import("@/app/transactions/actions")
 
@@ -17,6 +20,7 @@ const registry = createRegistry()
 afterAll(registry.cleanup)
 beforeEach(() => {
   requireUserId.mockReset()
+  revalidatePath.mockReset()
 })
 
 async function signedInWorld(opening = 1_000_00n) {
@@ -209,5 +213,221 @@ describe("removeTransactionAction and restoreTransactionAction", () => {
       ok: false,
       error: { code: "invalid_input" },
     })
+  })
+})
+
+describe("cache invalidation", () => {
+  const revalidated = () => revalidatePath.mock.calls.map(([path]) => path).sort()
+
+  it("invalidates the transaction list, the ledger and the home page after every write that succeeds", async () => {
+    const { bank, food, input } = await signedInWorld()
+    const writes: [string, () => Promise<unknown>][] = [
+      ["record", () => actions.recordTransactionAction(input())],
+      [
+        "split",
+        () =>
+          actions.recordSplitAction({
+            fromNodeId: bank.id,
+            occurredAt: "2026-04-01",
+            legs: [
+              { toNodeId: food.id, amount: "10" },
+              { toNodeId: food.id, amount: "20" },
+            ],
+            total: "30",
+            idempotencyKey: randomUUID(),
+          }),
+      ],
+    ]
+    for (const [name, write] of writes) {
+      revalidatePath.mockReset()
+      expect(await write(), name).toMatchObject({ ok: true })
+      expect(revalidated(), name).toEqual(["/", "/nodes", "/transactions"])
+    }
+    const recorded = await actions.recordTransactionAction(input())
+    if (!recorded.ok) throw new Error("setup failed")
+    const follow: [string, () => Promise<unknown>][] = [
+      ["edit", () => actions.editTransactionAction({ id: recorded.data.id, expectedVersion: 0, changes: { note: "x" } })],
+      ["remove", () => actions.removeTransactionAction({ id: recorded.data.id })],
+      ["restore", () => actions.restoreTransactionAction({ id: recorded.data.id })],
+      ["ungroup", () => actions.ungroupTransactionAction({ id: recorded.data.id })],
+    ]
+    for (const [name, write] of follow) {
+      revalidatePath.mockReset()
+      expect(await write(), name).toMatchObject({ ok: true })
+      expect(revalidated(), name).toEqual(["/", "/nodes", "/transactions"])
+    }
+  })
+
+  it("invalidates nothing when the write was refused, and nothing for a read", async () => {
+    const { bank, income, input } = await signedInWorld()
+    await actions.recordTransactionAction(input({ fromNodeId: bank.id, toNodeId: income.id })) // illegal flow
+    await actions.recordTransactionAction(input({ amount: "0" })) // invalid input
+    await actions.removeTransactionAction({ id: "no-such-transaction" }) // not found
+    expect(revalidatePath).not.toHaveBeenCalled()
+    expect(await actions.listTransactionsAction({})).toMatchObject({ ok: true })
+    expect(revalidatePath).not.toHaveBeenCalled()
+  })
+})
+
+describe("recordSplitAction", () => {
+  async function splitWorld() {
+    const world = await signedInWorld(10_000_00n)
+    const clothes = await registry.makeNode(world.user.id, "EXPENSE", "Clothes")
+    const body = (over: Record<string, unknown> = {}) => ({
+      fromNodeId: world.bank.id,
+      occurredAt: "2026-04-01",
+      legs: [
+        { toNodeId: world.food.id, amount: "60" },
+        { toNodeId: clothes.id, amount: "40" },
+      ],
+      total: "100",
+      idempotencyKey: randomUUID(),
+      ...over,
+    })
+    return { ...world, clothes, body }
+  }
+
+  it("records the legs for the signed-in user and returns plain data", async () => {
+    const { user, body } = await splitWorld()
+    const result = await actions.recordSplitAction(body({ tags: ["trip"] }))
+    expect(result).toMatchObject({ ok: true, data: { legs: [{ amountPaise: "6000" }, { amountPaise: "4000" }] } })
+    expectNoBigint(result)
+    expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(2)
+  })
+
+  it("will not take a split without a total: the legs-add-up check always runs", async () => {
+    const { user, body } = await splitWorld()
+    const withoutTotal = Object.fromEntries(Object.entries(body()).filter(([field]) => field !== "total"))
+    const result = await actions.recordSplitAction(withoutTotal)
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_input", fieldErrors: { total: expect.any(Array) } } })
+    expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(0)
+  })
+
+  it("answers legs that do not add up as an error on the total, and writes nothing", async () => {
+    const { user, body } = await splitWorld()
+    const result = await actions.recordSplitAction(body({ total: "120" }))
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "invalid",
+        message: "The legs add up to ₹100.00 but the total is ₹120.00.",
+        fieldErrors: { total: ["The legs add up to ₹100.00 but the total is ₹120.00."] },
+      },
+    })
+    expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(0)
+  })
+
+  it("files a leg's violation under that leg, by index, without reading the message", async () => {
+    const { bank, income, food, user, body } = await splitWorld()
+    const result = await actions.recordSplitAction(
+      body({
+        legs: [
+          { toNodeId: food.id, amount: "50" },
+          { toNodeId: income.id, amount: "30" }, // an income source is never a destination
+          { toNodeId: bank.id, amount: "20" }, // the source itself
+        ],
+      }),
+    )
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { "legs.1.toNodeId": [expect.stringContaining("INCOME_SOURCE")], "legs.2.toNodeId": [expect.stringContaining("itself")] } } })
+    expect(!result.ok && Object.keys(result.error.fieldErrors ?? {}).sort()).toEqual(["legs.1.toNodeId", "legs.2.toNodeId"])
+    expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(0)
+  })
+
+  it("reports the warnings once, not once per leg", async () => {
+    const { food, clothes, bank, user } = await splitWorld()
+    await prisma.transaction.create({
+      data: { userId: user.id, fromNodeId: bank.id, toNodeId: food.id, amountPaise: 9_950_00n, occurredAt: new Date(Date.UTC(2026, 3, 1)) },
+    }) // leaves 50.00, so a split of 100.00 overdraws the account
+    const result = await actions.recordSplitAction({
+      fromNodeId: bank.id,
+      occurredAt: "2026-04-01",
+      legs: [
+        { toNodeId: food.id, amount: "60" },
+        { toNodeId: clothes.id, amount: "40" },
+      ],
+      total: "100",
+      idempotencyKey: randomUUID(),
+    })
+    expect(result.ok && result.data.warnings.map((w) => w.code)).toEqual(["OVERDRAWN"])
+    expect(result.ok && result.data.legs.every((leg) => leg.warnings.length === 0)).toBe(true)
+  })
+
+  it("answers a blocked overdraft on the whole split as a result", async () => {
+    const { bank, food, clothes, body } = await splitWorld()
+    await prisma.ledgerNode.update({ where: { id: bank.id }, data: { blockNegative: true } })
+    // Each leg fits in the 10,000 the account holds; together they do not.
+    const legs = [
+      { toNodeId: food.id, amount: "6,000" },
+      { toNodeId: clothes.id, amount: "5,000" },
+    ]
+    expect(await actions.recordSplitAction(body({ legs, total: "11,000" }))).toMatchObject({ ok: false, error: { code: "overdraft_blocked" } })
+  })
+
+  it("answers a replay with the stored legs and writes nothing more", async () => {
+    const { user, body } = await splitWorld()
+    const request = body()
+    const first = await actions.recordSplitAction(request)
+    const again = await actions.recordSplitAction(request)
+    expect(first.ok && again.ok && again.data.legs.map((leg) => leg.id)).toEqual(first.ok && first.data.legs.map((leg) => leg.id))
+    expect(await prisma.transaction.count({ where: { userId: user.id, groupId: { not: null } } })).toBe(2)
+  })
+
+  it("does not tell the user a request key was misused as raw text, because the earlier request may have succeeded", async () => {
+    const { clothes, food, body } = await splitWorld()
+    const key = randomUUID()
+    const first = await actions.recordSplitAction(body({ idempotencyKey: key }))
+    expect(first.ok).toBe(true)
+    // The same key, a different request: what a user sends after taking a leg out of the split and pressing the button again.
+    const second = await actions.recordSplitAction(
+      body({
+        idempotencyKey: key,
+        legs: [
+          { toNodeId: food.id, amount: "30" },
+          { toNodeId: clothes.id, amount: "30" },
+          { toNodeId: food.id, amount: "40" },
+        ],
+      }),
+    )
+    expect(second).toMatchObject({ ok: false, error: { code: "request_conflict" } })
+    const message = !second.ok ? second.error.message : ""
+    expect(message).not.toContain("request key")
+    expect(message).toContain("check the list")
+  })
+})
+
+describe("ungroupTransactionAction", () => {
+  it("takes a leg out of its split and answers with the leg as plain data", async () => {
+    const world = await signedInWorld(10_000_00n)
+    const clothes = await registry.makeNode(world.user.id, "EXPENSE", "Clothes")
+    const split = await actions.recordSplitAction({
+      fromNodeId: world.bank.id,
+      occurredAt: "2026-04-01",
+      legs: [
+        { toNodeId: world.food.id, amount: "60" },
+        { toNodeId: clothes.id, amount: "40" },
+      ],
+      total: "100",
+      idempotencyKey: randomUUID(),
+    })
+    if (!split.ok) throw new Error("setup failed")
+    const result = await actions.ungroupTransactionAction({ id: split.data.legs[0].id })
+    expect(result).toMatchObject({ ok: true, data: { id: split.data.legs[0].id, groupId: null } })
+    expectNoBigint(result)
+    expect(await actions.ungroupTransactionAction({ id: "no-such-transaction" })).toMatchObject({ ok: false, error: { code: "not_found" } })
+  })
+})
+
+describe("listTransactionsAction", () => {
+  it("answers a page of entries for the filters it is given, and refuses a cursor it did not issue", async () => {
+    const { user, bank, food } = await signedInWorld()
+    for (let day = 1; day <= 3; day++) {
+      await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: `2026-05-0${day}`, note: `May ${day}` })
+    }
+    const result = await actions.listTransactionsAction({ from: "2026-05-01", to: "2026-05-02", q: "may" })
+    expect(result.ok && result.data.entries.map((entry) => (entry.kind === "single" ? entry.transaction.note : null))).toEqual(["May 2", "May 1"])
+    expectNoBigint(result)
+    expect(await actions.listTransactionsAction({ cursor: "not-a-cursor" })).toMatchObject({ ok: false, error: { code: "invalid" } })
+    expect(await actions.listTransactionsAction({ from: "2026-02-30" })).toMatchObject({ ok: false, error: { code: "invalid_input" } })
+    expect(await actions.listTransactionsAction({ userId: "someone-else" })).toMatchObject({ ok: false, error: { code: "invalid_input" } })
   })
 })

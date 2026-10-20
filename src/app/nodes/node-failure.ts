@@ -29,6 +29,7 @@ function textFor(code: ActionErrorCode, serverMessage: string): FailureText {
       return { message: "That item no longer exists. Reload to see the current ledger.", isFieldProblem: false }
     case "version_conflict":
     case "overdraft_blocked":
+    case "request_conflict":
       // Transaction refusals: a node action cannot give them, and the transaction screens word them themselves.
       return { message: serverMessage, isFieldProblem: false }
     case "invalid":

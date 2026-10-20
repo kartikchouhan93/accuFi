@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest"
 import {
   editTransactionSchema,
   IDEMPOTENCY_KEY_MIN_LENGTH,
+  listTransactionsSchema,
   recordSplitSchema,
   recordTransactionSchema,
   SPLIT_LEGS_MAX,
   transactionIdSchema,
+  transactionQuerySchema,
 } from "./transaction"
 
 const valid = {
@@ -132,6 +134,7 @@ describe("recordSplitSchema", () => {
       { toNodeId: "a", amount: "2,000" },
       { toNodeId: "b", amount: "1,000.50", note: " shirt " },
     ],
+    total: "3,000.50",
     idempotencyKey: "0123456789abcdef",
   }
 
@@ -148,6 +151,11 @@ describe("recordSplitSchema", () => {
       tags: ["trip"],
       idempotencyKey: "0123456789abcdef",
     })
+  })
+
+  it("requires the total, because the legs-add-up check only runs when one is stated", () => {
+    const withoutTotal = Object.fromEntries(Object.entries(split).filter(([field]) => field !== "total"))
+    expect(issuePaths(recordSplitSchema.safeParse(withoutTotal))).toEqual(["total"])
   })
 
   it("needs two to fifty legs", () => {
@@ -175,5 +183,51 @@ describe("recordSplitSchema", () => {
     expect(recordSplitSchema.safeParse({ ...split, groupId: "g" }).success).toBe(false)
     expect(recordSplitSchema.safeParse({ ...split, legs: [{ ...split.legs[0], userId: "u" }, split.legs[1]] }).success).toBe(false)
     expect(recordSplitSchema.safeParse({ ...split, legs: [{ ...split.legs[0], fromNodeId: "x" }, split.legs[1]] }).success).toBe(false)
+  })
+})
+
+describe("transactionQuerySchema", () => {
+  it("reads blank fields as no filter and typed ones as values", () => {
+    const blank = transactionQuerySchema.safeParse({ node: "", kind: " ", from: "", to: "", min: "", max: "", tag: "", q: "" })
+    expect(blank.success && blank.data).toEqual({})
+    const filled = transactionQuerySchema.safeParse({
+      node: "n1",
+      kind: "EXPENSE",
+      from: "2026-03-01",
+      to: "2026-03-31",
+      min: "1,000",
+      max: "2,50,000.50",
+      tag: " food , trip,, ",
+      q: " lunch ",
+    })
+    expect(filled.success && filled.data).toEqual({
+      node: "n1",
+      kind: "EXPENSE",
+      from: "2026-03-01",
+      to: "2026-03-31",
+      min: 100_000n,
+      max: 25_000_050n,
+      tag: ["food", "trip"],
+      q: "lunch",
+    })
+  })
+
+  it("ignores parameters it does not know", () => {
+    expect(transactionQuerySchema.safeParse({ utm_source: "mail" }).success).toBe(true)
+  })
+
+  it("names the field that is wrong, and refuses ranges that run backwards", () => {
+    expect(issuePaths(transactionQuerySchema.safeParse({ from: "2026-02-30", min: "abc", kind: "BANK" }))).toEqual(["kind", "from", "min"])
+    expect(issuePaths(transactionQuerySchema.safeParse({ min: "-5" }))).toEqual(["min"])
+    expect(issuePaths(transactionQuerySchema.safeParse({ from: "2026-04-02", to: "2026-04-01" }))).toEqual(["to"])
+    expect(issuePaths(transactionQuerySchema.safeParse({ min: "10", max: "9.99" }))).toEqual(["max"])
+  })
+})
+
+describe("listTransactionsSchema", () => {
+  it("is strict, and carries the cursor", () => {
+    const parsed = listTransactionsSchema.safeParse({ from: "2026-03-01", cursor: "abc" })
+    expect(parsed.success && parsed.data).toEqual({ from: "2026-03-01", cursor: "abc" })
+    expect(listTransactionsSchema.safeParse({ userId: "x" }).success).toBe(false)
   })
 })
