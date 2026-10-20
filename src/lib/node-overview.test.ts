@@ -51,7 +51,20 @@ describe("buildNodeOverview", () => {
     const overview = buildNodeOverview(nodes, balances)
     expect(overview.kinds.ASSET).toEqual({ total: "1500000", archivedCount: 1 })
     expect(overview.kinds.LIABILITY).toEqual({ total: "-500000", archivedCount: 1 })
-    expect(overview.netWorth).toEqual({ total: "1250000", assets: "1500000", investments: "250000", liabilities: "500000" })
+    expect(overview.netWorth).toEqual({
+      total: "1250000",
+      assets: "1500000",
+      investments: "250000",
+      liabilities: "500000",
+      isPartial: false,
+      unvaluedNodeIds: [],
+    })
+  })
+
+  it("carries an investment that cannot be valued through as a partial figure instead of dropping it", () => {
+    // A null valuation means "no price": the fund is left out of the total, and the overview must say so.
+    const overview = buildNodeOverview(nodes, balances, new Map([[mf.id, null]]))
+    expect(overview.netWorth).toMatchObject({ total: "1000000", investments: "0", isPartial: true, unvaluedNodeIds: [mf.id] })
   })
 
   it("does not let an archived card you still owe on raise net worth", () => {

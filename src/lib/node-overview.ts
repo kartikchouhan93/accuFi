@@ -1,6 +1,7 @@
 import type { LedgerNode } from "@prisma/client"
 import { netWorth, type NodeBalance } from "../domain/balance"
 import { LEDGER_KINDS, type LedgerKind } from "../domain/ledger-kind"
+import type { Paise } from "../domain/money"
 import { toNodeView, type NodeView } from "./node-view"
 import { serialisePaise } from "./serialise"
 
@@ -28,11 +29,25 @@ export interface NodeOverview {
     investments: string
     /** The positive magnitude owed, as `netWorth` reports it: the total already subtracts it. */
     liabilities: string
+    /**
+     * True when an investment could not be valued and so is NOT in `total`: the figure is a lower bound, and every screen
+     * that prints it must say so. Always false in M1, which has no valuations, but it must not be dropped on the way here.
+     */
+    isPartial: boolean
+    /** The investments left out of the total, by node id. Empty unless `isPartial`. */
+    unvaluedNodeIds: string[]
   }
 }
 
-/** `nodes` and `balances` must both cover archived nodes. Balances of nodes missing from `nodes` are ignored. */
-export function buildNodeOverview(nodes: readonly LedgerNode[], balances: readonly NodeBalance[]): NodeOverview {
+/**
+ * `nodes` and `balances` must both cover archived nodes. Balances of nodes missing from `nodes` are ignored.
+ * `valuations` is what `netWorth` takes: an investment mapped to `null` cannot be valued and is reported, not counted.
+ */
+export function buildNodeOverview(
+  nodes: readonly LedgerNode[],
+  balances: readonly NodeBalance[],
+  valuations?: ReadonlyMap<string, Paise | null>,
+): NodeOverview {
   const kinds = Object.fromEntries(LEDGER_KINDS.map((kind) => [kind, { total: 0n, archivedCount: 0 }])) as Record<
     LedgerKind,
     { total: bigint; archivedCount: number }
@@ -48,7 +63,10 @@ export function buildNodeOverview(nodes: readonly LedgerNode[], balances: readon
     if (node.archivedAt !== null) kinds[node.kind].archivedCount += 1
   }
 
-  const worth = netWorth(balances.filter((row) => known.has(row.nodeId)))
+  const worth = netWorth(
+    balances.filter((row) => known.has(row.nodeId)),
+    valuations,
+  )
   return {
     nodes: nodes.map(toNodeView),
     balances: balanceStrings,
@@ -60,6 +78,8 @@ export function buildNodeOverview(nodes: readonly LedgerNode[], balances: readon
       assets: serialisePaise(worth.assets),
       investments: serialisePaise(worth.investments),
       liabilities: serialisePaise(worth.liabilities),
+      isPartial: worth.isPartial,
+      unvaluedNodeIds: worth.unvaluedNodeIds,
     },
   }
 }
