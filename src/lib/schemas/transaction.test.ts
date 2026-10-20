@@ -84,6 +84,33 @@ describe("recordTransactionSchema", () => {
   })
 })
 
+describe("the quantity of a purchase", () => {
+  it("is optional, and parses decimal text into micro-units with no rounding", () => {
+    expect(recordTransactionSchema.safeParse(valid).success && "quantity" in (recordTransactionSchema.parse(valid) as object)).toBe(false)
+    const result = recordTransactionSchema.safeParse({ ...valid, quantity: "142.3871" })
+    expect(result.success && result.data.quantity).toBe(142_387_100n)
+    expect(recordTransactionSchema.parse({ ...valid, quantity: "999999999999.999999" }).quantity).toBe(999_999_999_999_999_999n)
+  })
+
+  it.each(["0", "0.000000", "-1", "1e3", "1,5", "1.1234567", "", "abc", "1.", ".5"])("refuses %j as a field error on quantity", (quantity) => {
+    const result = recordTransactionSchema.safeParse({ ...valid, quantity })
+    expect(issuePaths(result)).toEqual(["quantity"])
+    expect(result.success ? "" : result.error.issues[0].message).toBe("Enter a quantity greater than zero, with up to 6 decimal places")
+  })
+
+  it("refuses a quantity that is not text", () => {
+    expect(issuePaths(recordTransactionSchema.safeParse({ ...valid, quantity: 5 }))).toEqual(["quantity"])
+  })
+
+  it("can be the one change an edit makes", () => {
+    const result = editTransactionSchema.safeParse({ id: "t1", expectedVersion: 0, changes: { quantity: "2.5" } })
+    expect(result.success && result.data.changes).toEqual({ quantity: 2_500_000n })
+    expect(issuePaths(editTransactionSchema.safeParse({ id: "t1", expectedVersion: 0, changes: { quantity: "0" } }))).toEqual([
+      "changes.quantity",
+    ])
+  })
+})
+
 describe("editTransactionSchema", () => {
   const edit = { id: "t1", expectedVersion: 2, changes: { amount: "10" } }
 

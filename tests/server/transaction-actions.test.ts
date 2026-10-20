@@ -145,6 +145,18 @@ describe("recordTransactionAction", () => {
     expect(!toArchived.ok && Object.keys(toArchived.error.fieldErrors ?? {})).toEqual(["toNodeId"])
   })
 
+  it("files the lot rules under the quantity and source fields", async () => {
+    const { user, bank, input } = await signedInWorld()
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const noQuantity = await actions.recordTransactionAction(input({ toNodeId: gold.id }))
+    expect(noQuantity).toMatchObject({ ok: false, error: { code: "invalid", fieldErrors: { quantity: ["Enter the quantity bought."] } } })
+    const outOfLots = await actions.recordTransactionAction(input({ fromNodeId: gold.id, toNodeId: bank.id }))
+    expect(!outOfLots.ok && Object.keys(outOfLots.error.fieldErrors ?? {})).toEqual(["fromNodeId"])
+    const bought = await actions.recordTransactionAction(input({ toNodeId: gold.id, quantity: "10.5" }))
+    expect(bought.ok).toBe(true)
+    expectNoBigint(bought)
+  })
+
   it("answers not-found for another user's node", async () => {
     const { input } = await signedInWorld()
     const other = await signedInWorld() // the session is now the other user; ids below are the first user's

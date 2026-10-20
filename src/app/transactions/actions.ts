@@ -1,7 +1,6 @@
 "use server"
 
 import type { z } from "zod"
-import type { ViolationCode } from "@/domain/transaction-rules"
 import {
   editTransactionSchema,
   listTransactionsSchema,
@@ -28,6 +27,7 @@ import {
   SplitTotalMismatchError,
   ungroupTransaction,
   type TransactionViolation,
+  type TransactionViolationCode,
 } from "@/server/services/transaction-service"
 
 // Server Actions for the transaction lifecycle, shaped like the node actions: each asks requireUserId() who is calling
@@ -51,12 +51,26 @@ function parseInput<S extends z.ZodType>(schema: S, input: unknown): { data: z.o
 // The form field a broken rule belongs to. A rule about the pair of nodes or the flow is filed under the destination:
 // that is the control a user changes to fix it (the source is what they chose first), and the message names both. An
 // archived end is filed under its own control. The source is shared by every leg of a split, so its field has no leg.
-const FIELD_OF_VIOLATION: Record<ViolationCode, string> = {
+// The lot rules go under the field they are about: the quantity, the amount, the day, or the source that money cannot
+// leave this way; a switch, a split leg or a sold purchase being moved is fixed by choosing another destination.
+const FIELD_OF_VIOLATION: Record<TransactionViolationCode, string> = {
   SAME_NODE: "toNodeId",
   ILLEGAL_FLOW: "toNodeId",
   ARCHIVED_SOURCE: "fromNodeId",
   ARCHIVED_TARGET: "toNodeId",
   NON_POSITIVE_AMOUNT: "amount",
+  QUANTITY_REQUIRED: "quantity",
+  QUANTITY_NOT_APPLICABLE: "quantity",
+  QUANTITY_OUT_OF_RANGE: "quantity",
+  LUMP_QUANTITY: "quantity",
+  QUANTITY_BELOW_SOLD: "quantity",
+  AMOUNT_BELOW_SOLD: "amount",
+  SOLD_COST_CHANGED: "amount",
+  DATE_AFTER_SALE: "occurredAt",
+  LOT_SOURCE: "fromNodeId",
+  LOT_SWITCH: "toNodeId",
+  LOT_SPLIT_LEG: "toNodeId",
+  LOT_SOLD: "toNodeId",
 }
 
 /** Violations as `{ field: [messages] }`, a split's under `legs.<index>.<field>` so a form can find the leg's row. */

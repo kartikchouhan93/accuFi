@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { calendarDate, CalendarDateError, compareDates, type CalendarDate } from "../../domain/calendar-date"
 import { LEDGER_KINDS } from "../../domain/ledger-kind"
+import { parseQuantity, QuantityParseError, type Quantity } from "../../domain/quantity"
 import { positiveRupees, rupees } from "./rupees"
 
 // What a client may send to record, edit, delete or restore a transaction. Strict like the node schemas: `userId`,
@@ -29,6 +30,18 @@ const occurredAt = z.string().transform((text, ctx): CalendarDate => {
     return z.NEVER
   }
 })
+// What a purchase into an investment valued by quantity bought: decimal text becomes micro-units here, exactly or not at
+// all (EC-27). Whether a quantity belongs on the transaction at all depends on its destination, which only the service
+// knows, so it is optional here and the service asks for it or refuses it.
+const quantity = z.string().transform((text, ctx): Quantity => {
+  try {
+    return parseQuantity(text)
+  } catch (error) {
+    if (!(error instanceof QuantityParseError)) throw error
+    ctx.addIssue({ code: "custom", message: "Enter a quantity greater than zero, with up to 6 decimal places" })
+    return z.NEVER
+  }
+})
 const note = z.string().trim().max(NOTE_MAX_LENGTH, `At most ${NOTE_MAX_LENGTH} characters`)
 const tags = z.array(z.string().trim().min(1, "A tag cannot be empty").max(TAG_MAX_LENGTH)).max(TAGS_MAX)
 // "Required" is for a missing or empty key; a key that was supplied but is too short says so, with the length.
@@ -43,6 +56,7 @@ export const recordTransactionSchema = z.strictObject({
   toNodeId: nodeId,
   amount: positiveRupees,
   occurredAt,
+  quantity: quantity.optional(),
   note: note.optional(),
   tags: tags.optional(),
   idempotencyKey,
@@ -68,13 +82,14 @@ export const recordSplitSchema = z.strictObject({
 })
 
 // An edit names only what changes. `note: null` clears the note. The idempotency key is not editable: it belongs to the
-// create.
+// create. A quantity cannot be cleared: a purchase loses its lot only by being moved out of a lot-mode investment.
 const changes = z
   .strictObject({
     fromNodeId: nodeId,
     toNodeId: nodeId,
     amount: positiveRupees,
     occurredAt,
+    quantity,
     note: note.nullable(),
     tags,
   })
