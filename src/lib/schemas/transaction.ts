@@ -47,6 +47,24 @@ export const recordTransactionSchema = z.strictObject({
   idempotencyKey,
 })
 
+export const SPLIT_LEGS_MIN = 2
+export const SPLIT_LEGS_MAX = 50
+
+const splitLeg = z.strictObject({ toNodeId: nodeId, amount: positiveRupees, note: note.optional() })
+
+// A split: one source, one day, one request key, two or more legs. `total` is what the user said the event cost in all;
+// when present the legs must add up to it. The key is the client's one key for the whole submission and holds to the
+// same length floor as a single transaction's: the service derives each leg's own key from it (`<key>:<index>`), and
+// those derived forms are never what is validated.
+export const recordSplitSchema = z.strictObject({
+  fromNodeId: nodeId,
+  occurredAt,
+  legs: z.array(splitLeg).min(SPLIT_LEGS_MIN, `A split needs at least ${SPLIT_LEGS_MIN} legs`).max(SPLIT_LEGS_MAX),
+  total: positiveRupees.optional(),
+  tags: tags.optional(),
+  idempotencyKey,
+})
+
 // An edit names only what changes. `note: null` clears the note. The idempotency key is not editable: it belongs to the
 // create.
 const changes = z

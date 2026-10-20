@@ -198,6 +198,78 @@ describe("transaction repository", () => {
     expect((await prisma.transaction.findUniqueOrThrow({ where: { id: deleted.id } })).deletedAt).not.toBeNull()
   })
 
+  /** A group of B's with two rows in it, for an attacker to aim at. `deleted` makes the rows soft-deleted. */
+  async function bGroupWithRows(deleted: boolean) {
+    const group = await prisma.transactionGroup.create({ data: { userId: b.user.id, kind: "MANUAL_SPLIT" } })
+    const rows = [
+      await registry.makeTransaction(b.user.id, b.bank.id, b.food.id, { deletedAt: deleted ? new Date() : undefined }),
+      await registry.makeTransaction(b.user.id, b.bank.id, b.food.id, { deletedAt: deleted ? new Date() : undefined }),
+    ]
+    await prisma.transaction.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { groupId: group.id } })
+    const cleanup = async () => {
+      await prisma.transaction.deleteMany({ where: { id: { in: rows.map((r) => r.id) } } })
+      await prisma.transactionGroup.deleteMany({ where: { id: group.id } })
+    }
+    return { group, rows, cleanup }
+  }
+  const snapshotGroups = (userId: string) => prisma.transactionGroup.findMany({ where: { userId }, orderBy: { id: "asc" } })
+
+  isolation("findTransactionsByIdempotencyKeys", "never returns another user's rows, even for their exact key", async () => {
+    const theirs = await prisma.transaction.update({ where: { id: b.tx.id }, data: { idempotencyKey: "isolation-key-b-0000" } })
+    try {
+      expect(await txRepo.findTransactionsByIdempotencyKeys(a.user.id, ["isolation-key-b-0000"])).toEqual([])
+      expect((await txRepo.findTransactionsByIdempotencyKeys(b.user.id, ["isolation-key-b-0000"])).map((r) => r.id)).toEqual([theirs.id])
+    } finally {
+      await prisma.transaction.update({ where: { id: b.tx.id }, data: { idempotencyKey: null } })
+    }
+  })
+
+  isolation("createTransactionGroup", "creates the group for the caller and touches nobody else's", async () => {
+    const bBefore = await snapshotGroups(b.user.id)
+    const group = await inTransaction((uow) => txRepo.createTransactionGroup(a.user.id, "MANUAL_SPLIT", uow))
+    try {
+      expect(group.userId).toBe(a.user.id)
+      expect(await snapshotGroups(b.user.id)).toEqual(bBefore)
+    } finally {
+      await prisma.transactionGroup.delete({ where: { id: group.id } })
+    }
+  })
+
+  isolation("softDeleteGroup", "does not delete the members of another user's group", async () => {
+    const theirs = await bGroupWithRows(false)
+    try {
+      const before = await snapshotTransactions(b.user.id)
+      await expectNotFound(inTransaction((uow) => txRepo.softDeleteGroup(a.user.id, theirs.group.id, uow)))
+      expect(await snapshotTransactions(b.user.id)).toEqual(before)
+    } finally {
+      await theirs.cleanup()
+    }
+  })
+
+  isolation("undeleteGroup", "does not restore the members of another user's deleted group", async () => {
+    const theirs = await bGroupWithRows(true)
+    try {
+      const before = await snapshotTransactions(b.user.id)
+      expect(await inTransaction((uow) => txRepo.undeleteGroup(a.user.id, theirs.group.id, uow))).toEqual([])
+      expect(await snapshotTransactions(b.user.id)).toEqual(before)
+    } finally {
+      await theirs.cleanup()
+    }
+  })
+
+  isolation("detachFromGroup", "does not take another user's transaction out of their group, or dissolve it", async () => {
+    const theirs = await bGroupWithRows(false)
+    try {
+      const txBefore = await snapshotTransactions(b.user.id)
+      const groupsBefore = await snapshotGroups(b.user.id)
+      await expectNotFound(inTransaction((uow) => txRepo.detachFromGroup(a.user.id, theirs.rows[0].id, uow)))
+      expect(await snapshotTransactions(b.user.id)).toEqual(txBefore)
+      expect(await snapshotGroups(b.user.id)).toEqual(groupsBefore)
+    } finally {
+      await theirs.cleanup()
+    }
+  })
+
   isolation("sumBalances", "excludes another user's transactions", async () => {
     const mine = await txRepo.sumBalances(a.user.id)
     const myNodeIds = new Set((await snapshotNodes(a.user.id)).map((n) => n.id))

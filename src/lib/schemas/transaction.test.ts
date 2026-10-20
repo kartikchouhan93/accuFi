@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import {
   editTransactionSchema,
   IDEMPOTENCY_KEY_MIN_LENGTH,
+  recordSplitSchema,
   recordTransactionSchema,
+  SPLIT_LEGS_MAX,
   transactionIdSchema,
 } from "./transaction"
 
@@ -119,5 +121,59 @@ describe("transactionIdSchema", () => {
     expect(transactionIdSchema.safeParse({ id: "t1" }).success).toBe(true)
     expect(transactionIdSchema.safeParse({ id: "" }).success).toBe(false)
     expect(transactionIdSchema.safeParse({ id: "t1", userId: "x" }).success).toBe(false)
+  })
+})
+
+describe("recordSplitSchema", () => {
+  const split = {
+    fromNodeId: "from",
+    occurredAt: "2026-04-01",
+    legs: [
+      { toNodeId: "a", amount: "2,000" },
+      { toNodeId: "b", amount: "1,000.50", note: " shirt " },
+    ],
+    idempotencyKey: "0123456789abcdef",
+  }
+
+  it("turns each leg's rupee text into paise and trims its note", () => {
+    const result = recordSplitSchema.safeParse({ ...split, total: "3,000.50", tags: [" trip "] })
+    expect(result.success && result.data).toEqual({
+      fromNodeId: "from",
+      occurredAt: "2026-04-01",
+      legs: [
+        { toNodeId: "a", amount: 200_000n },
+        { toNodeId: "b", amount: 100_050n, note: "shirt" },
+      ],
+      total: 300_050n,
+      tags: ["trip"],
+      idempotencyKey: "0123456789abcdef",
+    })
+  })
+
+  it("needs two to fifty legs", () => {
+    expect(issuePaths(recordSplitSchema.safeParse({ ...split, legs: split.legs.slice(0, 1) }))).toEqual(["legs"])
+    expect(issuePaths(recordSplitSchema.safeParse({ ...split, legs: [] }))).toEqual(["legs"])
+    const many = Array.from({ length: SPLIT_LEGS_MAX + 1 }, () => split.legs[0])
+    expect(issuePaths(recordSplitSchema.safeParse({ ...split, legs: many }))).toEqual(["legs"])
+  })
+
+  it("applies the amount rules to each leg and names the leg that breaks them", () => {
+    const bad = { ...split, legs: [split.legs[0], { toNodeId: "b", amount: "0" }, { toNodeId: "c", amount: "1.234" }] }
+    expect(issuePaths(recordSplitSchema.safeParse(bad))).toEqual(["legs.1.amount", "legs.2.amount"])
+    expect(issuePaths(recordSplitSchema.safeParse({ ...split, total: "0" }))).toEqual(["total"])
+  })
+
+  it("holds the one request key to the same length floor as a single transaction", () => {
+    expect(issuePaths(recordSplitSchema.safeParse({ ...split, idempotencyKey: "" }))).toEqual(["idempotencyKey"])
+    expect(
+      issuePaths(recordSplitSchema.safeParse({ ...split, idempotencyKey: "x".repeat(IDEMPOTENCY_KEY_MIN_LENGTH - 1) })),
+    ).toEqual(["idempotencyKey"])
+    expect(recordSplitSchema.safeParse({ ...split, idempotencyKey: "x".repeat(IDEMPOTENCY_KEY_MIN_LENGTH) }).success).toBe(true)
+  })
+
+  it("is strict: a forged groupId or a leg that names its own source is an error", () => {
+    expect(recordSplitSchema.safeParse({ ...split, groupId: "g" }).success).toBe(false)
+    expect(recordSplitSchema.safeParse({ ...split, legs: [{ ...split.legs[0], userId: "u" }, split.legs[1]] }).success).toBe(false)
+    expect(recordSplitSchema.safeParse({ ...split, legs: [{ ...split.legs[0], fromNodeId: "x" }, split.legs[1]] }).success).toBe(false)
   })
 })

@@ -6,10 +6,15 @@ import { toTransactionView, type TransactionView, type Warning } from "@/lib/tra
 import { DuplicateIdempotencyKeyError, NotFoundError } from "@/server/repositories/errors"
 import { findNodeById } from "@/server/repositories/node-repository"
 import {
+  createTransactionGroup,
+  detachFromGroup,
   findTransactionById,
+  findTransactionsByIdempotencyKeys,
   insertTransactions,
+  softDeleteGroup,
   softDeleteTransaction,
   sumBalances,
+  undeleteGroup,
   undeleteTransaction,
   updateTransaction,
   VersionConflictError,
@@ -33,6 +38,13 @@ import { findUserTimezone } from "@/server/repositories/user-repository"
 // Scope: warnings and the guard read balances at one day (`asOf`, today or the transaction's own later day), not across
 // history. A backdated spend that holds an account negative for three weeks in the past and is covered by a later
 // deposit warns about nothing: M1 judges the position as it stands, not every day it passed through.
+//
+// Split groups (spec §4.1, EC-3, EC-13, EC-19). A split is two or more transactions that are one real-world event,
+// written together in one database transaction under a shared `groupId`, and deleted, restored and displayed as a
+// unit. Each leg is an ordinary transaction (source -> its own destination) and is held to the flow rules on its own.
+// Policy for the group as a whole: every leg is validated before any is written; the overdraft guard and the warnings
+// judge the source once, after the whole group, so the legs are weighed by their sum and never leg by leg; a group
+// never has fewer than two live members; deleting or restoring any member deletes or restores them all.
 //
 // Sign convention (spec §4.2), the one every balance in the application follows: a balance is inflows - outflows with
 // no per-kind special case, so a liability you owe on is NEGATIVE. Nothing below flips that: an overdrawn asset is a
@@ -103,8 +115,11 @@ const asOfFor = (today: CalendarDate, occurredAt: CalendarDate): CalendarDate =>
 const cleanNote = (note: string | null | undefined): string | null => note?.trim() || null
 const cleanTags = (tags: readonly string[]): string[] => [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))]
 
+const legalityViolations = (from: LedgerNode, to: LedgerNode, amount: Paise, occurredAt: CalendarDate, allowArchived: boolean) =>
+  validateTransaction({ fromNode: from, toNode: to, amount, occurredAt }, { allowArchived })
+
 function assertLegal(from: LedgerNode, to: LedgerNode, amount: Paise, occurredAt: CalendarDate, allowArchived: boolean): void {
-  const violations = validateTransaction({ fromNode: from, toNode: to, amount, occurredAt }, { allowArchived })
+  const violations = legalityViolations(from, to, amount, occurredAt, allowArchived)
   if (violations.length > 0) throw new InvalidTransactionError(violations.map((v) => v.message).join(" "), violations)
 }
 
@@ -311,24 +326,164 @@ export async function editTransaction(
  * Soft-delete (EC-13): the row stays, balances stop counting it, and its idempotency key stays reserved. Throws
  * NotFoundError if it is not this user's or is already deleted. Deleting is never refused for an overdraft: it removes
  * an entry the user has decided was wrong, and blocking that would strand a mistake.
+ *
+ * A member of a split group takes the whole group with it: half of a split is a corrupt record of one event, whichever
+ * leg the user happened to click. To remove one leg and keep the rest, ungroup it first.
  */
 export async function removeTransaction(userId: string, id: string): Promise<void> {
-  await softDeleteTransaction(userId, id)
+  await inTransaction(async (uow) => {
+    const row = await findTransactionById(userId, id, uow)
+    if (!row) throw new NotFoundError("transaction")
+    if (row.groupId === null) await softDeleteTransaction(userId, id, uow)
+    else await softDeleteGroup(userId, row.groupId, uow)
+  })
 }
 
 /**
- * Bring a soft-deleted transaction back. Archived nodes do not stop it: it is history. A restore is a new debit on its
- * source node, so it is refused if that node blocks overdrafts and the restored row would take it below zero.
+ * Bring a soft-deleted transaction back, and with it the rest of its split group, if it had one. Archived nodes do not
+ * stop it: it is history. A restore is a new debit on its source node, so it is refused if that node blocks overdrafts
+ * and the restored rows would take it below zero; a group is then refused whole.
  */
 export async function restoreTransaction(userId: string, id: string): Promise<TransactionView> {
   const today = await todayFor(userId)
   const row = await inTransaction(async (uow) => {
     const restored = await undeleteTransaction(userId, id, uow)
-    const from = await requireNode(userId, restored.fromNodeId)
-    if (isGuarded(from)) {
-      assertNoOverdraft([from], await balancesAt(userId, asOfFor(today, fromDbDate(restored.occurredAt)), uow))
+    const siblings = restored.groupId === null ? [] : await undeleteGroup(userId, restored.groupId, uow)
+    for (const each of [restored, ...siblings]) {
+      const from = await requireNode(userId, each.fromNodeId)
+      if (isGuarded(from)) {
+        assertNoOverdraft([from], await balancesAt(userId, asOfFor(today, fromDbDate(each.occurredAt)), uow))
+      }
     }
     return restored
   })
   return viewOf(userId, row, undefined, today)
+}
+
+export interface SplitLegInput {
+  toNodeId: string
+  amount: Paise
+  note?: string
+}
+
+export interface RecordSplitInput {
+  fromNodeId: string
+  /** One day for every leg: a split is one event. */
+  occurredAt: CalendarDate
+  legs: SplitLegInput[]
+  /** What the user said the event cost in all. If given, the legs must add up to exactly this (EC-3). */
+  total?: Paise
+  /** Applied to every leg. */
+  tags?: string[]
+  /** One per submission of the form, as for a single transaction; see legKey for what the legs store. */
+  idempotencyKey: string
+}
+
+/** The legs of a split do not add up to the total the user stated. The message is safe to show. Nothing was written. */
+export class SplitTotalMismatchError extends Error {
+  constructor(legsTotal: Paise, statedTotal: Paise) {
+    super(`The legs add up to ${formatPaise(legsTotal)} but the total is ${formatPaise(statedTotal)}.`)
+    this.name = "SplitTotalMismatchError"
+  }
+}
+
+// One request key covers N rows, but the database allows a key once per user (R7). Each leg stores `<key>:<index>`.
+// The client's key is validated against the 16-character floor (schemas/transaction.ts) as sent, not these derived
+// forms, which are only ever longer. The legs are written in one database transaction, so a replay finds all of them
+// or none.
+const legKey = (key: string, index: number): string => `${key}:${index}`
+
+/** The views of the legs already stored under these keys, or null if the request was never made. */
+async function storedSplit(userId: string, keys: readonly string[]): Promise<TransactionView[] | null> {
+  const rows = await findTransactionsByIdempotencyKeys(userId, keys)
+  if (rows.length === 0) return null
+  const today = await todayFor(userId)
+  const views: TransactionView[] = []
+  for (const row of rows) views.push(await viewOf(userId, row, undefined, today))
+  return views
+}
+
+/**
+ * Record one real-world event as several transactions from one source, one per leg, sharing a new group of kind
+ * MANUAL_SPLIT. Returns the legs' views in the order given.
+ *
+ * The legs must be legal and add up to `total` if it is stated, or `SplitTotalMismatchError` / `InvalidTransactionError`
+ * is thrown with nothing written. Every leg is checked, and every violation reported with its leg number, before any
+ * row is written. Archived nodes are refused, as for a new transaction (EC-14).
+ *
+ * The group row and all legs are written in one database transaction, so a failure anywhere (a duplicate key, an
+ * overdraft) leaves neither. The overdraft guard reads the source before and after the whole group, so legs that each
+ * fit but together overdraw a `blockNegative` asset are refused. Warnings are those of a single create (the source
+ * node only) judged against the balance after the whole group, and they are the same on every leg's view because each
+ * leg is one of the writes that left the source in that state; show them once.
+ *
+ * A replay returns the stored legs and writes nothing (EC-17): looked up first only as a shortcut, so that a node
+ * archived since does not turn a replay into an error; the unique key remains the arbiter between concurrent submissions.
+ */
+export async function recordSplit(userId: string, input: RecordSplitInput): Promise<TransactionView[]> {
+  if (input.idempotencyKey === "") throw new InvalidTransactionError("A request key is required")
+  if (input.legs.length < 2) throw new InvalidTransactionError("A split needs at least two legs.")
+  const legsTotal = input.legs.reduce((sum, leg) => sum + leg.amount, 0n)
+  if (input.total !== undefined && legsTotal !== input.total) throw new SplitTotalMismatchError(legsTotal, input.total)
+
+  const from = await requireNode(userId, input.fromNodeId)
+  const destinations: LedgerNode[] = []
+  for (const leg of input.legs) destinations.push(await requireNode(userId, leg.toNodeId))
+
+  const keys = input.legs.map((_, index) => legKey(input.idempotencyKey, index))
+  const replay = await storedSplit(userId, keys)
+  if (replay) return replay
+
+  const violations = input.legs.flatMap((leg, index) =>
+    legalityViolations(from, destinations[index], leg.amount, input.occurredAt, false).map((violation) => ({
+      ...violation,
+      message: `Leg ${index + 1}: ${violation.message}`,
+    })),
+  )
+  if (violations.length > 0) throw new InvalidTransactionError(violations.map((v) => v.message).join(" "), violations)
+
+  const today = await todayFor(userId)
+  const tags = cleanTags(input.tags ?? [])
+  let rows: Transaction[]
+  try {
+    rows = await writeUnlessOverdrawn(userId, [from, ...destinations], asOfFor(today, input.occurredAt), async (uow) => {
+      const group = await createTransactionGroup(userId, "MANUAL_SPLIT", uow)
+      return insertTransactions(
+        userId,
+        input.legs.map((leg, index) => ({
+          fromNodeId: from.id,
+          toNodeId: leg.toNodeId,
+          amountPaise: leg.amount,
+          occurredAt: input.occurredAt,
+          note: cleanNote(leg.note),
+          tags,
+          idempotencyKey: keys[index],
+        })),
+        group.id,
+        uow,
+      )
+    })
+  } catch (error) {
+    // Lost a race to a concurrent submission of the same key; its legs are the answer. The transaction (and the group
+    // row created in it) was rolled back.
+    if (error instanceof DuplicateIdempotencyKeyError) {
+      const stored = await storedSplit(userId, keys)
+      if (stored) return stored
+    }
+    throw error
+  }
+  // All legs share a day and a source, so one judgement serves them all.
+  const warnings = await warningsFor(userId, rows[0], [from], today)
+  return rows.map((row) => toTransactionView(row, warnings))
+}
+
+/**
+ * Break one leg out of its split group (EC-19): it becomes a plain transaction and the money does not move. If that
+ * leaves a single leg, that leg is released too and the empty group removed, since a group of one is not a split.
+ * Idempotent: a transaction in no group is returned as it is. Throws NotFoundError for an unknown, deleted or other
+ * user's transaction.
+ */
+export async function ungroupTransaction(userId: string, id: string): Promise<TransactionView> {
+  const row = await inTransaction((uow) => detachFromGroup(userId, id, uow))
+  return toTransactionView(row) // no money moved, so there is nothing new to warn about
 }

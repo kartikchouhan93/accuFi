@@ -1,4 +1,4 @@
-import { Prisma, type Transaction } from "@prisma/client"
+import { Prisma, type GroupKind, type Transaction, type TransactionGroup } from "@prisma/client"
 import { calendarDate, fromDbDate, toDbDate, type CalendarDate } from "@/domain/calendar-date"
 import type { LedgerKind } from "@/domain/ledger-kind"
 import type { NodeBalance } from "@/domain/balance"
@@ -121,9 +121,23 @@ export async function findTransactions(
   return { items, nextCursor: rows.length > pageSize ? encodeCursor(items[items.length - 1]) : null }
 }
 
-/** A soft-deleted transaction is not found. */
-export function findTransactionById(userId: string, id: string): Promise<Transaction | null> {
-  return prisma.transaction.findFirst({ where: { id, userId, deletedAt: null } })
+/** A soft-deleted transaction is not found. `uow`, when given, reads inside the caller's open transaction. */
+export function findTransactionById(userId: string, id: string, uow?: UnitOfWork): Promise<Transaction | null> {
+  return (uow ? clientOf(uow) : prisma).transaction.findFirst({ where: { id, userId, deletedAt: null } })
+}
+
+/**
+ * The rows carrying any of these idempotency keys, in the order the keys are given, soft-deleted ones included (a
+ * deleted row keeps its key reserved). Keys no row carries are skipped. This is how a replayed split finds its legs.
+ */
+export async function findTransactionsByIdempotencyKeys(userId: string, keys: readonly string[]): Promise<Transaction[]> {
+  const rows = await prisma.transaction.findMany({ where: { userId, idempotencyKey: { in: [...keys] } } })
+  return keys.flatMap((key) => rows.filter((row) => row.idempotencyKey === key))
+}
+
+/** Open a group for transactions to be inserted into (`insertTransactions(..., groupId, uow)`). It belongs to `userId`. */
+export function createTransactionGroup(userId: string, kind: GroupKind, uow: UnitOfWork): Promise<TransactionGroup> {
+  return clientOf(uow).transactionGroup.create({ data: { userId, kind } })
 }
 
 async function assertGroupOwned(userId: string, groupId: string, db: Db): Promise<void> {
@@ -223,9 +237,9 @@ export async function updateTransaction(
   return uow ? write(clientOf(uow)) : prisma.$transaction(write)
 }
 
-/** Throws NotFoundError if the transaction is not this user's, or is already deleted. */
-export async function softDeleteTransaction(userId: string, id: string): Promise<void> {
-  const { count } = await prisma.transaction.updateMany({
+/** Throws NotFoundError if the transaction is not this user's, or is already deleted. `uow` as for updateTransaction. */
+export async function softDeleteTransaction(userId: string, id: string, uow?: UnitOfWork): Promise<void> {
+  const { count } = await (uow ? clientOf(uow) : prisma).transaction.updateMany({
     where: { id, userId, deletedAt: null },
     data: { deletedAt: new Date(), version: { increment: 1 } },
   })
@@ -246,6 +260,50 @@ export async function undeleteTransaction(userId: string, id: string, uow?: Unit
     return db.transaction.findFirstOrThrow({ where: { id, userId } })
   }
   return uow ? write(clientOf(uow)) : prisma.$transaction(write)
+}
+
+/**
+ * Soft-delete every live member of a group together, bumping each version. Throws NotFoundError if the group has none
+ * (not this user's, or already deleted). The rows keep their `groupId`, so restoring the group can find them again.
+ */
+export async function softDeleteGroup(userId: string, groupId: string, uow: UnitOfWork): Promise<void> {
+  const { count } = await clientOf(uow).transaction.updateMany({
+    where: { userId, groupId, deletedAt: null },
+    data: { deletedAt: new Date(), version: { increment: 1 } },
+  })
+  if (count === 0) throw new NotFoundError("group")
+}
+
+/** The inverse of softDeleteGroup: brings back every deleted member of the group and returns those rows. */
+export async function undeleteGroup(userId: string, groupId: string, uow: UnitOfWork): Promise<Transaction[]> {
+  const db = clientOf(uow)
+  const deleted = await db.transaction.findMany({ where: { userId, groupId, deletedAt: { not: null } }, select: { id: true } })
+  const ids = deleted.map((row) => row.id)
+  await db.transaction.updateMany({ where: { userId, id: { in: ids } }, data: { deletedAt: null, version: { increment: 1 } } })
+  return db.transaction.findMany({ where: { userId, id: { in: ids } }, orderBy: { id: "asc" } })
+}
+
+/**
+ * Take one live transaction out of its group and return it. A group is two or more transactions that are one event; if
+ * that leaves a single live member, the group is dissolved with it: the survivor's `groupId` is cleared too and the
+ * empty group row is removed, so no group of one (or of none) is ever left behind. A transaction that is in no group
+ * is returned as it is. Throws NotFoundError if it is not this user's, or is deleted. `uow` as for updateTransaction.
+ */
+export async function detachFromGroup(userId: string, id: string, uow: UnitOfWork): Promise<Transaction> {
+  const db = clientOf(uow)
+  const existing = await db.transaction.findFirst({ where: { id, userId, deletedAt: null } })
+  if (!existing) throw new NotFoundError("transaction")
+  const { groupId } = existing
+  if (groupId === null) return existing
+
+  await db.transaction.updateMany({ where: { id, userId }, data: { groupId: null, version: { increment: 1 } } })
+  const remaining = await db.transaction.count({ where: { userId, groupId, deletedAt: null } })
+  if (remaining <= 1) {
+    // Every row still pointing at the group, deleted or not, or the foreign key would refuse to drop it.
+    await db.transaction.updateMany({ where: { userId, groupId }, data: { groupId: null, version: { increment: 1 } } })
+    await db.transactionGroup.deleteMany({ where: { id: groupId, userId } })
+  }
+  return db.transaction.findFirstOrThrow({ where: { id, userId } })
 }
 
 interface BalanceRow {
