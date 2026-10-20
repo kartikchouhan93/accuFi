@@ -412,6 +412,41 @@ describe("removeLedgerNode", () => {
     expect(await findNodeById(user.id, food.id)).not.toBeNull()
   })
 
+  it("a node with snapshots and no transactions can be hard-deleted", async () => {
+    // A price snapshot's foreign key to its node is RESTRICT, so the prices go with the node, in one transaction.
+    const user = await registry.makeUser()
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const silver = await registry.makeNode(user.id, "INVESTMENT", "Silver", { valuationMode: "QUANTITY", unitLabel: "g" })
+    for (const node of [gold, silver]) {
+      await prisma.priceSnapshot.create({ data: { userId: user.id, nodeId: node.id, asOf: new Date("2026-03-01"), pricePerUnitPaise: 700_000n } })
+    }
+    await removeLedgerNode(user.id, gold.id)
+    expect(await findNodeById(user.id, gold.id)).toBeNull()
+    expect(await prisma.priceSnapshot.count({ where: { nodeId: gold.id } })).toBe(0)
+    expect(await prisma.priceSnapshot.count({ where: { nodeId: silver.id } })).toBe(1) // another node's prices stay
+  })
+
+  it("still refuses a node with snapshots and transactions, and keeps its prices", async () => {
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "CONTRIBUTION_ONLY", unitLabel: "g" })
+    await prisma.priceSnapshot.create({ data: { userId: user.id, nodeId: gold.id, asOf: new Date("2026-03-01"), pricePerUnitPaise: 1n } })
+    await registry.makeTransaction(user.id, bank.id, gold.id)
+    await expect(removeLedgerNode(user.id, gold.id)).rejects.toThrow(NodeHasHistoryError)
+    expect(await prisma.priceSnapshot.count({ where: { nodeId: gold.id } })).toBe(1)
+  })
+
+  it("leaves the prices in place when the node delete fails", async () => {
+    // The node delete is refused after the prices were deleted in the same transaction: both roll back together.
+    const user = await registry.makeUser()
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    await prisma.priceSnapshot.create({ data: { userId: user.id, nodeId: gold.id, asOf: new Date("2026-03-01"), pricePerUnitPaise: 1n } })
+    vi.spyOn(nodeRepo, "deleteNode").mockRejectedValueOnce(new Error("refused by the database"))
+    await expect(removeLedgerNode(user.id, gold.id)).rejects.toThrow("refused by the database")
+    expect(await prisma.priceSnapshot.count({ where: { nodeId: gold.id } })).toBe(1)
+    expect(await findNodeById(user.id, gold.id)).not.toBeNull()
+  })
+
   it("counts a soft-deleted transaction as history", async () => {
     // the database still refuses to delete a node a deleted row points at
     const user = await registry.makeUser()

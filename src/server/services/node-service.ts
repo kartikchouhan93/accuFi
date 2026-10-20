@@ -13,6 +13,7 @@ import {
   findNodes,
   updateNode,
 } from "@/server/repositories/node-repository"
+import { deletePricesOfNode } from "@/server/repositories/price-repository"
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
 import { todayFor } from "@/server/services/clock"
 import { inTransaction } from "@/server/repositories/unit-of-work"
@@ -277,9 +278,16 @@ export async function restoreLedgerNode(userId: string, nodeId: string): Promise
   return updateNode(userId, nodeId, { archivedAt: null })
 }
 
-/** Only a node nothing references can be deleted (EC-33). Anything with history is archived instead. */
+/**
+ * Only a node with no transactions can be deleted (EC-29, EC-33). Anything with history is archived instead. Its price
+ * snapshots are not history in that sense (they move no money), but their foreign key to the node is RESTRICT, so they
+ * are deleted with it, in one transaction: a failure leaves both.
+ */
 export async function removeLedgerNode(userId: string, nodeId: string): Promise<void> {
   await requireMutableNode(userId, nodeId)
   if ((await countTransactionsForNode(userId, nodeId)) > 0) throw new NodeHasHistoryError()
-  await deleteNode(userId, nodeId)
+  await inTransaction(async (uow) => {
+    await deletePricesOfNode(userId, nodeId, uow)
+    await deleteNode(userId, nodeId, uow)
+  })
 }

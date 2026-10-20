@@ -101,9 +101,12 @@ export async function updateNode(userId: string, nodeId: string, data: UpdateNod
   })
 }
 
-/** Throws NotFoundError if the node is not this user's. A node that transactions reference is refused by the database. */
-export async function deleteNode(userId: string, nodeId: string): Promise<void> {
-  const { count } = await prisma.ledgerNode.deleteMany({ where: { id: nodeId, userId } })
+/**
+ * Throws NotFoundError if the node is not this user's. A node that any row references (a transaction, a lot, a price) is
+ * refused by the database. `uow`, when given, deletes inside the caller's transaction.
+ */
+export async function deleteNode(userId: string, nodeId: string, uow?: UnitOfWork): Promise<void> {
+  const { count } = await (uow ? clientOf(uow) : prisma).ledgerNode.deleteMany({ where: { id: nodeId, userId } })
   if (count === 0) throw new NotFoundError("node")
 }
 

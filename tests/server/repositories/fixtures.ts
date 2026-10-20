@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { LedgerKind } from "@prisma/client"
+import type { LedgerKind, Prisma } from "@prisma/client"
 import { calendarDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 
@@ -18,8 +18,14 @@ export function createRegistry() {
     return user
   }
 
-  async function makeNode(userId: string, kind: LedgerKind, name: string) {
-    return prisma.ledgerNode.create({ data: { userId, kind, name } })
+  /** `over` sets any other column, e.g. `{ valuationMode: "QUANTITY", unitLabel: "g" }` for a lot-mode investment. */
+  async function makeNode(
+    userId: string,
+    kind: LedgerKind,
+    name: string,
+    over: Omit<Prisma.LedgerNodeUncheckedCreateInput, "userId" | "kind" | "name"> = {},
+  ) {
+    return prisma.ledgerNode.create({ data: { ...over, userId, kind, name } })
   }
 
   async function makeTransaction(
@@ -54,6 +60,10 @@ export function createRegistry() {
   }
 
   async function cleanup() {
+    // The investment tables first: their foreign keys to transactions and nodes are RESTRICT.
+    await prisma.lotConsumption.deleteMany({ where: { userId: { in: userIds } } })
+    await prisma.investmentLot.deleteMany({ where: { userId: { in: userIds } } })
+    await prisma.priceSnapshot.deleteMany({ where: { userId: { in: userIds } } })
     await prisma.transaction.deleteMany({ where: { userId: { in: userIds } } })
     await prisma.transactionGroup.deleteMany({ where: { userId: { in: userIds } } })
     await prisma.ledgerNode.deleteMany({ where: { userId: { in: userIds }, parentId: { not: null } } })

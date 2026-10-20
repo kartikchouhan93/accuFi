@@ -1,11 +1,14 @@
 import { readdirSync } from "node:fs"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { calendarDate } from "@/domain/calendar-date"
+import { Prisma } from "@prisma/client"
+import { calendarDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
-import { NotFoundError } from "@/server/repositories/errors"
+import { NotFoundError, UserNotFoundError } from "@/server/repositories/errors"
+import * as lotRepo from "@/server/repositories/lot-repository"
 import * as nodeRepo from "@/server/repositories/node-repository"
+import * as priceRepo from "@/server/repositories/price-repository"
 import * as txRepo from "@/server/repositories/transaction-repository"
-import { findUserTimezone } from "@/server/repositories/user-repository"
+import { findStalePriceDays, findUserTimezone } from "@/server/repositories/user-repository"
 import { inTransaction } from "@/server/repositories/unit-of-work"
 import { createRegistry } from "./fixtures"
 
@@ -101,6 +104,7 @@ describe("node repository", () => {
   isolation("deleteNode", "does not delete another user's node", async () => {
     const spare = await registry.makeNode(b.user.id, "EXPENSE", "Spare")
     await expectNotFound(nodeRepo.deleteNode(a.user.id, spare.id))
+    await expectNotFound(inTransaction((uow) => nodeRepo.deleteNode(a.user.id, spare.id, uow)))
     expect(await prisma.ledgerNode.findUnique({ where: { id: spare.id } })).not.toBeNull()
   })
 
@@ -313,6 +317,179 @@ describe("transaction repository", () => {
   })
 })
 
+
+// The investment tables tie a row to its user only through these repositories: the schema has no constraint that a
+// lot's userId is its node's or its transaction's owner. So every lookup by a node or transaction id is aimed at B's.
+interface Holdings {
+  userId: string
+  gold: { id: string }
+  buy: { id: string }
+  legacyBuy: { id: string }
+  sale: { id: string }
+  lot: { id: string }
+}
+
+/**
+ * A world of its own (so the figures the tests above assert about `a` and `b` are untouched) with a QUANTITY node: a
+ * purchase that has a lot, a legacy purchase that has none, a sale that consumed part of the lot, and a price.
+ */
+async function makeHoldings(): Promise<Holdings> {
+  const world = await registry.makeWorld()
+  const userId = world.user.id
+  const gold = await registry.makeNode(userId, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+  const buy = await registry.makeTransaction(userId, world.bank.id, gold.id, { amountPaise: 7_000_000n })
+  const legacyBuy = await registry.makeTransaction(userId, world.bank.id, gold.id, { amountPaise: 1_000n })
+  const sale = await registry.makeTransaction(userId, gold.id, world.bank.id, { amountPaise: 800_000n, occurredAt: "2026-04-02" })
+  const lot = await prisma.investmentLot.create({
+    data: { userId, nodeId: gold.id, transactionId: buy.id, quantity: new Prisma.Decimal("10"), costBasisPaise: 7_000_000n, acquiredAt: toDbDate(day) },
+  })
+  await prisma.lotConsumption.create({
+    data: { userId, lotId: lot.id, transactionId: sale.id, quantity: new Prisma.Decimal("1"), costBasisPaise: 700_000n },
+  })
+  await prisma.priceSnapshot.create({ data: { userId, nodeId: gold.id, asOf: toDbDate(day), pricePerUnitPaise: 710_000n } })
+  return { userId, gold, buy, legacyBuy, sale, lot }
+}
+
+const snapshotLots = (userId: string) => prisma.investmentLot.findMany({ where: { userId }, orderBy: { id: "asc" } })
+const snapshotConsumptions = (userId: string) => prisma.lotConsumption.findMany({ where: { userId }, orderBy: { id: "asc" } })
+const snapshotPrices = (userId: string) => prisma.priceSnapshot.findMany({ where: { userId }, orderBy: { id: "asc" } })
+
+describe("lot repository", () => {
+  let mine: Holdings
+  let theirs: Holdings
+  beforeAll(async () => {
+    mine = await makeHoldings()
+    theirs = await makeHoldings()
+  })
+
+  const lotDraft = (nodeId: string, transactionId: string) => ({
+    nodeId,
+    transactionId,
+    quantity: 1_000_000n,
+    costBasisPaise: 1_000n,
+    acquiredAt: day,
+  })
+
+  isolation("insertLot", "refuses a lot on another user's node or for another user's transaction", async () => {
+    const aBefore = await snapshotLots(mine.userId)
+    const bBefore = await snapshotLots(theirs.userId)
+    await expectNotFound(inTransaction((uow) => lotRepo.insertLot(mine.userId, lotDraft(theirs.gold.id, mine.legacyBuy.id), uow)))
+    await expectNotFound(inTransaction((uow) => lotRepo.insertLot(mine.userId, lotDraft(mine.gold.id, theirs.legacyBuy.id), uow)))
+    expect(await snapshotLots(mine.userId)).toEqual(aBefore)
+    expect(await snapshotLots(theirs.userId)).toEqual(bBefore)
+  })
+
+  isolation("updateLot", "does not change another user's lot, nor move the caller's onto another user's node", async () => {
+    const aBefore = await snapshotLots(mine.userId)
+    const bBefore = await snapshotLots(theirs.userId)
+    await expectNotFound(inTransaction((uow) => lotRepo.updateLot(mine.userId, theirs.buy.id, { quantity: 1n, costBasisPaise: 1n }, uow)))
+    await expectNotFound(inTransaction((uow) => lotRepo.updateLot(mine.userId, mine.buy.id, { nodeId: theirs.gold.id }, uow)))
+    expect(await snapshotLots(mine.userId)).toEqual(aBefore)
+    expect(await snapshotLots(theirs.userId)).toEqual(bBefore)
+  })
+
+  isolation("deleteLotOf", "does not delete another user's lot", async () => {
+    const before = await snapshotLots(theirs.userId)
+    await expectNotFound(inTransaction((uow) => lotRepo.deleteLotOf(mine.userId, theirs.buy.id, uow)))
+    expect(await snapshotLots(theirs.userId)).toEqual(before)
+  })
+
+  isolation("findLiveLots", "returns nothing for another user's node", async () => {
+    expect(await lotRepo.findLiveLots(mine.userId, theirs.gold.id)).toEqual([])
+    expect(await inTransaction((uow) => lotRepo.findLiveLots(mine.userId, theirs.gold.id, uow))).toEqual([])
+    expect((await lotRepo.findLiveLots(theirs.userId, theirs.gold.id)).map((lot) => lot.id)).toEqual([theirs.lot.id])
+  })
+
+  isolation("findLiveLots", "does not count another user's consumption smuggled onto the caller's lot", async () => {
+    // The repositories refuse to write this row; nothing in the database does.
+    const smuggled = await prisma.lotConsumption.create({
+      data: { userId: theirs.userId, lotId: mine.lot.id, transactionId: theirs.legacyBuy.id, quantity: new Prisma.Decimal("5"), costBasisPaise: 1n },
+    })
+    try {
+      const [lot] = await lotRepo.findLiveLots(mine.userId, mine.gold.id)
+      expect(lot.consumptions.map((c) => c.quantity)).toEqual([1_000_000n])
+    } finally {
+      await prisma.lotConsumption.delete({ where: { id: smuggled.id } })
+    }
+  })
+
+  isolation("findLotByTransaction", "returns null for another user's transaction", async () => {
+    expect(await lotRepo.findLotByTransaction(mine.userId, theirs.buy.id)).toBeNull()
+    expect(await inTransaction((uow) => lotRepo.findLotByTransaction(mine.userId, theirs.buy.id, uow))).toBeNull()
+    expect((await lotRepo.findLotByTransaction(mine.userId, mine.buy.id))?.id).toBe(mine.lot.id)
+  })
+
+  isolation("insertConsumptions", "refuses to consume another user's lot or to attach to another user's disposal", async () => {
+    const aBefore = await snapshotConsumptions(mine.userId)
+    const bBefore = await snapshotConsumptions(theirs.userId)
+    const row = (lotId: string, transactionId: string) => ({ lotId, transactionId, quantity: 1n, costBasisPaise: 0n })
+    await expectNotFound(inTransaction((uow) => lotRepo.insertConsumptions(mine.userId, [row(theirs.lot.id, mine.legacyBuy.id)], uow)))
+    await expectNotFound(inTransaction((uow) => lotRepo.insertConsumptions(mine.userId, [row(mine.lot.id, theirs.legacyBuy.id)], uow)))
+    // one bad row refuses the batch
+    await expectNotFound(
+      inTransaction((uow) =>
+        lotRepo.insertConsumptions(mine.userId, [row(mine.lot.id, mine.legacyBuy.id), row(theirs.lot.id, mine.legacyBuy.id)], uow),
+      ),
+    )
+    expect(await snapshotConsumptions(mine.userId)).toEqual(aBefore)
+    expect(await snapshotConsumptions(theirs.userId)).toEqual(bBefore)
+  })
+
+  isolation("findConsumptionsByTransaction", "returns nothing for another user's disposal", async () => {
+    expect(await lotRepo.findConsumptionsByTransaction(mine.userId, theirs.sale.id)).toEqual([])
+    expect(await inTransaction((uow) => lotRepo.findConsumptionsByTransaction(mine.userId, theirs.sale.id, uow))).toEqual([])
+    expect(await lotRepo.findConsumptionsByTransaction(theirs.userId, theirs.sale.id)).toHaveLength(1)
+  })
+
+  isolation("countConsumptionsOfLot", "counts nothing for another user's purchase", async () => {
+    expect(await lotRepo.countConsumptionsOfLot(mine.userId, theirs.buy.id)).toBe(0)
+    expect(await inTransaction((uow) => lotRepo.countConsumptionsOfLot(mine.userId, theirs.buy.id, uow))).toBe(0)
+    expect(await lotRepo.countConsumptionsOfLot(theirs.userId, theirs.buy.id)).toBe(1)
+  })
+
+  isolation("findLotGaps", "counts nothing for another user's node", async () => {
+    const none = { inflowsWithoutLot: 0, outflowsWithoutConsumption: 0 }
+    expect(await lotRepo.findLotGaps(mine.userId, theirs.gold.id)).toEqual(none)
+    expect(await inTransaction((uow) => lotRepo.findLotGaps(mine.userId, theirs.gold.id, uow))).toEqual(none)
+    expect(await lotRepo.findLotGaps(theirs.userId, theirs.gold.id)).toEqual({ inflowsWithoutLot: 1, outflowsWithoutConsumption: 0 })
+  })
+})
+
+describe("price repository", () => {
+  let mine: Holdings
+  let theirs: Holdings
+  beforeAll(async () => {
+    mine = await makeHoldings()
+    theirs = await makeHoldings()
+  })
+
+  isolation("upsertPrice", "does not write a price on another user's node, nor overwrite theirs", async () => {
+    const aBefore = await snapshotPrices(mine.userId)
+    const bBefore = await snapshotPrices(theirs.userId)
+    await expectNotFound(priceRepo.upsertPrice(mine.userId, { nodeId: theirs.gold.id, asOf: day, pricePerUnitPaise: 1n }))
+    await expectNotFound(priceRepo.upsertPrice(mine.userId, { nodeId: theirs.gold.id, asOf: calendarDate("2026-04-02"), pricePerUnitPaise: 1n }))
+    expect(await snapshotPrices(mine.userId)).toEqual(aBefore)
+    expect(await snapshotPrices(theirs.userId)).toEqual(bBefore)
+  })
+
+  isolation("listPrices", "returns nothing for another user's node", async () => {
+    expect(await priceRepo.listPrices(mine.userId, theirs.gold.id)).toEqual([])
+    expect(await priceRepo.listPrices(theirs.userId, theirs.gold.id)).toEqual([{ asOf: day, pricePerUnitPaise: 710_000n }])
+  })
+
+  isolation("deletePrice", "does not delete another user's price", async () => {
+    const before = await snapshotPrices(theirs.userId)
+    await expectNotFound(priceRepo.deletePrice(mine.userId, theirs.gold.id, day))
+    expect(await snapshotPrices(theirs.userId)).toEqual(before)
+  })
+
+  isolation("deletePricesOfNode", "deletes none of another user's prices", async () => {
+    const before = await snapshotPrices(theirs.userId)
+    await inTransaction((uow) => priceRepo.deletePricesOfNode(mine.userId, theirs.gold.id, uow))
+    expect(await snapshotPrices(theirs.userId)).toEqual(before)
+  })
+})
+
 describe("user repository", () => {
   isolation("findUserTimezone", "answers only for the id it is given, and null for an id that is not a user", async () => {
     await prisma.user.update({ where: { id: b.user.id }, data: { timezone: "America/New_York" } })
@@ -322,6 +499,17 @@ describe("user repository", () => {
       expect(await findUserTimezone("no-such-user")).toBeNull()
     } finally {
       await prisma.user.update({ where: { id: b.user.id }, data: { timezone: "Asia/Kolkata" } })
+    }
+  })
+
+  isolation("findStalePriceDays", "answers only for the id it is given, and refuses an id that is not a user", async () => {
+    await prisma.user.update({ where: { id: b.user.id }, data: { stalePriceDays: 90 } })
+    try {
+      expect(await findStalePriceDays(a.user.id)).toBe(30)
+      expect(await findStalePriceDays(b.user.id)).toBe(90)
+      expect(await findStalePriceDays("no-such-user").catch((e: unknown) => e)).toBeInstanceOf(UserNotFoundError)
+    } finally {
+      await prisma.user.update({ where: { id: b.user.id }, data: { stalePriceDays: 30 } })
     }
   })
 })
@@ -391,7 +579,9 @@ describe("coverage", () => {
     // until its functions get isolation cases below, instead of sitting outside the check unnoticed.
     expect(perModule.map((m) => m.path).sort()).toEqual([
       "errors.ts",
+      "lot-repository.ts",
       "node-repository.ts",
+      "price-repository.ts",
       "transaction-repository.ts",
       "unit-of-work.ts",
       "user-repository.ts",

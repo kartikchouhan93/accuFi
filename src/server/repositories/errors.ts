@@ -4,7 +4,7 @@ import type { Transaction } from "@prisma/client"
 // "no such row" and "someone else's row": a distinct "forbidden" would confirm to a prober that the id exists.
 // The message never contains the id.
 export class NotFoundError extends Error {
-  constructor(readonly entity: "node" | "transaction" | "group") {
+  constructor(readonly entity: "node" | "transaction" | "group" | "lot" | "price") {
     super(`${entity} not found`)
     this.name = "NotFoundError"
   }
