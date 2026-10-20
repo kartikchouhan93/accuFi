@@ -224,6 +224,12 @@ describe("transaction repository", () => {
     }
   })
 
+  isolation("findGroupById", "returns null for another user's group", async () => {
+    expect(await txRepo.findGroupById(a.user.id, b.group.id)).toBeNull()
+    expect((await txRepo.findGroupById(a.user.id, a.group.id))?.userId).toBe(a.user.id)
+    expect(await inTransaction((uow) => txRepo.findGroupById(a.user.id, b.group.id, uow))).toBeNull()
+  })
+
   isolation("createTransactionGroup", "creates the group for the caller and touches nobody else's", async () => {
     const bBefore = await snapshotGroups(b.user.id)
     const group = await inTransaction((uow) => txRepo.createTransactionGroup(a.user.id, "MANUAL_SPLIT", uow))

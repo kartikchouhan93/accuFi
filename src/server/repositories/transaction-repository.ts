@@ -135,6 +135,11 @@ export async function findTransactionsByIdempotencyKeys(userId: string, keys: re
   return keys.flatMap((key) => rows.filter((row) => row.idempotencyKey === key))
 }
 
+/** The group, or null if it is not this user's. `uow`, when given, reads inside the caller's open transaction. */
+export function findGroupById(userId: string, groupId: string, uow?: UnitOfWork): Promise<TransactionGroup | null> {
+  return (uow ? clientOf(uow) : prisma).transactionGroup.findFirst({ where: { id: groupId, userId } })
+}
+
 /** Open a group for transactions to be inserted into (`insertTransactions(..., groupId, uow)`). It belongs to `userId`. */
 export function createTransactionGroup(userId: string, kind: GroupKind, uow: UnitOfWork): Promise<TransactionGroup> {
   return clientOf(uow).transactionGroup.create({ data: { userId, kind } })

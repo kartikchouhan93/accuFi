@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import { calendarDate, type CalendarDate } from "@/domain/calendar-date"
 import { allocate } from "@/domain/money"
+import { SPLIT_LEGS_MAX } from "@/lib/schemas/transaction"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
-import { sumBalances } from "@/server/repositories/transaction-repository"
+import { findTransactionsByIdempotencyKeys, sumBalances } from "@/server/repositories/transaction-repository"
 import { archiveLedgerNode } from "@/server/services/node-service"
 import {
   InvalidTransactionError,
@@ -18,6 +19,13 @@ import {
   type SplitLegInput,
 } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
+
+// Passes straight through to the real repository. It is wrapped only so one test can make the replay lookup come back
+// empty once, which is the only deterministic way to reach the insert that a duplicate key then fails.
+vi.mock("@/server/repositories/transaction-repository", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/server/repositories/transaction-repository")>()
+  return { ...original, findTransactionsByIdempotencyKeys: vi.fn(original.findTransactionsByIdempotencyKeys) }
+})
 
 const registry = createRegistry()
 afterAll(registry.cleanup)
@@ -258,6 +266,8 @@ describe("recordSplit", () => {
   })
 
   it("settles concurrent submissions of one key into one group", async () => {
+    // Timing decides how many of these reach the insert, so this proves the outcome only; the rollback of a failing
+    // insert is proved deterministically below.
     const { user, bank, groceries, clothes } = await setup()
     const key = randomUUID()
     const legs = [leg(groceries, 100n), leg(clothes, 200n)]
@@ -265,6 +275,78 @@ describe("recordSplit", () => {
     expect(new Set(results.flatMap((views) => views.map((v) => v.id))).size).toBe(2)
     expect(await groupCount(user.id)).toBe(1)
     expect(await rowCount(user.id)).toBe(3) // opening deposit + two legs
+  })
+
+  it("does not mistake an unrelated transaction that holds a leg's key for a replay", async () => {
+    // A single transaction already stored under "<K>:1". The split under base key K is a new request, not a replay of
+    // that row: it must fail loudly, not return one view as success while recording nothing.
+    const { user, bank, groceries, clothes } = await setup()
+    const key = randomUUID()
+    const unrelated = await recordTransaction(user.id, {
+      fromNodeId: bank.id,
+      toNodeId: groceries.id,
+      amount: 50n,
+      occurredAt: PAST,
+      idempotencyKey: `${key}:1`,
+    })
+    const rows = await rowCount(user.id)
+    const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)], { idempotencyKey: key }))
+    expect(error).toBeInstanceOf(InvalidTransactionError)
+    expect((error as Error).message).toBe("This request key was already used for a different request.")
+    expect(await rowCount(user.id)).toBe(rows)
+    expect(await groupCount(user.id)).toBe(0)
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: unrelated.id } })).version).toBe(unrelated.version)
+  })
+
+  it("does not treat a replay with a different number of legs as a replay of the original", async () => {
+    const { user, bank, groceries, clothes, interest } = await setup()
+    const key = randomUUID()
+    const three = [leg(groceries, 100n), leg(clothes, 200n), leg(interest, 300n)]
+    await split(user.id, bank, three, { idempotencyKey: key })
+    const rows = await rowCount(user.id)
+    // fewer legs: its keys all exist, but the original had more
+    expect(await rejection(split(user.id, bank, three.slice(0, 2), { idempotencyKey: key }))).toBeInstanceOf(InvalidTransactionError)
+    // more legs: the extra key does not exist
+    expect(await rejection(split(user.id, bank, [...three, leg(groceries, 1n)], { idempotencyKey: key }))).toBeInstanceOf(
+      InvalidTransactionError,
+    )
+    expect(await rowCount(user.id)).toBe(rows)
+    expect(await groupCount(user.id)).toBe(1)
+  })
+
+  it("rolls back the group row and the legs already written when a later leg's key is taken", async () => {
+    // Deterministic: the replay lookup is made to miss once while a row genuinely holds "<K>:1", so the group row and
+    // leg 0 are written and then leg 1's insert hits the unique key. Everything written before it must go.
+    const { user, bank, groceries, clothes } = await setup()
+    const key = randomUUID()
+    await recordTransaction(user.id, {
+      fromNodeId: bank.id,
+      toNodeId: groceries.id,
+      amount: 50n,
+      occurredAt: PAST,
+      idempotencyKey: `${key}:1`,
+    })
+    const rows = await rowCount(user.id)
+    const lookups = vi.mocked(findTransactionsByIdempotencyKeys)
+    lookups.mockClear()
+    lookups.mockImplementationOnce(() => Promise.resolve([]))
+
+    const error = await rejection(split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)], { idempotencyKey: key }))
+
+    expect(lookups).toHaveBeenCalledTimes(2) // the shortcut that missed, then the lookup after the insert failed
+    expect(error).toBeInstanceOf(InvalidTransactionError)
+    expect(await groupCount(user.id)).toBe(0)
+    expect(await rowCount(user.id)).toBe(rows)
+    expect(await prisma.transaction.count({ where: { userId: user.id, idempotencyKey: `${key}:0` } })).toBe(0)
+    expect(await balanceOf(user.id, bank)).toBe(10_000_00n - 50n)
+  })
+
+  it("refuses more legs than the cap, whatever called it", async () => {
+    const { user, bank, groceries } = await setup()
+    const legs = Array.from({ length: SPLIT_LEGS_MAX + 1 }, () => leg(groceries, 1n))
+    expect(await rejection(split(user.id, bank, legs))).toBeInstanceOf(InvalidTransactionError)
+    expect(await split(user.id, bank, legs.slice(0, SPLIT_LEGS_MAX))).toHaveLength(SPLIT_LEGS_MAX)
+    expect(await groupCount(user.id)).toBe(1)
   })
 
   it("records an EMI as principal to the loan and interest to an expense", async () => {
@@ -326,6 +408,21 @@ describe("ungroupTransaction", () => {
       idempotencyKey: randomUUID(),
     })
     expect(await ungroupTransaction(user.id, plain.id)).toMatchObject({ id: plain.id, groupId: null, version: plain.version })
+  })
+
+  it("refuses to break a leg out of a disposal group, which is edited as a unit (EC-19)", async () => {
+    const { user, bank, groceries, clothes } = await setup()
+    const [first, second] = await split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)])
+    await prisma.transactionGroup.update({ where: { id: first.groupId ?? "" }, data: { kind: "DISPOSAL" } })
+    const error = await rejection(ungroupTransaction(user.id, first.id))
+    expect(error).toBeInstanceOf(InvalidTransactionError)
+    expect((error as Error).message).toBe("A disposal is edited as a unit, so one leg cannot be taken out of it.")
+    const rows = await prisma.transaction.findMany({ where: { id: { in: [first.id, second.id] } }, orderBy: { idempotencyKey: "asc" } })
+    expect(rows.map((r) => [r.groupId, r.version])).toEqual([
+      [first.groupId, first.version],
+      [first.groupId, second.version],
+    ])
+    expect(await groupCount(user.id)).toBe(1)
   })
 
   it("answers not-found for an unknown, deleted or other user's transaction", async () => {

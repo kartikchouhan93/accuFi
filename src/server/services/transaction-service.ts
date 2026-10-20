@@ -2,12 +2,14 @@ import type { LedgerNode, Transaction } from "@prisma/client"
 import { compareDates, fromDbDate, todayIn, type CalendarDate } from "@/domain/calendar-date"
 import { formatPaise, type Paise } from "@/domain/money"
 import { validateTransaction, type RuleViolation } from "@/domain/transaction-rules"
+import { SPLIT_LEGS_MAX, SPLIT_LEGS_MIN } from "@/lib/schemas/transaction"
 import { toTransactionView, type TransactionView, type Warning } from "@/lib/transaction-view"
 import { DuplicateIdempotencyKeyError, NotFoundError } from "@/server/repositories/errors"
 import { findNodeById } from "@/server/repositories/node-repository"
 import {
   createTransactionGroup,
   detachFromGroup,
+  findGroupById,
   findTransactionById,
   findTransactionsByIdempotencyKeys,
   insertTransactions,
@@ -393,10 +395,23 @@ export class SplitTotalMismatchError extends Error {
 // or none.
 const legKey = (key: string, index: number): string => `${key}:${index}`
 
-/** The views of the legs already stored under these keys, or null if the request was never made. */
-async function storedSplit(userId: string, keys: readonly string[]): Promise<TransactionView[] | null> {
-  const rows = await findTransactionsByIdempotencyKeys(userId, keys)
+/**
+ * The stored result of an earlier submission of this split, or null if the key was never used. A match is a replay only
+ * if it is exactly that submission: every one of the `legCount` derived keys is found, no more (the key after the last
+ * leg is looked up too, so an original with more legs is not mistaken for this one), and all the rows share one group.
+ * Any other row holding one of the keys belongs to some other request (a single transaction that happens to be keyed
+ * `<key>:1`, a split of a different size, a group since broken up), and answering with it would report success for a
+ * split that was never recorded, so that is a conflict and is thrown.
+ */
+async function storedSplit(userId: string, key: string, legCount: number): Promise<TransactionView[] | null> {
+  const keys = Array.from({ length: legCount }, (_, index) => legKey(key, index))
+  const rows = await findTransactionsByIdempotencyKeys(userId, [...keys, legKey(key, legCount)])
   if (rows.length === 0) return null
+  const [first] = rows
+  const isReplay =
+    rows.length === legCount &&
+    rows.every((row, index) => row.idempotencyKey === keys[index] && row.groupId !== null && row.groupId === first.groupId)
+  if (!isReplay) throw new InvalidTransactionError("This request key was already used for a different request.")
   const today = await todayFor(userId)
   const views: TransactionView[] = []
   for (const row of rows) views.push(await viewOf(userId, row, undefined, today))
@@ -422,7 +437,9 @@ async function storedSplit(userId: string, keys: readonly string[]): Promise<Tra
  */
 export async function recordSplit(userId: string, input: RecordSplitInput): Promise<TransactionView[]> {
   if (input.idempotencyKey === "") throw new InvalidTransactionError("A request key is required")
-  if (input.legs.length < 2) throw new InvalidTransactionError("A split needs at least two legs.")
+  // The schema refuses these too; the service is also called by code that never saw the schema.
+  if (input.legs.length < SPLIT_LEGS_MIN) throw new InvalidTransactionError(`A split needs at least ${SPLIT_LEGS_MIN} legs.`)
+  if (input.legs.length > SPLIT_LEGS_MAX) throw new InvalidTransactionError(`A split can have at most ${SPLIT_LEGS_MAX} legs.`)
   const legsTotal = input.legs.reduce((sum, leg) => sum + leg.amount, 0n)
   if (input.total !== undefined && legsTotal !== input.total) throw new SplitTotalMismatchError(legsTotal, input.total)
 
@@ -431,7 +448,7 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
   for (const leg of input.legs) destinations.push(await requireNode(userId, leg.toNodeId))
 
   const keys = input.legs.map((_, index) => legKey(input.idempotencyKey, index))
-  const replay = await storedSplit(userId, keys)
+  const replay = await storedSplit(userId, input.idempotencyKey, input.legs.length)
   if (replay) return replay
 
   const violations = input.legs.flatMap((leg, index) =>
@@ -467,7 +484,7 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
     // Lost a race to a concurrent submission of the same key; its legs are the answer. The transaction (and the group
     // row created in it) was rolled back.
     if (error instanceof DuplicateIdempotencyKeyError) {
-      const stored = await storedSplit(userId, keys)
+      const stored = await storedSplit(userId, input.idempotencyKey, input.legs.length) // throws if it is not ours
       if (stored) return stored
     }
     throw error
@@ -480,10 +497,20 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
 /**
  * Break one leg out of its split group (EC-19): it becomes a plain transaction and the money does not move. If that
  * leaves a single leg, that leg is released too and the empty group removed, since a group of one is not a split.
- * Idempotent: a transaction in no group is returned as it is. Throws NotFoundError for an unknown, deleted or other
+ * A disposal group (EC-19) is edited as a unit and refuses. Idempotent: a transaction in no group is returned as it is. Throws NotFoundError for an unknown, deleted or other
  * user's transaction.
  */
 export async function ungroupTransaction(userId: string, id: string): Promise<TransactionView> {
-  const row = await inTransaction((uow) => detachFromGroup(userId, id, uow))
+  const row = await inTransaction(async (uow) => {
+    const existing = await findTransactionById(userId, id, uow)
+    if (!existing) throw new NotFoundError("transaction")
+    if (existing.groupId !== null) {
+      const group = await findGroupById(userId, existing.groupId, uow)
+      if (group?.kind === "DISPOSAL") {
+        throw new InvalidTransactionError("A disposal is edited as a unit, so one leg cannot be taken out of it.")
+      }
+    }
+    return detachFromGroup(userId, id, uow)
+  })
   return toTransactionView(row) // no money moved, so there is nothing new to warn about
 }
