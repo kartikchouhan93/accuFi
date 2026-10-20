@@ -6,6 +6,11 @@
 export const LEDGER_KINDS = ["INCOME_SOURCE", "ASSET", "INVESTMENT", "EXPENSE", "LIABILITY"] as const
 export type LedgerKind = (typeof LEDGER_KINDS)[number]
 
+// How a disposal chooses which lots to consume. The same members as the Prisma enum LotMethod and as LOT_METHODS in
+// src/lib/schemas/node.ts (which cannot import this file); tests/db/enum-parity.test.ts pins all three together.
+export const LOT_METHODS = ["FIFO", "LIFO", "HIGHEST_COST_FIRST"] as const
+export type LotMethod = (typeof LOT_METHODS)[number]
+
 // Nodes the system creates itself, never the user.
 export const SYSTEM_NODE_ROLES = ["OPENING_BALANCE", "OPENING_BALANCE_CONTRA", "REALISED_GAIN", "REALISED_LOSS"] as const
 export type SystemNodeRole = (typeof SYSTEM_NODE_ROLES)[number]

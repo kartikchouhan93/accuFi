@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { LedgerKind as PrismaLedgerKind, SystemNodeRole as PrismaSystemNodeRole } from "@prisma/client"
-import { LEDGER_KINDS, SYSTEM_NODE_ROLES } from "@/domain/ledger-kind"
+import { LedgerKind as PrismaLedgerKind, LotMethod as PrismaLotMethod, SystemNodeRole as PrismaSystemNodeRole } from "@prisma/client"
+import { LEDGER_KINDS, LOT_METHODS, SYSTEM_NODE_ROLES } from "@/domain/ledger-kind"
+import { LOT_METHODS as SCHEMA_LOT_METHODS } from "@/lib/schemas/node"
 
 // src/domain may not import @prisma/client, so LedgerKind and SystemNodeRole exist twice: as domain unions
 // (derived from the LEDGER_KINDS / SYSTEM_NODE_ROLES arrays) and as Prisma enums. This file lives outside
@@ -28,5 +29,13 @@ describe("Prisma enums match the domain unions", () => {
 
   it("SystemNodeRole has exactly the domain's members", () => {
     expectSameMembers(SYSTEM_NODE_ROLES, Object.values(PrismaSystemNodeRole))
+  })
+
+  it("LotMethod has exactly the domain's members", () => {
+    expectSameMembers(LOT_METHODS, Object.values(PrismaLotMethod))
+  })
+
+  it("the zod schema's LOT_METHODS list is the domain's list", () => {
+    expectSameMembers(SCHEMA_LOT_METHODS, LOT_METHODS)
   })
 })
