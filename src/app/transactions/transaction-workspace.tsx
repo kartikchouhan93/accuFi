@@ -1,6 +1,9 @@
 "use client"
 
+import { Plus, X } from "lucide-react"
 import { useRef, useState } from "react"
+import { NoticeToast } from "@/components/ui/notice-toast"
+import { buttonClass } from "@/components/ui/styles"
 import type { TransactionScreen } from "@/lib/transaction-list-view"
 import type { TransactionView } from "@/lib/transaction-view"
 import { Balances } from "./balances"
@@ -32,21 +35,22 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
   }
 
   return (
-    <main className="mx-auto max-w-6xl px-4 pb-28 pt-8 sm:px-6">
-      <div className="flex items-end justify-between gap-4">
-        <h1 className="font-display text-4xl font-bold tracking-tight">Transactions</h1>
+    <main className="mx-auto max-w-6xl px-4 pb-28 pt-8 sm:px-8">
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">Transactions</h1>
         <button
           type="button"
           aria-expanded={formOpen}
           onClick={() => setFormOpen((open) => !open)}
-          className="rounded-sm bg-accent px-4 py-2 font-medium text-accent-fg lg:hidden"
+          className={buttonClass({ className: "lg:hidden" })}
         >
+          {formOpen ? <X aria-hidden className="size-4" /> : <Plus aria-hidden className="size-4" />}
           {formOpen ? "Close form" : "Record a transaction"}
         </button>
       </div>
 
-      <div className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_23rem] lg:items-start">
-        <div className="space-y-8">
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
+        <div className="min-w-0 space-y-8">
           <Balances nodes={screen.nodes} balances={screen.balances} />
           <Filters filter={screen.filter} problems={screen.problems} nodes={screen.nodes} />
           <TransactionList
@@ -72,41 +76,7 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
         </aside>
       </div>
 
-      <div
-        ref={statusRef}
-        role="status"
-        tabIndex={-1}
-        className="fixed inset-x-4 bottom-4 z-10 mx-auto max-w-xl outline-offset-4 empty:hidden"
-      >
-        {notice && (
-          <div
-            className={`flex items-start gap-3 border-l-4 bg-panel px-4 py-3 shadow-[0_2px_0_var(--line-strong)] ${
-              notice.tone === "warning" ? "border-notice-fg" : "border-accent-edge"
-            }`}
-          >
-            <div className="flex-1 space-y-1">
-              {notice.lines.map((line, index) => (
-                <p key={index}>{line}</p>
-              ))}
-            </div>
-            {notice.undo && (
-              <button
-                type="button"
-                onClick={() => {
-                  notice.undo?.run()
-                  setNotice(null)
-                }}
-                className="text-sm font-medium text-link underline underline-offset-4"
-              >
-                {notice.undo.label}
-              </button>
-            )}
-            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-link underline underline-offset-4">
-              Dismiss
-            </button>
-          </div>
-        )}
-      </div>
+      <NoticeToast notice={notice} onDismiss={() => setNotice(null)} statusRef={statusRef} />
     </main>
   )
 }

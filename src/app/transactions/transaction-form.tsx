@@ -1,6 +1,10 @@
 "use client"
 
+import { CircleAlert, LoaderCircle, Plus, TriangleAlert } from "lucide-react"
 import { useEffect, useId, useRef, useState, useTransition } from "react"
+import { cn } from "@/lib/utils"
+import { SpotlightCard } from "@/components/ui/spotlight-card"
+import { buttonClass as makeButtonClass, inputClass } from "@/components/ui/styles"
 import type { CalendarDate } from "@/domain/calendar-date"
 import { formatPaiseText } from "@/lib/node-money"
 import { newRequestKey } from "@/lib/request-key"
@@ -73,10 +77,8 @@ const draftOf = (transaction: TransactionView): Draft => ({
   legs: null,
 })
 
-const inputClass =
-  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 text-fg placeholder:text-fg-soft/70 disabled:opacity-60 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
-const buttonClass = "rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium hover:bg-canvas disabled:opacity-60"
-const linkButtonClass = "rounded-sm text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
+const buttonClass = makeButtonClass({ variant: "secondary", size: "sm" })
+const linkButtonClass = "rounded-md text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
 
 const unique = (messages: string[]) => [...new Set(messages)]
 
@@ -279,6 +281,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   const tally = isSplit ? describeTally(values.amount, legs.map((leg) => leg.amount)) : null
 
   return (
+    <SpotlightCard className="surface rounded-3xl" radius={340} strength={10}>
     <form
       ref={formRef}
       onSubmit={(event) => {
@@ -287,9 +290,9 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       }}
       noValidate
       aria-labelledby={`${formId}-title`}
-      className="border border-line border-t-4 border-t-ink bg-panel p-5"
+      className="p-5 sm:p-6"
     >
-      <h2 id={`${formId}-title`} className="font-display text-xl font-semibold">
+      <h2 id={`${formId}-title`} className="font-display text-xl font-semibold tracking-tight">
         {heading}
       </h2>
 
@@ -345,7 +348,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
           <fieldset className="space-y-3">
             <legend className="text-sm font-medium">Split across</legend>
             {legs.map((leg, index) => (
-              <div key={index} role="group" aria-label={`Leg ${index + 1}`} className="space-y-3 border-l-2 border-line-strong pl-3">
+              <div key={index} role="group" aria-label={`Leg ${index + 1}`} className="space-y-3 rounded-2xl border border-line bg-canvas/50 p-3">
                 <Field idBase={`${formId}-leg-${index}-to`} label="To" errors={errorsAt(`legs.${index}.toNodeId`)}>
                   {(props) => (
                     <NodePicker
@@ -449,21 +452,25 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       </div>
 
       {!editing && !isSplit && (
-        <p className="mt-4 text-sm">
+        <p className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
           <button
             type="button"
-            className={linkButtonClass}
+            className={cn(linkButtonClass, "inline-flex items-center gap-1")}
             onClick={() => patch({ legs: [{ to: values.to, amount: "" }, { to: "", amount: "" }] })}
           >
+            <Plus aria-hidden className="size-3.5" />
             Add split
           </button>
-          <span className="text-fg-soft"> to divide it across several destinations</span>
+          <span className="text-fg-soft">to divide it across several destinations</span>
         </p>
       )}
 
       {outcome?.conflict && (
-        <div role="alert" className="mt-4 bg-notice-wash p-3 text-sm text-notice-fg">
-          <p className="font-medium">{outcome.failure.message}</p>
+        <div role="alert" className="mt-4 rounded-2xl bg-notice-wash p-4 text-sm text-notice-fg">
+          <p className="flex items-start gap-2.5 font-medium">
+            <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+            <span>{outcome.failure.message}</span>
+          </p>
           <p className="figures mt-1">
             Stored now: {nameOf(outcome.conflict.fromNodeId)} → {nameOf(outcome.conflict.toNodeId)},{" "}
             {formatPaiseText(outcome.conflict.amountPaise)}, {outcome.conflict.occurredAt}
@@ -502,13 +509,15 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       )}
 
       {alertText && (
-        <p role="alert" className="mt-4 bg-negative-wash px-3 py-2 text-sm text-negative">
-          {alertText}
+        <p role="alert" className="mt-4 flex items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 text-sm font-medium text-negative">
+          <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>{alertText}</span>
         </p>
       )}
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <button type="submit" disabled={pending} className="rounded-sm bg-accent px-4 py-2.5 font-medium text-accent-fg disabled:opacity-60">
+        <button type="submit" disabled={pending} className={makeButtonClass()}>
+          {pending && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
           {editing ? "Save changes" : isSplit ? "Record split" : "Record transaction"}
         </button>
         {editing ? (
@@ -522,6 +531,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
         )}
       </div>
     </form>
+    </SpotlightCard>
   )
 }
 
@@ -554,7 +564,7 @@ function Field({ idBase, label, optional, hint, errors, children }: FieldProps) 
         </label>
         {optional && <span className="text-xs text-fg-soft">optional</span>}
       </div>
-      <div className="mt-1">{children({ id: idBase, "aria-invalid": invalid || undefined, "aria-describedby": describedBy })}</div>
+      <div className="mt-1.5">{children({ id: idBase, "aria-invalid": invalid || undefined, "aria-describedby": describedBy })}</div>
       {hint && (
         <p id={hintId} className="mt-1 text-xs text-fg-soft">
           {hint}

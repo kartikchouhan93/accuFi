@@ -1,6 +1,8 @@
 "use client"
 
+import { CircleAlert, LoaderCircle } from "lucide-react"
 import { useMemo, useState, useTransition } from "react"
+import { buttonClass } from "@/components/ui/styles"
 import type { CalendarDate } from "@/domain/calendar-date"
 import type { FilterValues, PickerNode, TransactionPage } from "@/lib/transaction-list-view"
 import { formatDay } from "@/lib/transaction-text"
@@ -68,20 +70,19 @@ export function TransactionList({ page, filter, blocked, nodes, today, announce,
   }
 
   return (
-    <section aria-labelledby="entries-heading">
-      <div className="flex items-baseline gap-3 border-b-2 border-fg pb-1">
-        <h2 id="entries-heading" className="font-display text-xl font-semibold">
+    <section aria-labelledby="entries-heading" className="surface rounded-3xl p-4 sm:p-6">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-2">
+        <h2 id="entries-heading" className="font-display text-xl font-semibold tracking-tight">
           Entries
         </h2>
-        <span className="leader" aria-hidden="true" />
         <span className="figures text-sm text-fg-soft">{describeRange(filter)}</span>
       </div>
       {blocked ? (
-        <p className="mt-3 text-fg-soft">Fix the highlighted filters to see transactions.</p>
+        <p className="mt-3 px-2 text-fg-soft">Fix the highlighted filters to see transactions.</p>
       ) : entries.length === 0 ? (
-        <p className="mt-3 text-fg-soft">Nothing recorded for these filters. Widen the dates, or record a transaction.</p>
+        <p className="mt-3 px-2 text-fg-soft">Nothing recorded for these filters. Widen the dates, or record a transaction.</p>
       ) : (
-        <ul className="divide-y divide-line">
+        <ul className="mt-3 space-y-0.5">
           {entries.map((entry) => (
             <EntryRow
               key={entry.kind === "group" ? `group-${entry.groupId}` : entry.transaction.id}
@@ -92,18 +93,15 @@ export function TransactionList({ page, filter, blocked, nodes, today, announce,
         </ul>
       )}
       {cursor !== null && !blocked && (
-        <div className="mt-4">
-          <button
-            type="button"
-            disabled={pending}
-            onClick={loadMore}
-            className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium hover:bg-panel disabled:opacity-60"
-          >
+        <div className="mt-4 px-2">
+          <button type="button" disabled={pending} onClick={loadMore} className={buttonClass({ variant: "secondary", size: "sm" })}>
+            {pending && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
             Load more
           </button>
           {problem && (
-            <p role="alert" className="mt-2 max-w-lg bg-negative-wash px-3 py-2 text-sm font-medium text-negative">
-              {problem}
+            <p role="alert" className="mt-3 flex max-w-lg items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 text-sm font-medium text-negative">
+              <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <span>{problem}</span>
             </p>
           )}
         </div>

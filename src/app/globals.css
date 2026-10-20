@@ -139,21 +139,6 @@ body {
   }
 }
 
-/*
- * Carried over from the previous look and removed screen by screen as each is redesigned: a dotted run from a name to its
- * figure, and a double rule under a total. They are restyled in the new tokens so the screens not yet redone stay legible.
- */
-.double-rule {
-  border-bottom: 4px double var(--line-strong);
-}
-
-.leader {
-  flex: 1 1 auto;
-  min-width: 1.25rem;
-  border-bottom: 2px dotted var(--line-strong);
-  transform: translateY(-0.3em);
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

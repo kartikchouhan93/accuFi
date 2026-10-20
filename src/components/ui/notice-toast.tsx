@@ -10,10 +10,11 @@ import { cn } from "@/lib/utils"
 // or a screen-reader user can miss. The container is a polite live region and can take focus, so a row that deletes itself
 // (and with it the keyboard's place) can hand focus here.
 
-export interface ToastNotice {
+export type ToastNotice = {
   tone: "success" | "warning"
-  text: string
-}
+  /** A way back from what the message reports; shown beside Dismiss. */
+  undo?: { label: string; run: () => void }
+} & ({ text: string; lines?: undefined } | { lines: string[]; text?: undefined })
 
 // Each message gets its own identity, so the same words twice in a row still animate in again.
 const identity = new WeakMap<object, number>()
@@ -26,6 +27,8 @@ function idOf(notice: object): number {
   }
   return id
 }
+
+const linesOf = (notice: ToastNotice) => notice.lines ?? [notice.text]
 
 export function NoticeToast({ notice, onDismiss, statusRef }: { notice: ToastNotice | null; onDismiss: () => void; statusRef: RefObject<HTMLDivElement | null> }) {
   const reduce = useReducedMotion()
@@ -47,7 +50,23 @@ export function NoticeToast({ notice, onDismiss, statusRef }: { notice: ToastNot
             )}
           >
             <Icon aria-hidden className={cn("mt-0.5 size-5 shrink-0", warning ? "text-notice-fg" : "text-positive")} />
-            <p className="flex-1">{notice.text}</p>
+            <div className="flex-1 space-y-1">
+              {linesOf(notice).map((line, index) => (
+                <p key={index}>{line}</p>
+              ))}
+            </div>
+            {notice.undo && (
+              <button
+                type="button"
+                onClick={() => {
+                  notice.undo?.run()
+                  onDismiss()
+                }}
+                className="rounded-md text-sm font-medium text-link underline underline-offset-4"
+              >
+                {notice.undo.label}
+              </button>
+            )}
             <button type="button" onClick={onDismiss} className="rounded-md text-sm font-medium text-link underline underline-offset-4">
               Dismiss
             </button>

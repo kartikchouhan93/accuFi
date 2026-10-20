@@ -1,7 +1,11 @@
 "use client"
 
+import { ChevronDown, CircleAlert } from "lucide-react"
 import { useId, useState, useTransition } from "react"
 import { Amount } from "@/app/amount"
+import { Collapse } from "@/components/ui/collapse"
+import { buttonClass as makeButtonClass } from "@/components/ui/styles"
+import { cn } from "@/lib/utils"
 import { compareDates, type CalendarDate } from "@/domain/calendar-date"
 import { formatPaiseText, type BalanceText } from "@/lib/node-money"
 import type { ListEntry, PickerNode } from "@/lib/transaction-list-view"
@@ -19,7 +23,9 @@ import { describeTransactionFailure } from "./transaction-failure"
 
 const figure = (paise: string): BalanceText => ({ amount: formatPaiseText(paise), qualifier: null, tone: "neutral" })
 
-const buttonClass = "rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium hover:bg-canvas disabled:opacity-60"
+const buttonClass = makeButtonClass({ variant: "secondary", size: "sm" })
+const dangerClass = makeButtonClass({ variant: "danger", size: "sm" })
+const linkClass = "rounded-md text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
 
 interface Context {
   nodes: ReadonlyMap<string, PickerNode>
@@ -30,11 +36,11 @@ interface Context {
 
 const nameOf = (nodes: Context["nodes"], id: string) => nodes.get(id)?.name ?? "an unknown account"
 
-const deletedRowClass = "bg-panel/50 text-fg-soft"
+const deletedRowClass = "opacity-75"
 
 function Tag({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
-    <span title={title} className="rounded-sm border border-line-strong px-1.5 py-0.5 align-middle text-xs font-normal text-fg-soft">
+    <span title={title} className="rounded-full border border-line-strong px-2 py-0.5 align-middle text-[11px] font-medium text-fg-soft">
       {children}
     </span>
   )
@@ -87,16 +93,19 @@ function useRowActions() {
   return { pending, problem, run }
 }
 
-function Panel({ id, children, problem }: { id: string; children: React.ReactNode; problem: string | null }) {
+function Panel({ id, open, children, problem }: { id: string; open: boolean; children: React.ReactNode; problem: string | null }) {
   return (
-    <div id={id} className="pb-4 text-sm">
-      {children}
-      {problem && (
-        <p role="alert" className="mt-3 max-w-lg bg-negative-wash px-3 py-2 font-medium text-negative">
-          {problem}
-        </p>
-      )}
-    </div>
+    <Collapse open={open} id={id}>
+      <div className="px-3 pb-4 text-sm">
+        {children}
+        {problem && (
+          <p role="alert" className="mt-3 flex max-w-lg items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 font-medium text-negative">
+            <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+            <span>{problem}</span>
+          </p>
+        )}
+      </div>
+    </Collapse>
   )
 }
 
@@ -107,12 +116,12 @@ function Heading({ title, amount, onToggle, open, panelId, children }: { title: 
       aria-expanded={open}
       aria-controls={open ? panelId : undefined}
       onClick={onToggle}
-      className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3 py-3 text-left"
+      className="grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 rounded-2xl px-3 py-3 text-left transition-colors duration-200 hover:bg-panel-raised"
     >
       <span className="font-medium">{title}</span>
-      <span className="leader" aria-hidden="true" />
-      <Amount text={figure(amount)} />
-      <span className="col-span-3 text-sm text-fg-soft">{children}</span>
+      <Amount text={figure(amount)} className="font-medium" />
+      <ChevronDown aria-hidden className={cn("size-4 self-center text-fg-soft transition-transform duration-200", open && "rotate-180")} />
+      <span className="col-span-3 mt-0.5 text-sm text-fg-soft">{children}</span>
     </button>
   )
 }
@@ -150,7 +159,7 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
     )
 
   return (
-    <li className={deleted ? deletedRowClass : undefined}>
+    <li className={cn("rounded-2xl transition-colors duration-200", deleted && deletedRowClass)}>
       <Heading
         title={
           <>
@@ -178,9 +187,8 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
         {transaction.note && <span> · {transaction.note}</span>}
         {transaction.tags.length > 0 && <span> · {transaction.tags.map((tag) => `#${tag}`).join(" ")}</span>}
       </Heading>
-      {open && (
-        <Panel id={panelId} problem={problem}>
-          <dl className="mb-3 grid max-w-md grid-cols-[auto_1fr] gap-x-6 gap-y-0.5">
+      <Panel id={panelId} open={open} problem={problem}>
+          <dl className="mb-4 grid max-w-md grid-cols-[auto_1fr] gap-x-6 gap-y-1 rounded-xl border border-line bg-canvas/60 p-3">
             <dt className="text-fg-soft">From</dt>
             <dd>{from ? nodeLabel(from) : "an unknown account"}</dd>
             <dt className="text-fg-soft">To</dt>
@@ -212,13 +220,12 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
               <button type="button" className={buttonClass} onClick={() => onEdit(transaction)}>
                 Edit
               </button>
-              <button type="button" className={`${buttonClass} text-negative`} disabled={pending} onClick={remove}>
+              <button type="button" className={dangerClass} disabled={pending} onClick={remove}>
                 Delete
               </button>
             </div>
           )}
-        </Panel>
-      )}
+      </Panel>
     </li>
   )
 }
@@ -273,7 +280,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
     )
 
   return (
-    <li className={deleted ? deletedRowClass : undefined}>
+    <li className={cn("rounded-2xl transition-colors duration-200", deleted && deletedRowClass)}>
       <Heading
         title={
           <>
@@ -305,19 +312,17 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
         {first.note && <span> · {first.note}</span>}
         {first.tags.length > 0 && <span> · {first.tags.map((tag) => `#${tag}`).join(" ")}</span>}
       </Heading>
-      {open && (
-        <Panel id={panelId} problem={problem}>
-          <ul aria-label="Legs" className="mb-3 max-w-xl divide-y divide-line border-y border-line">
+      <Panel id={panelId} open={open} problem={problem}>
+          <ul aria-label="Legs" className="mb-4 max-w-xl divide-y divide-line rounded-xl border border-line bg-canvas/60 px-3">
             {entry.legs.map((leg) => (
               <li key={leg.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
                 <span className="font-medium">→ {nameOf(nodes, leg.toNodeId)}</span>
-                <span className="leader" aria-hidden="true" />
-                <Amount text={figure(leg.amountPaise)} />
+                <Amount text={figure(leg.amountPaise)} className="ml-auto" />
                 {!deleted && (
                   <>
                     <button
                       type="button"
-                      className="text-sm font-medium text-link underline underline-offset-4"
+                      className={linkClass}
                       aria-label={`Edit the ${nameOf(nodes, leg.toNodeId)} leg`}
                       onClick={() => onEdit(leg)}
                     >
@@ -325,7 +330,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                     </button>
                     <button
                       type="button"
-                      className="text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
+                      className={linkClass}
                       disabled={pending}
                       aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
                       onClick={() => takeOut(leg)}
@@ -352,13 +357,12 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                 {entry.legs.length === 2 ? "; with only two legs, that dissolves the split and both become ordinary transactions" : ""}.
                 Deleting removes every leg.
               </p>
-              <button type="button" className={`${buttonClass} text-negative`} disabled={pending} onClick={removeAll}>
+              <button type="button" className={dangerClass} disabled={pending} onClick={removeAll}>
                 Delete split
               </button>
             </>
           )}
-        </Panel>
-      )}
+      </Panel>
     </li>
   )
 }

@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useId } from "react"
+import { buttonClass, inputClass } from "@/components/ui/styles"
 import { KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import { FILTER_KEYS, type FilterValues, type PickerNode } from "@/lib/transaction-list-view"
 import { groupByKind, nodeLabel } from "./pickers"
@@ -18,9 +19,6 @@ interface Props {
   /** Every node, archived included: history can be filtered by an account that has since been archived. */
   nodes: PickerNode[]
 }
-
-const inputClass =
-  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-1.5 text-fg placeholder:text-fg-soft/70 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
 
 export function Filters({ filter, problems, nodes }: Props) {
   const router = useRouter()
@@ -41,7 +39,7 @@ export function Filters({ filter, problems, nodes }: Props) {
         <label htmlFor={`${formId}-${key}`} className="text-sm font-medium">
           {label}
         </label>
-        <div className="mt-1">{control}</div>
+        <div className="mt-1.5">{control}</div>
         {errors && (
           <p id={`${formId}-${key}-error`} className="mt-1 text-sm font-medium text-negative">
             {errors.join(" ")}
@@ -59,8 +57,8 @@ export function Filters({ filter, problems, nodes }: Props) {
 
   // `key` makes the fields start again from what the server resolved whenever it sends a different filter.
   return (
-    <form key={JSON.stringify(filter)} onSubmit={apply} noValidate aria-label="Filter transactions" className="border border-line bg-panel p-4">
-      <div className="grid grid-cols-2 gap-x-4 gap-y-3 lg:grid-cols-4">
+    <form key={JSON.stringify(filter)} onSubmit={apply} noValidate aria-label="Filter transactions" className="surface rounded-3xl p-5">
+      <div className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 2xl:grid-cols-4">
         {field(
           "node",
           "Involving",
@@ -104,13 +102,13 @@ export function Filters({ filter, problems, nodes }: Props) {
         {field("tag", "Tag", <input {...common("tag")} type="text" autoComplete="off" defaultValue={filter.tag} className={inputClass} />)}
         {field("q", "Note contains", <input {...common("q")} type="text" autoComplete="off" defaultValue={filter.q} className={inputClass} />)}
       </div>
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-3">
-        <label className="flex cursor-pointer items-center gap-2 text-sm">
+      <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-3">
+        <label className="flex cursor-pointer items-center gap-2.5 text-sm">
           {/* Deleted entries are listed among the others, muted, each with a Restore: the way back to one deleted by mistake. */}
-          <input type="checkbox" name="deleted" value="1" defaultChecked={filter.deleted === "1"} className="size-4 accent-pen" />
+          <input type="checkbox" name="deleted" value="1" defaultChecked={filter.deleted === "1"} className="size-4 accent-accent" />
           Show deleted
         </label>
-        <button type="submit" className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-fg">
+        <button type="submit" className={buttonClass({ size: "sm" })}>
           Apply filters
         </button>
         <Link href="/transactions" className="text-sm font-medium text-link underline underline-offset-4">

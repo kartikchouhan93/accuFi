@@ -1,4 +1,6 @@
 import { Amount } from "@/app/amount"
+import { SpotlightCard } from "@/components/ui/spotlight-card"
+import { KIND_ICON } from "@/app/nodes/kind-icons"
 import { HOLDING_KINDS } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
 import type { PickerNode } from "@/lib/transaction-list-view"
@@ -14,27 +16,38 @@ export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: R
   const groups = groupByKind(holding)
   return (
     <section aria-labelledby="balances-heading">
-      <h2 id="balances-heading" className="font-display text-xl font-semibold">
+      <h2 id="balances-heading" className="font-display text-xl font-semibold tracking-tight">
         Balances
       </h2>
       {groups.length === 0 ? (
         <p className="mt-2 text-fg-soft">No accounts yet. Add one on the Ledger screen, then record money moving through it.</p>
       ) : (
-        <div className="mt-2 grid gap-x-8 gap-y-4 sm:grid-cols-2">
-          {groups.map((group) => (
-            <div key={group.kind}>
-              <h3 className="border-b-2 border-fg pb-0.5 text-sm font-semibold text-fg-soft">{group.label}</h3>
-              <ul className="divide-y divide-line">
-                {group.nodes.map((node) => (
-                  <li key={node.id} className="flex items-baseline gap-3 py-1.5">
-                    <span className="font-medium">{node.name}</span>
-                    <span className="leader" aria-hidden="true" />
-                    <Amount text={describeBalance(node.kind, balances[node.id] ?? "0")} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          {groups.map((group, index) => {
+            const Icon = group.kind === "SETUP" ? null : KIND_ICON[group.kind]
+            return (
+              <SpotlightCard
+                key={group.kind}
+                className="surface rise rounded-2xl p-4"
+                style={{ "--i": index } as React.CSSProperties}
+                radius={260}
+                strength={9}
+              >
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-fg-soft">
+                  {Icon && <Icon aria-hidden className="size-4" />}
+                  {group.label}
+                </h3>
+                <ul className="mt-2 divide-y divide-line">
+                  {group.nodes.map((node) => (
+                    <li key={node.id} className="flex items-baseline justify-between gap-3 py-2">
+                      <span className="min-w-0 truncate font-medium">{node.name}</span>
+                      <Amount text={describeBalance(node.kind, balances[node.id] ?? "0")} />
+                    </li>
+                  ))}
+                </ul>
+              </SpotlightCard>
+            )
+          })}
         </div>
       )}
     </section>
