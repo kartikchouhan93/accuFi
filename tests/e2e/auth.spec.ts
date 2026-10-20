@@ -5,6 +5,7 @@ import { clientIp } from "@/server/client-ip"
 import { accountKey, ACCOUNT_MAX_ATTEMPTS, clearAttempts, consumeAttempt, ipKey, RATE_LIMIT, rateLimitKey } from "@/server/rate-limit"
 import { createAccount } from "@/server/services/signup-service"
 import { deleteUser, expect, row, test } from "./fixtures"
+import { watchActions } from "./screens"
 
 // The authentication journey, driven through the real forms. Every other spec signs in through the signup service and
 // the login form; this one is the only place the signup form, the failure paths, the lockout and sign-out are used.
@@ -225,23 +226,11 @@ test("answers an unknown email exactly as it answers a wrong password", async ({
   const unknown = freshEmail()
   try {
     await withUser(async (known) => {
-      // The form's own request, read as it passes through: a response body is gone once the browser has moved on.
-      type Wire = { status: number; setCookie: string | undefined; body: string }
-      const wire: Wire[] = []
-      await page.route("**/*", async (route) => {
-        const request = route.request()
-        if (request.method() !== "POST" || !("next-action" in request.headers())) return route.fallback()
-        const response = await route.fetch()
-        // Minus the two things that are different on every response by design: a timestamp and a render timing.
-        const raw = await response.text()
-        const body = raw.replace(/:N[\d.]+/, "").replace(/1:D\{[^}]*\}/, "").replace(/\s+/g, " ").trim()
-        wire.push({ status: response.status(), setCookie: response.headers()["set-cookie"], body })
-        return route.fulfill({ response, body: raw })
-      })
+      const wire = await watchActions(page) // the form's own request, read as it passes through
 
       const observe = async (email: string, password: string) => {
         await page.context().clearCookies()
-        wire.length = 0
+        wire.length = 0 // forget the earlier observation
         await signInThroughForm(page, email, password)
         await expect(alert(page)).toBeVisible()
         expect(wire).toHaveLength(1)
