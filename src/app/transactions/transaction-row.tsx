@@ -5,7 +5,7 @@ import { Amount } from "@/app/amount"
 import { compareDates, type CalendarDate } from "@/domain/calendar-date"
 import { formatPaiseText, type BalanceText } from "@/lib/node-money"
 import type { ListEntry, PickerNode } from "@/lib/transaction-list-view"
-import { formatDay } from "@/lib/transaction-text"
+import { describeTakeOut, formatDay } from "@/lib/transaction-text"
 import type { TransactionView } from "@/lib/transaction-view"
 import type { ActionResult } from "@/server/action-support"
 import { removeTransactionAction, restoreTransactionAction, ungroupTransactionAction } from "./actions"
@@ -224,7 +224,7 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
 }
 
 function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group" }>; context: Context }) {
-  const { nodes, today, announce } = context
+  const { nodes, today, announce, onEdit } = context
   const panelId = useId()
   const [open, setOpen] = useState(false)
   const { pending, problem, run } = useRowActions()
@@ -263,7 +263,12 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
       () =>
         announce({
           tone: "success",
-          lines: [`Took ${nameOf(nodes, leg.toNodeId)}, ${formatPaiseText(leg.amountPaise)}, out of the split. It is an ordinary transaction now.`],
+          lines: [
+            describeTakeOut(
+              { name: nameOf(nodes, leg.toNodeId), amountPaise: leg.amountPaise },
+              entry.legs.filter((other) => other.id !== leg.id).map((other) => ({ name: nameOf(nodes, other.toNodeId), amountPaise: other.amountPaise })),
+            ),
+          ],
         }),
     )
 
@@ -309,15 +314,25 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                 <span className="leader" aria-hidden="true" />
                 <Amount text={figure(leg.amountPaise)} />
                 {!deleted && (
-                  <button
-                    type="button"
-                    className="text-sm font-medium text-pen underline underline-offset-4 disabled:opacity-60"
-                    disabled={pending}
-                    aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
-                    onClick={() => takeOut(leg)}
-                  >
-                    Take out of split
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="text-sm font-medium text-pen underline underline-offset-4"
+                      aria-label={`Edit the ${nameOf(nodes, leg.toNodeId)} leg`}
+                      onClick={() => onEdit(leg)}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="text-sm font-medium text-pen underline underline-offset-4 disabled:opacity-60"
+                      disabled={pending}
+                      aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
+                      onClick={() => takeOut(leg)}
+                    >
+                      Take out of split
+                    </button>
+                  </>
                 )}
               </li>
             ))}
@@ -332,7 +347,10 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
           ) : (
             <>
               <p className="mb-3 max-w-xl text-ink-soft">
-                Taking a leg out keeps the money where it went and makes it an ordinary transaction. Deleting removes every leg.
+                Edit changes one leg and leaves the split as it is. Taking a leg out keeps the money where it went and makes it an
+                ordinary transaction
+                {entry.legs.length === 2 ? "; with only two legs, that dissolves the split and both become ordinary transactions" : ""}.
+                Deleting removes every leg.
               </p>
               <button type="button" className={`${buttonClass} text-red`} disabled={pending} onClick={removeAll}>
                 Delete split

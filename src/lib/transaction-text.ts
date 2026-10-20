@@ -62,6 +62,26 @@ export function describeTally(totalText: string, legTexts: readonly string[]): s
   return assigned < total ? `${formatPaise(total - assigned)} left to assign.` : `${formatPaise(assigned - total)} over the total.`
 }
 
+export interface LegText {
+  name: string
+  /** Paise text, as it crossed to the browser. */
+  amountPaise: string
+}
+
+/**
+ * What the screen says after one leg of a split was taken out. `remaining` is the legs still in the split afterwards.
+ * Normally the taken leg alone becomes an ordinary transaction. But a split of two cannot lose one leg and stay a
+ * split (a group of one is not a split), so the service releases the other leg too and removes the group: then both are
+ * ordinary transactions, and the message must say so rather than let the user think only one leg changed.
+ */
+export function describeTakeOut(taken: LegText, remaining: readonly LegText[]): string {
+  const show = (leg: LegText) => `${leg.name}, ${formatPaise(deserialisePaise(leg.amountPaise))}`
+  if (remaining.length === 1) {
+    return `The split is dissolved: ${show(taken)}, and ${show(remaining[0])}, are both ordinary transactions now.`
+  }
+  return `Took ${show(taken)}, out of the split. It is an ordinary transaction now.`
+}
+
 /** The tags field ("food, trip") as the list of tags it names: trimmed, blanks dropped. */
 export function parseTags(text: string): string[] {
   return text

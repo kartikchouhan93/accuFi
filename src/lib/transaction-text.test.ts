@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { calendarDate } from "../domain/calendar-date"
 import { parseRupees } from "../domain/money"
-import { describeTally, divideEqually, formatDay, outsideListed, paiseTextToRupees, parseTags, sumPaiseText } from "./transaction-text"
+import { describeTakeOut, describeTally, divideEqually, formatDay, outsideListed, paiseTextToRupees, parseTags, sumPaiseText } from "./transaction-text"
 
 describe("formatDay", () => {
   it("reads the day from the text, so no timezone can move it", () => {
@@ -87,5 +87,22 @@ describe("outsideListed", () => {
     expect(outsideListed(calendarDate("2026-03-05"), { from: "", to: "2026-03-31" })).toBe(false)
     expect(outsideListed(calendarDate("2026-04-05"), { from: "", to: "2026-03-31" })).toBe(true)
     expect(outsideListed(calendarDate("2026-03-05"), { from: "2026-02-30", to: "" })).toBe(false)
+  })
+})
+
+describe("describeTakeOut", () => {
+  const leg = (name: string, amountPaise: string) => ({ name, amountPaise })
+
+  it("says the taken leg is an ordinary transaction when the split goes on without it", () => {
+    expect(describeTakeOut(leg("Dining", "3333"), [leg("Groceries", "3334"), leg("Transport", "3333")])).toBe(
+      "Took Dining, ₹33.33, out of the split. It is an ordinary transaction now.",
+    )
+  })
+
+  it("says the split is dissolved, and both entries are ordinary, when only one leg is left", () => {
+    // Two legs is the smallest split: a group of one is not a split, so the other leg goes with it.
+    const text = describeTakeOut(leg("Dining", "3333"), [leg("Groceries", "3334")])
+    expect(text).toBe("The split is dissolved: Dining, ₹33.33, and Groceries, ₹33.34, are both ordinary transactions now.")
+    expect(text).not.toMatch(/^Took/)
   })
 })

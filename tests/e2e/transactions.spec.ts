@@ -425,13 +425,40 @@ test("takes one leg out of a split and leaves the money where it went", async ({
   const group = entries(page).getByRole("listitem").filter({ hasText: "Weekend shopping" })
   await group.getByRole("button", { expanded: false }).first().click()
 
+  // Said before it is done: with two legs, taking one out is taking both out.
+  await expect(group).toContainText("dissolves the split")
   await group.getByRole("button", { name: "Take Dining out of the split" }).click()
-  await expect(page.getByRole("status")).toContainText("Took Dining")
+  await expect(page.getByRole("status")).toContainText("The split is dissolved: Dining, ₹50.00, and Groceries, ₹50.00, are both ordinary transactions now.")
+  await expect(page.getByRole("status")).not.toContainText("Took")
   // A group of one is not a split, so both legs are ordinary rows now, and the balance has not moved.
   await expect(entries(page).getByRole("listitem").filter({ hasText: "HDFC Savings → Groceries" })).toBeVisible()
   await expect(entries(page).getByRole("listitem").filter({ hasText: "HDFC Savings → Dining" })).toBeVisible()
   await expect(entries(page)).not.toContainText("Split from")
   await expect(balances(page).getByRole("listitem").filter({ hasText: "HDFC Savings" })).toContainText("₹9,900.00")
+})
+
+test("edits one leg of a split without leaving the split", async ({ session: { page, userId } }) => {
+  await account(userId, "HDFC Savings", "10,000")
+  await splitFromBank(userId, "100", ["Groceries", "Dining"], "Weekend shopping")
+  await page.goto("/transactions")
+  const bank = balances(page).getByRole("listitem").filter({ hasText: "HDFC Savings" })
+  const group = entries(page).getByRole("listitem").filter({ hasText: "Weekend shopping" })
+  await group.getByRole("button", { expanded: false }).first().click()
+
+  await group.getByRole("button", { name: "Edit the Dining leg" }).click()
+  await expect(editForm(page)).toBeVisible()
+  await expect(editForm(page).getByLabel("To", { exact: true })).toHaveValue(await nodeId(userId, "Dining"))
+  await editForm(page).getByLabel("Amount (₹)").fill("30")
+  await editForm(page).getByRole("button", { name: "Save changes" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved changes to HDFC Savings → Dining, ₹30.00")
+
+  // Still one split, now of ₹80.00: its total is the sum of its legs as they are, and the account has the other ₹20.00 back.
+  const after = entries(page).getByRole("listitem").filter({ hasText: "Weekend shopping" })
+  await expect(after).toHaveCount(1)
+  await expect(after).toContainText("Split from HDFC Savings")
+  await expect(after).toContainText("₹80.00")
+  await expect(bank).toContainText("₹9,920.00")
+  expect(await prisma.transaction.count({ where: { userId, groupId: { not: null } } })).toBe(2)
 })
 
 test("edits a transaction that points at an archived account", async ({ session: { page, userId } }) => {
