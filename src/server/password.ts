@@ -11,11 +11,19 @@ export function hashPassword(plain: string): Promise<string> {
   return hash(plain, COST)
 }
 
-/** True only when `plain` matches `hash`. A malformed stored hash is a failed match, not an exception. */
+/**
+ * True only when `plain` matches `hash`. A malformed stored hash is a failed match, not an exception.
+ *
+ * argon2 throws for a malformed hash and also when its native binding cannot load or run, and both are answered "no", so
+ * a user is never told which. The second is not a wrong password: left silent, a broken binding looks like a login page
+ * that rejects everyone. So the throw is logged at error level, with what the library said and nothing of the password or
+ * the stored hash, before the generic answer is returned.
+ */
 export async function verifyPassword(plain: string, storedHash: string): Promise<boolean> {
   try {
     return await verify(storedHash, plain)
-  } catch {
+  } catch (error) {
+    console.error("[verifyPassword] argon2 verification threw; answering as a failed match:", error)
     return false
   }
 }
