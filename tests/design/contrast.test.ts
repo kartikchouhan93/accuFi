@@ -19,7 +19,6 @@ function everyToken(source: string): Record<string, string> {
 
 const light = tokens(css.match(/:root\s*\{([^}]*)\}/)?.[1] ?? "")
 const darkChosen = tokens(css.match(/:root\[data-theme="dark"\]\s*\{([^}]*)\}/)?.[1] ?? "")
-const darkSystem = tokens(css.match(/prefers-color-scheme:\s*dark\)\s*\{\s*:root:not\(\[data-theme="light"\]\)\s*\{([^}]*)\}/)?.[1] ?? "")
 const dark = { ...light, ...darkChosen }
 
 const block = {

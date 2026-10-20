@@ -84,13 +84,17 @@ test("ignores a value in storage it does not recognise", async ({ page }) => {
 test("carries the choice from page to page once signed in", async ({ session: { page } }) => {
   await page.emulateMedia({ colorScheme: "light" })
   await page.goto("/nodes")
+  // Wait for the real page, not the loading skeleton that stands in for it: the skeleton has the sidebar too, but is
+  // replaced a moment later, and a click on it may land before the page has hydrated.
+  await expect(page.getByRole("heading", { level: 1, name: "Ledger" })).toBeVisible()
   const sidebar = page.getByRole("complementary")
   await sidebar.getByRole("button", { name: /^Theme:/ }).click() // light
   await sidebar.getByRole("button", { name: /^Theme:/ }).click() // dark
   expect(await chosen(page)).toBe("dark")
 
-  for (const path of ["/transactions", "/"]) {
+  for (const [path, heading] of [["/transactions", "Transactions"], ["/", "Dashboard"]] as const) {
     await page.goto(path)
+    await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible()
     expect(await chosen(page)).toBe("dark")
     expect((await backdrop(page))[0]).toBeLessThan(40)
   }

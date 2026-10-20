@@ -20,9 +20,13 @@ export function RecentTransactions({ recent }: { recent: DashboardView["recent"]
       {recent.length === 0 ? (
         <p className="mt-4 text-fg-soft">Nothing recorded yet.</p>
       ) : (
-        <ul className="mt-3 divide-y divide-line">
-          {recent.map((entry) => (
-            <li key={entry.id} className="flex items-start justify-between gap-4 py-3.5">
+        <ol className="relative mt-4 border-l border-line pl-5">
+          {recent.map((entry, index) => (
+            <li key={entry.id} className="rise relative flex items-start justify-between gap-4 py-3" style={{ "--i": index } as React.CSSProperties}>
+              <span
+                aria-hidden
+                className="absolute -left-[25.5px] top-[1.3rem] size-2.5 rounded-full border-2 border-panel bg-accent-edge"
+              />
               <div className="min-w-0">
                 <p className="truncate font-medium">
                   {entry.fromName} → {entry.toName}
@@ -35,7 +39,7 @@ export function RecentTransactions({ recent }: { recent: DashboardView["recent"]
               <Amount text={{ amount: formatPaiseText(entry.amountPaise), qualifier: null, tone: "neutral" }} className="shrink-0 font-medium" />
             </li>
           ))}
-        </ul>
+        </ol>
       )}
     </section>
   )

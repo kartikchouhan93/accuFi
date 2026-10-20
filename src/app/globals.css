@@ -184,3 +184,34 @@ body {
   animation: settle 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
   animation-delay: var(--delay, 0ms);
 }
+
+/*
+ * Lists and grids settle in one after another as a screen opens, each item a beat behind the one before (set --i on the
+ * item). It is for arrival only: nothing replays when data changes, and the reduced-motion rule above removes both the delay
+ * and the movement, leaving the finished layout.
+ */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+.rise {
+  animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+/* A placeholder while a screen loads: a band of light travels across it. */
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--panel-raised) 25%, var(--line) 50%, var(--panel-raised) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: 0.75rem;
+}

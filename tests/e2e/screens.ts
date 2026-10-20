@@ -14,6 +14,9 @@ export const balanceOf = (page: Page, name: string) => balances(page).getByRole(
 
 /** The visible option labels of a select, without its placeholder. */
 export async function optionsOf(select: ReturnType<Page["getByLabel"]>): Promise<string[]> {
+  // allTextContents does not wait: read straight after a navigation it finds nothing while the page is still its loading
+  // skeleton, and "no options" is a plausible-looking answer. Wait for the select itself first.
+  await select.waitFor()
   const labels = await select.locator("option").allTextContents()
   return labels.filter((label) => label !== "" && !label.startsWith("Choose") && !label.startsWith("Any"))
 }

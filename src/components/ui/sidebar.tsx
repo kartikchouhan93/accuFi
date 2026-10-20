@@ -49,6 +49,7 @@ export function Sidebar(props: SidebarProps) {
 function DesktopRail({ items, current, brand, email, signOut }: SidebarProps) {
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
+  const [overKey, setOverKey] = useState<string | null>(null) // the link under the pointer, for the sliding highlight
   const reduce = useReducedMotion()
   const open = hovered || focused
   return (
@@ -67,9 +68,16 @@ function DesktopRail({ items, current, brand, email, signOut }: SidebarProps) {
         }}
       >
         <div className="flex h-16 shrink-0 items-center px-[14px]">{brand}</div>
-        <nav aria-label="Main" className="flex flex-1 flex-col gap-1 px-3 pt-2">
+        <nav aria-label="Main" className="flex flex-1 flex-col gap-1 px-3 pt-2" onPointerLeave={() => setOverKey(null)}>
           {items.map((item) => (
-            <NavLink key={item.key} item={item} active={item.key === current} revealed={open} />
+            <NavLink
+              key={item.key}
+              item={item}
+              active={item.key === current}
+              revealed={open}
+              hovered={overKey === item.key}
+              onHover={() => setOverKey(item.key)}
+            />
           ))}
         </nav>
         <div className="flex flex-col gap-1 border-t border-line px-3 py-3">
@@ -198,21 +206,48 @@ function MobileBar({ items, current, brand, email, signOut }: SidebarProps) {
   )
 }
 
-function NavLink({ item, active, revealed, onNavigate }: { item: NavItem; active: boolean; revealed: boolean; onNavigate?: () => void }) {
+function NavLink({
+  item,
+  active,
+  revealed,
+  hovered = false,
+  onHover,
+  onNavigate,
+}: {
+  item: NavItem
+  active: boolean
+  revealed: boolean
+  hovered?: boolean
+  onHover?: () => void
+  onNavigate?: () => void
+}) {
   const Icon = item.icon
+  const reduce = useReducedMotion()
   return (
     <Link
       href={item.href}
       onClick={onNavigate}
+      onPointerEnter={onHover}
       aria-current={active ? "page" : undefined}
       className={cn(
         "relative flex h-11 items-center gap-3 overflow-hidden rounded-xl px-[13px] text-sm font-medium transition-colors",
-        active ? "bg-panel-raised text-fg" : "text-fg-soft hover:bg-panel-raised hover:text-fg",
+        active ? "bg-panel-raised text-fg" : hovered ? "text-fg" : "text-fg-soft",
       )}
     >
+      {/* One highlight shared by every link: it slides from the one the pointer left to the one it entered. */}
+      {hovered && !active && (
+        <motion.span
+          layoutId="rail-hover"
+          aria-hidden
+          className="absolute inset-0 rounded-xl bg-panel-raised"
+          transition={reduce ? { duration: 0 } : { type: "spring", stiffness: 560, damping: 42 }}
+        />
+      )}
       {active && <span aria-hidden className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full bg-accent-edge" />}
-      <Icon aria-hidden className="size-5 shrink-0" />
-      <Label revealed={revealed}>{item.label}</Label>
+      <Icon aria-hidden className="relative size-5 shrink-0" />
+      <span className="relative">
+        <Label revealed={revealed}>{item.label}</Label>
+      </span>
     </Link>
   )
 }

@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { Amount } from "@/app/amount"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
+import { SpotlightCard } from "@/components/ui/spotlight-card"
 import type { DashboardView } from "@/lib/dashboard-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
@@ -33,17 +34,19 @@ export function AccountSummary({ accounts, kindTotals }: Props) {
             {archivedCount > 0 && <p className="mt-1 text-sm text-fg-soft">Includes {archivedCount} archived, not listed.</p>}
             {rows.length > 0 && (
               <ul className="mt-4 grid gap-3 sm:grid-cols-2">
-                {rows.map((account) => (
-                  <li key={account.id} className="surface group relative rounded-2xl p-4 transition-colors hover:bg-panel-raised">
-                    <GlowingEffect />
-                    {/* The transactions screen, filtered to this account across every month. The whole tile is the link. */}
-                    <Link
-                      href={`/transactions?node=${account.id}&from=&to=`}
-                      className="block rounded-lg font-medium after:absolute after:inset-0 after:rounded-2xl"
-                    >
-                      {account.name}
-                    </Link>
-                    <Amount text={describeBalance(account.kind, account.balance)} className="mt-4 block text-2xl font-medium tracking-tight" />
+                {rows.map((account, index) => (
+                  <li key={account.id} className="rise" style={{ "--i": index } as React.CSSProperties}>
+                    <SpotlightCard className="surface rounded-2xl p-4 transition-transform duration-200 hover:-translate-y-0.5" radius={240}>
+                      <GlowingEffect />
+                      {/* The transactions screen, filtered to this account across every month. The whole tile is the link. */}
+                      <Link
+                        href={`/transactions?node=${account.id}&from=&to=`}
+                        className="block rounded-lg font-medium after:absolute after:inset-0 after:rounded-2xl"
+                      >
+                        {account.name}
+                      </Link>
+                      <Amount text={describeBalance(account.kind, account.balance)} className="mt-4 block text-2xl font-medium tracking-tight" />
+                    </SpotlightCard>
                   </li>
                 ))}
               </ul>

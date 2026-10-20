@@ -1,5 +1,6 @@
 import { CalendarClock } from "lucide-react"
 import { PartialNote } from "@/app/partial-note"
+import { SpotlightCard } from "@/components/ui/spotlight-card"
 import type { DashboardView } from "@/lib/dashboard-view"
 import { holdingsSplit } from "@/lib/holdings-split"
 import { describeBalance, formatPaiseText } from "@/lib/node-money"
@@ -49,7 +50,7 @@ export function NetWorthCard({ netWorth, projected }: Props) {
   const total = describeBalance("ASSET", netWorth.total) // a signed amount: negative reads in the negative colour with its minus sign
   const split = holdingsSplit(netWorth.assets, netWorth.investments)
   return (
-    <section aria-labelledby="net-worth-heading" className="surface relative overflow-hidden rounded-3xl p-6 sm:p-8">
+    <SpotlightCard as="section" aria-labelledby="net-worth-heading" className="surface overflow-hidden rounded-3xl p-6 sm:p-8" radius={420} strength={12}>
       <span aria-hidden className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-accent-edge/70 to-transparent" />
       <h2 id="net-worth-heading" className="text-sm font-medium text-fg-soft">
         Net worth
@@ -80,6 +81,6 @@ export function NetWorthCard({ netWorth, projected }: Props) {
           </span>
         </p>
       )}
-    </section>
+    </SpotlightCard>
   )
 }

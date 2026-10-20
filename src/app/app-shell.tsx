@@ -1,3 +1,4 @@
+import { PageBackdrop } from "@/components/ui/page-backdrop"
 import { auth } from "@/server/auth"
 import { AppNav, type Destination } from "./app-nav"
 import { signOutAction } from "./sign-out-action"
@@ -11,6 +12,7 @@ export async function AppShell({ children, current = "ledger" }: { children: Rea
   const email = (await auth())?.user?.email
   return (
     <div className="min-h-screen md:pl-[68px]">
+      <PageBackdrop />
       <AppNav current={current} email={email} signOut={signOutAction} />
       {children}
     </div>
