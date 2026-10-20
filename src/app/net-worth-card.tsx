@@ -20,17 +20,17 @@ export function NetWorthCard({ netWorth, projected }: Props) {
       <h2 id="net-worth-heading" className="font-display text-lg font-semibold">
         Net worth
       </h2>
-      <p className={`figures mt-1 pb-2 text-4xl font-medium sm:text-5xl ${total.tone === "negative" ? "text-red" : ""} double-rule`}>
+      <p className={`figures mt-1 pb-2 text-4xl font-medium sm:text-5xl ${total.tone === "negative" ? "text-negative" : ""} double-rule`}>
         {total.amount}
       </p>
       {netWorth.isPartial && <PartialNote names={netWorth.unvaluedNames} />}
-      <p className="figures mt-2 text-sm text-ink-soft">
+      <p className="figures mt-2 text-sm text-fg-soft">
         {formatPaiseText(netWorth.assets)} in accounts, {formatPaiseText(netWorth.investments)} invested, {formatPaiseText(netWorth.liabilities)}{" "}
         owed.
         {netWorth.archivedCount > 0 && ` Includes ${netWorth.archivedCount} archived.`}
       </p>
       {projected && (
-        <p className="figures mt-1 text-sm text-ink-soft">
+        <p className="figures mt-1 text-sm text-fg-soft">
           Projected {formatPaiseText(projected.total)} once everything dated up to {formatDay(projected.asOf)} has happened. Not counted above.
         </p>
       )}

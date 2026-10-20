@@ -39,7 +39,7 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
           type="button"
           aria-expanded={formOpen}
           onClick={() => setFormOpen((open) => !open)}
-          className="rounded-sm bg-pen px-4 py-2 font-medium text-pen-ink lg:hidden"
+          className="rounded-sm bg-accent px-4 py-2 font-medium text-accent-fg lg:hidden"
         >
           {formOpen ? "Close form" : "Record a transaction"}
         </button>
@@ -80,8 +80,8 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
       >
         {notice && (
           <div
-            className={`flex items-start gap-3 border-l-4 bg-sheet px-4 py-3 shadow-[0_2px_0_var(--rule-strong)] ${
-              notice.tone === "warning" ? "border-amber-ink" : "border-pen"
+            className={`flex items-start gap-3 border-l-4 bg-panel px-4 py-3 shadow-[0_2px_0_var(--line-strong)] ${
+              notice.tone === "warning" ? "border-notice-fg" : "border-accent"
             }`}
           >
             <div className="flex-1 space-y-1">
@@ -96,12 +96,12 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
                   notice.undo?.run()
                   setNotice(null)
                 }}
-                className="text-sm font-medium text-pen underline underline-offset-4"
+                className="text-sm font-medium text-accent underline underline-offset-4"
               >
                 {notice.undo.label}
               </button>
             )}
-            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-pen underline underline-offset-4">
+            <button type="button" onClick={() => setNotice(null)} className="text-sm font-medium text-accent underline underline-offset-4">
               Dismiss
             </button>
           </div>

@@ -8,59 +8,59 @@
  */
 
 :root {
-  --paper: #e6eedf;
-  --sheet: #f4f8ee;
-  --ink: #17332a;
-  --ink-soft: #4a6557;
-  --rule: #b3c8ad;
-  --rule-strong: #658a6d;
-  --pen: #1d3cae;
-  --pen-ink: #f4f8ee;
-  --red: #a8271c;
-  --red-wash: #f6dcd6;
-  --amber-wash: #f6e8bd;
-  --amber-ink: #5c4300;
+  --canvas: #e6eedf;
+  --panel: #f4f8ee;
+  --fg: #17332a;
+  --fg-soft: #4a6557;
+  --line: #b3c8ad;
+  --line-strong: #658a6d;
+  --accent: #1d3cae;
+  --accent-fg: #f4f8ee;
+  --negative: #a8271c;
+  --negative-wash: #f6dcd6;
+  --notice-wash: #f6e8bd;
+  --notice-fg: #5c4300;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #0f1d17;
-    --sheet: #162720;
-    --ink: #e3eedc;
-    --ink-soft: #9db5a5;
-    --rule: #2f4b3c;
-    --rule-strong: #5f8d6c;
-    --pen: #9bb0ff;
-    --pen-ink: #0f1d17;
-    --red: #ff9486;
-    --red-wash: #3b1d19;
-    --amber-wash: #3a3014;
-    --amber-ink: #f1d98a;
+    --canvas: #0f1d17;
+    --panel: #162720;
+    --fg: #e3eedc;
+    --fg-soft: #9db5a5;
+    --line: #2f4b3c;
+    --line-strong: #5f8d6c;
+    --accent: #9bb0ff;
+    --accent-fg: #0f1d17;
+    --negative: #ff9486;
+    --negative-wash: #3b1d19;
+    --notice-wash: #3a3014;
+    --notice-fg: #f1d98a;
     color-scheme: dark;
   }
 }
 
 @theme inline {
-  --color-paper: var(--paper);
-  --color-sheet: var(--sheet);
-  --color-ink: var(--ink);
-  --color-ink-soft: var(--ink-soft);
-  --color-rule: var(--rule);
-  --color-rule-strong: var(--rule-strong);
-  --color-pen: var(--pen);
-  --color-pen-ink: var(--pen-ink);
-  --color-red: var(--red);
-  --color-red-wash: var(--red-wash);
-  --color-amber-wash: var(--amber-wash);
-  --color-amber-ink: var(--amber-ink);
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-fg: var(--fg);
+  --color-fg-soft: var(--fg-soft);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-negative: var(--negative);
+  --color-negative-wash: var(--negative-wash);
+  --color-notice-wash: var(--notice-wash);
+  --color-notice-fg: var(--notice-fg);
   --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
   --font-display: var(--font-bricolage), var(--font-plex), ui-sans-serif, system-ui, sans-serif;
 }
 
 body {
-  background: var(--paper);
-  color: var(--ink);
+  background: var(--canvas);
+  color: var(--fg);
   font-family: var(--font-sans);
   font-size: 15px;
   line-height: 1.5;
@@ -68,7 +68,7 @@ body {
 
 /* Keyboard focus is always visible, in the pen colour, on every control. */
 :focus-visible {
-  outline: 2px solid var(--pen);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -79,14 +79,14 @@ body {
 
 /* A total: a rule above and a double rule below, as a bookkeeper draws the line under a sum. */
 .double-rule {
-  border-bottom: 4px double var(--ink);
+  border-bottom: 4px double var(--fg);
 }
 
 /* The dotted run from a name to its figure. */
 .leader {
   flex: 1 1 auto;
   min-width: 1.25rem;
-  border-bottom: 2px dotted var(--rule-strong);
+  border-bottom: 2px dotted var(--line-strong);
   transform: translateY(-0.3em);
 }
 

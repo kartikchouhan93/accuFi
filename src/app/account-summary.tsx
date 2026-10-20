@@ -23,16 +23,16 @@ export function AccountSummary({ accounts, kindTotals }: Props) {
         const headingId = `summary-${kind}`
         return (
           <section key={kind} aria-labelledby={headingId}>
-            <div className="flex items-baseline gap-3 border-b-2 border-ink pb-1">
+            <div className="flex items-baseline gap-3 border-b-2 border-fg pb-1">
               <h3 id={headingId} className="font-display text-xl font-semibold">
                 {copy.plural}
               </h3>
               <span className="leader" aria-hidden="true" />
               <Amount text={describeBalance(kind, total)} className="text-lg font-medium" />
             </div>
-            {archivedCount > 0 && <p className="mt-1 text-sm text-ink-soft">Includes {archivedCount} archived, not listed.</p>}
+            {archivedCount > 0 && <p className="mt-1 text-sm text-fg-soft">Includes {archivedCount} archived, not listed.</p>}
             {rows.length > 0 && (
-              <ul className="divide-y divide-rule">
+              <ul className="divide-y divide-line">
                 {rows.map((account) => (
                   <li key={account.id} className="flex items-baseline gap-3 py-2.5">
                     {/* The transactions screen, filtered to this account across every month. */}

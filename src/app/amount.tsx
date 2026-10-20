@@ -5,10 +5,10 @@ import type { BalanceText, Tone } from "@/lib/node-money"
 // shows money, so a figure reads the same on all of them.
 
 export const TONE_CLASS: Record<Tone, string> = {
-  positive: "text-ink",
-  negative: "text-red",
-  neutral: "text-ink",
-  muted: "text-ink-soft",
+  positive: "text-fg",
+  negative: "text-negative",
+  neutral: "text-fg",
+  muted: "text-fg-soft",
 }
 
 export function Amount({ text, className = "" }: { text: BalanceText; className?: string }) {
@@ -18,7 +18,7 @@ export function Amount({ text, className = "" }: { text: BalanceText; className?
       {text.qualifier && (
         <>
           {" "}
-          <span className="text-sm font-normal text-ink-soft">{text.qualifier}</span>
+          <span className="text-sm font-normal text-fg-soft">{text.qualifier}</span>
         </>
       )}
     </span>

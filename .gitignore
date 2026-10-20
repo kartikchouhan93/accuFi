@@ -52,3 +52,6 @@ next-env.d.ts
 
 # local preview account notes (never commit)
 .preview-account.local
+
+# local account notes (never commit)
+.accufi-account.local

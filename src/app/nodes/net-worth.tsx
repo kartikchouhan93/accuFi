@@ -19,11 +19,11 @@ export function NetWorth({ overview }: { overview: NodeOverview }) {
       <h2 id="net-worth-heading" className="font-display text-lg font-semibold">
         Net worth
       </h2>
-      <p className={`figures mt-1 pb-2 text-4xl font-medium sm:text-5xl ${total.tone === "negative" ? "text-red" : ""} double-rule`}>
+      <p className={`figures mt-1 pb-2 text-4xl font-medium sm:text-5xl ${total.tone === "negative" ? "text-negative" : ""} double-rule`}>
         {total.amount}
       </p>
       {netWorth.isPartial && <PartialNote names={unvalued} />}
-      <p className="figures mt-2 text-sm text-ink-soft">
+      <p className="figures mt-2 text-sm text-fg-soft">
         {formatPaiseText(netWorth.assets)} in accounts, {formatPaiseText(netWorth.investments)} invested,{" "}
         {formatPaiseText(netWorth.liabilities)} owed.
         {archived > 0 && ` Includes ${archived} archived.`}

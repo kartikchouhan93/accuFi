@@ -69,19 +69,19 @@ export function TransactionList({ page, filter, blocked, nodes, today, announce,
 
   return (
     <section aria-labelledby="entries-heading">
-      <div className="flex items-baseline gap-3 border-b-2 border-ink pb-1">
+      <div className="flex items-baseline gap-3 border-b-2 border-fg pb-1">
         <h2 id="entries-heading" className="font-display text-xl font-semibold">
           Entries
         </h2>
         <span className="leader" aria-hidden="true" />
-        <span className="figures text-sm text-ink-soft">{describeRange(filter)}</span>
+        <span className="figures text-sm text-fg-soft">{describeRange(filter)}</span>
       </div>
       {blocked ? (
-        <p className="mt-3 text-ink-soft">Fix the highlighted filters to see transactions.</p>
+        <p className="mt-3 text-fg-soft">Fix the highlighted filters to see transactions.</p>
       ) : entries.length === 0 ? (
-        <p className="mt-3 text-ink-soft">Nothing recorded for these filters. Widen the dates, or record a transaction.</p>
+        <p className="mt-3 text-fg-soft">Nothing recorded for these filters. Widen the dates, or record a transaction.</p>
       ) : (
-        <ul className="divide-y divide-rule">
+        <ul className="divide-y divide-line">
           {entries.map((entry) => (
             <EntryRow
               key={entry.kind === "group" ? `group-${entry.groupId}` : entry.transaction.id}
@@ -97,12 +97,12 @@ export function TransactionList({ page, filter, blocked, nodes, today, announce,
             type="button"
             disabled={pending}
             onClick={loadMore}
-            className="rounded-sm border border-rule-strong px-4 py-2 text-sm font-medium hover:bg-sheet disabled:opacity-60"
+            className="rounded-sm border border-line-strong px-4 py-2 text-sm font-medium hover:bg-panel disabled:opacity-60"
           >
             Load more
           </button>
           {problem && (
-            <p role="alert" className="mt-2 max-w-lg bg-red-wash px-3 py-2 text-sm font-medium text-red">
+            <p role="alert" className="mt-2 max-w-lg bg-negative-wash px-3 py-2 text-sm font-medium text-negative">
               {problem}
             </p>
           )}

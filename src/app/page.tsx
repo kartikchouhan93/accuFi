@@ -26,15 +26,15 @@ export default async function DashboardPage() {
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-8 sm:px-6">
         <h1 className="font-display text-4xl font-bold tracking-tight">Dashboard</h1>
         {dashboard.isEmpty ? (
-          <section aria-labelledby="start-heading" className="mt-8 max-w-xl bg-sheet p-6">
+          <section aria-labelledby="start-heading" className="mt-8 max-w-xl bg-panel p-6">
             <h2 id="start-heading" className="font-display text-2xl font-semibold">
               Start with your first account
             </h2>
-            <p className="mt-2 text-ink-soft">
+            <p className="mt-2 text-fg-soft">
               Your net worth is what you hold less what you owe, so it begins with somewhere you keep money: a bank account, a wallet, a credit
               card. Add one, with what is in it today, and this page fills in as you record what comes and goes.
             </p>
-            <Link href="/nodes" className="mt-4 inline-block rounded-sm bg-pen px-4 py-2 font-medium text-pen-ink">
+            <Link href="/nodes" className="mt-4 inline-block rounded-sm bg-accent px-4 py-2 font-medium text-accent-fg">
               Add your first account
             </Link>
           </section>
@@ -46,9 +46,9 @@ export default async function DashboardPage() {
             </div>
             <div>
               <AccountSummary accounts={dashboard.accounts} kindTotals={dashboard.kindTotals} />
-              <p className="mt-6 text-sm text-ink-soft">
+              <p className="mt-6 text-sm text-fg-soft">
                 Add, rename or archive accounts in the{" "}
-                <Link href="/nodes" className="font-medium text-pen underline underline-offset-4">
+                <Link href="/nodes" className="font-medium text-accent underline underline-offset-4">
                   ledger
                 </Link>
                 .

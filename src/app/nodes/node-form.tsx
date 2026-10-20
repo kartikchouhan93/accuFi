@@ -30,7 +30,7 @@ interface Outcome {
 }
 
 const inputClass =
-  "w-full rounded-sm border border-rule-strong bg-paper px-3 py-2 text-ink placeholder:text-ink-soft/70 aria-[invalid=true]:border-red aria-[invalid=true]:border-2"
+  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 text-fg placeholder:text-fg-soft/70 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
 
 export function NodeForm({ kind, onKindChange, announce }: Props) {
   const router = useRouter()
@@ -96,7 +96,7 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
       onSubmit={submit}
       noValidate
       aria-labelledby={`${formId}-title`}
-      className="border border-rule border-t-4 border-t-ink bg-sheet p-5"
+      className="border border-line border-t-4 border-t-ink bg-panel p-5"
     >
       <h2 id={`${formId}-title`} className="font-display text-xl font-semibold">
         Add to your ledger
@@ -115,13 +115,13 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
                 onChange={() => onKindChange(option)}
                 className="peer absolute inset-0 size-full cursor-pointer opacity-0"
               />
-              <span className="block cursor-pointer rounded-sm border border-rule-strong px-3 py-1.5 text-sm peer-checked:border-ink peer-checked:bg-ink peer-checked:text-sheet peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-pen">
+              <span className="block cursor-pointer rounded-sm border border-line-strong px-3 py-1.5 text-sm peer-checked:border-fg peer-checked:bg-fg peer-checked:text-panel peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent">
                 {KIND_COPY[option].singular}
               </span>
             </label>
           ))}
         </div>
-        <p id={`${formId}-kind-hint`} className="mt-2 text-sm text-ink-soft">
+        <p id={`${formId}-kind-hint`} className="mt-2 text-sm text-fg-soft">
           {copy.hint}
         </p>
       </fieldset>
@@ -144,7 +144,7 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
       </div>
 
       {alertText && (
-        <p role="alert" className="mt-4 bg-red-wash px-3 py-2 text-sm text-red">
+        <p role="alert" className="mt-4 bg-negative-wash px-3 py-2 text-sm text-negative">
           {alertText}
         </p>
       )}
@@ -152,7 +152,7 @@ export function NodeForm({ kind, onKindChange, announce }: Props) {
       <button
         type="submit"
         disabled={pending}
-        className="mt-6 w-full rounded-sm bg-pen px-4 py-2.5 font-medium text-pen-ink disabled:opacity-60"
+        className="mt-6 w-full rounded-sm bg-accent px-4 py-2.5 font-medium text-accent-fg disabled:opacity-60"
       >
         {copy.addLabel}
       </button>
@@ -179,17 +179,17 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
   const invalid = errors !== undefined && errors.length > 0
   const describedBy = [control.hint ? hintId : null, invalid ? errorId : null].filter(Boolean).join(" ") || undefined
   const marker = field.optional ? (
-    <span className="text-xs text-ink-soft">optional</span>
+    <span className="text-xs text-fg-soft">optional</span>
   ) : null
   const messages = (
     <>
       {control.hint && (
-        <p id={hintId} className="mt-1 text-xs text-ink-soft">
+        <p id={hintId} className="mt-1 text-xs text-fg-soft">
           {control.hint}
         </p>
       )}
       {invalid && (
-        <p id={errorId} className="mt-1 text-sm font-medium text-red">
+        <p id={errorId} className="mt-1 text-sm font-medium text-negative">
           {errors.join(" ")}
         </p>
       )}
@@ -220,7 +220,7 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
           {choices.map((choice) => (
             <label
               key={choice.value}
-              className="flex cursor-pointer items-start gap-2 rounded-sm border border-rule-strong px-3 py-2 text-sm has-[:checked]:border-ink has-[:checked]:bg-paper has-[:checked]:font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-pen"
+              className="flex cursor-pointer items-start gap-2 rounded-sm border border-line-strong px-3 py-2 text-sm has-[:checked]:border-fg has-[:checked]:bg-canvas has-[:checked]:font-medium has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent"
             >
               <input
                 type="radio"
@@ -233,7 +233,7 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
               />
               <span>
                 {choice.label}
-                <span id={`${idBase}-${choice.value}-meaning`} className="block text-xs font-normal text-ink-soft">
+                <span id={`${idBase}-${choice.value}-meaning`} className="block text-xs font-normal text-fg-soft">
                   {choice.meaning}
                 </span>
               </span>
@@ -256,11 +256,11 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
             aria-describedby={[`${idBase}-preview`, invalid ? errorId : null].filter(Boolean).join(" ")}
             className={`${inputClass} figures mt-1`}
           />
-          <p id={`${idBase}-preview`} className="mt-1 text-sm text-ink-soft">
+          <p id={`${idBase}-preview`} className="mt-1 text-sm text-fg-soft">
             {preview ?? "Leave this empty to start at zero. You can change it later, it is an ordinary transaction."}
           </p>
           {invalid && (
-            <p id={errorId} className="mt-1 text-sm font-medium text-red">
+            <p id={errorId} className="mt-1 text-sm font-medium text-negative">
               {errors.join(" ")}
             </p>
           )}

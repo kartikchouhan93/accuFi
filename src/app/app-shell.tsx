@@ -17,7 +17,7 @@ export async function AppShell({ children, current = "ledger" }: { children: Rea
   const email = (await auth())?.user?.email
   return (
     <div className="min-h-screen">
-      <header className="border-b-4 border-double border-ink">
+      <header className="border-b-4 border-double border-fg">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3 sm:px-6">
           <Link href="/" className="font-display text-xl font-bold tracking-tight">
             AccuFi
@@ -28,15 +28,15 @@ export async function AppShell({ children, current = "ledger" }: { children: Rea
                 key={key}
                 href={href}
                 aria-current={key === current ? "page" : undefined}
-                className={`pb-0.5 font-medium ${key === current ? "border-b-2 border-pen" : "text-ink-soft hover:text-ink"}`}
+                className={`pb-0.5 font-medium ${key === current ? "border-b-2 border-accent" : "text-fg-soft hover:text-fg"}`}
               >
                 {label}
               </Link>
             ))}
           </nav>
-          {email && <span className="hidden text-sm text-ink-soft sm:inline">{email}</span>}
+          {email && <span className="hidden text-sm text-fg-soft sm:inline">{email}</span>}
           <form action={signOutAction}>
-            <button type="submit" className="rounded-sm px-2 py-1 text-sm font-medium text-pen underline underline-offset-4">
+            <button type="submit" className="rounded-sm px-2 py-1 text-sm font-medium text-accent underline underline-offset-4">
               Sign out
             </button>
           </form>

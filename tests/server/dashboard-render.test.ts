@@ -45,7 +45,7 @@ describe("NetWorthCard", () => {
   it("shows a negative net worth in red with its sign", () => {
     const html = card({ total: "-24975", assets: "100000", investments: "0", liabilities: "124975" })
     expect(html).toContain("-₹249.75")
-    expect(html).toContain("text-red")
+    expect(html).toContain("text-negative")
   })
 
   it("mentions archived accounts that are counted but not listed", () => {

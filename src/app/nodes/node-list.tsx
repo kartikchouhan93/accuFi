@@ -83,7 +83,7 @@ function KindSection({ kind, overview, showArchived, announce, onAdd }: SectionP
 
   return (
     <section aria-labelledby={headingId}>
-      <div className="flex items-baseline gap-3 border-b-2 border-ink pb-1">
+      <div className="flex items-baseline gap-3 border-b-2 border-fg pb-1">
         <h2 id={headingId} className="font-display text-xl font-semibold">
           {copy.plural}
         </h2>
@@ -96,22 +96,22 @@ function KindSection({ kind, overview, showArchived, announce, onAdd }: SectionP
       </div>
       {/* The figure above counts archived nodes whether or not their rows are drawn; say so when they are not. */}
       {hiddenCount > 0 && (
-        <p className="mt-1 text-sm text-ink-soft">
+        <p className="mt-1 text-sm text-fg-soft">
           {total ? "Includes " : ""}
           {hiddenCount} archived{total ? ", not listed" : " not listed"}.
         </p>
       )}
       {visible.length === 0 ? (
-        <p className="mt-3 text-ink-soft">
+        <p className="mt-3 text-fg-soft">
           {ofKind.length === 0 ? copy.empty : "Everything here is archived."}{" "}
           {ofKind.length === 0 && (
-            <button type="button" onClick={() => onAdd(kind)} className="font-medium text-pen underline underline-offset-4">
+            <button type="button" onClick={() => onAdd(kind)} className="font-medium text-accent underline underline-offset-4">
               Add {copy.indefinite}
             </button>
           )}
         </p>
       ) : (
-        <ul className="divide-y divide-rule">
+        <ul className="divide-y divide-line">
           {visible.map((node) => (
             <NodeRow key={node.id} node={node} balance={overview.balances[node.id] ?? "0"} announce={announce} />
           ))}
@@ -240,12 +240,12 @@ function NodeRow({ node, balance, announce }: RowProps) {
     )
 
   const buttonClass =
-    "rounded-sm border border-rule-strong px-3 py-1.5 text-sm font-medium hover:bg-paper disabled:opacity-60"
-  const primaryClass = "rounded-sm bg-pen px-3 py-1.5 text-sm font-medium text-pen-ink disabled:opacity-60"
-  const dangerClass = "rounded-sm bg-red px-3 py-1.5 text-sm font-medium text-sheet disabled:opacity-60"
+    "rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium hover:bg-canvas disabled:opacity-60"
+  const primaryClass = "rounded-sm bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-60"
+  const dangerClass = "rounded-sm bg-negative px-3 py-1.5 text-sm font-medium text-panel disabled:opacity-60"
 
   return (
-    <li className={isArchived ? "bg-sheet/50" : undefined}>
+    <li className={isArchived ? "bg-panel/50" : undefined}>
       <button
         type="button"
         aria-expanded={open}
@@ -253,7 +253,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
         onClick={() => setOpen((current) => !current)}
         className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3 py-3 text-left"
       >
-        <span className={`font-medium ${isArchived ? "text-ink-soft" : ""}`}>
+        <span className={`font-medium ${isArchived ? "text-fg-soft" : ""}`}>
           <span>{node.name}</span>
           {isSystem && <Tag>System</Tag>}
           {isArchived && <Tag>Archived</Tag>}
@@ -267,13 +267,13 @@ function NodeRow({ node, balance, announce }: RowProps) {
           // A system node has no figure to run a leader to.
           <span className="col-span-2" aria-hidden="true" />
         )}
-        {sub && <span className="col-span-3 text-sm text-ink-soft">{sub}</span>}
+        {sub && <span className="col-span-3 text-sm text-fg-soft">{sub}</span>}
       </button>
 
       {open && (
         <div id={panelId} className="pb-4 text-sm">
           {isSystem ? (
-            <p className="max-w-prose text-ink-soft">
+            <p className="max-w-prose text-fg-soft">
               {SYSTEM_ROLE_NOTE[node.systemRole as SystemNodeRole]} AccuFi keeps this one for you, so it cannot be
               renamed, archived or deleted.
             </p>
@@ -283,7 +283,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
                 <dl className="mb-3 grid max-w-md grid-cols-[auto_1fr] gap-x-6 gap-y-0.5">
                   {details(node).map(([label, value]) => (
                     <div key={label} className="contents">
-                      <dt className="text-ink-soft">{label}</dt>
+                      <dt className="text-fg-soft">{label}</dt>
                       <dd className="figures">{value}</dd>
                     </div>
                   ))}
@@ -304,7 +304,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
                       Archive
                     </button>
                   )}
-                  <button type="button" className={`${buttonClass} text-red`} onClick={() => setMode("confirm-delete")}>
+                  <button type="button" className={`${buttonClass} text-negative`} onClick={() => setMode("confirm-delete")}>
                     Delete
                   </button>
                 </div>
@@ -330,10 +330,10 @@ function NodeRow({ node, balance, announce }: RowProps) {
                     autoFocus
                     aria-invalid={nameErrors.length > 0 || undefined}
                     aria-describedby={nameErrors.length > 0 ? `${panelId}-name-error` : undefined}
-                    className="mt-1 w-full rounded-sm border border-rule-strong bg-paper px-3 py-2 aria-[invalid=true]:border-2 aria-[invalid=true]:border-red"
+                    className="mt-1 w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 aria-[invalid=true]:border-2 aria-[invalid=true]:border-negative"
                   />
                   {nameErrors.length > 0 && (
-                    <p id={`${panelId}-name-error`} className="mt-1 font-medium text-red">
+                    <p id={`${panelId}-name-error`} className="mt-1 font-medium text-negative">
                       {nameErrors.join(" ")}
                     </p>
                   )}
@@ -358,7 +358,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
               )}
 
               {mode === "confirm-archive" && (
-                <div className="max-w-lg bg-amber-wash p-3 text-amber-ink">
+                <div className="max-w-lg bg-notice-wash p-3 text-notice-fg">
                   <p>
                     {residual
                       ? `${node.name} ${residual}. Archiving hides it from your lists, but that balance stays in your net worth. Move the money out first if it should leave.`
@@ -376,7 +376,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
               )}
 
               {mode === "confirm-delete" && (
-                <div className="max-w-lg bg-red-wash p-3 text-red">
+                <div className="max-w-lg bg-negative-wash p-3 text-negative">
                   <p>
                     Delete {node.name}? This cannot be undone. Only something with no transactions can be deleted: if it
                     has any, archive it instead.
@@ -393,7 +393,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
               )}
 
               {failure && !(mode === "rename" && nameErrors.length > 0) && (
-                <p role="alert" className="mt-3 max-w-lg bg-red-wash px-3 py-2 font-medium text-red">
+                <p role="alert" className="mt-3 max-w-lg bg-negative-wash px-3 py-2 font-medium text-negative">
                   {failure.message}
                 </p>
               )}
@@ -406,5 +406,5 @@ function NodeRow({ node, balance, announce }: RowProps) {
 }
 
 function Tag({ children }: { children: React.ReactNode }) {
-  return <span className="ml-2 rounded-sm border border-rule-strong px-1.5 py-0.5 align-middle text-xs font-normal text-ink-soft">{children}</span>
+  return <span className="ml-2 rounded-sm border border-line-strong px-1.5 py-0.5 align-middle text-xs font-normal text-fg-soft">{children}</span>
 }

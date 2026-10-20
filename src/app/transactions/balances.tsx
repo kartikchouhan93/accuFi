@@ -18,13 +18,13 @@ export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: R
         Balances
       </h2>
       {groups.length === 0 ? (
-        <p className="mt-2 text-ink-soft">No accounts yet. Add one on the Ledger screen, then record money moving through it.</p>
+        <p className="mt-2 text-fg-soft">No accounts yet. Add one on the Ledger screen, then record money moving through it.</p>
       ) : (
         <div className="mt-2 grid gap-x-8 gap-y-4 sm:grid-cols-2">
           {groups.map((group) => (
             <div key={group.kind}>
-              <h3 className="border-b-2 border-ink pb-0.5 text-sm font-semibold text-ink-soft">{group.label}</h3>
-              <ul className="divide-y divide-rule">
+              <h3 className="border-b-2 border-fg pb-0.5 text-sm font-semibold text-fg-soft">{group.label}</h3>
+              <ul className="divide-y divide-line">
                 {group.nodes.map((node) => (
                   <li key={node.id} className="flex items-baseline gap-3 py-1.5">
                     <span className="font-medium">{node.name}</span>

@@ -20,7 +20,7 @@ interface Props {
 }
 
 const inputClass =
-  "w-full rounded-sm border border-rule-strong bg-paper px-3 py-1.5 text-ink placeholder:text-ink-soft/70 aria-[invalid=true]:border-red aria-[invalid=true]:border-2"
+  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-1.5 text-fg placeholder:text-fg-soft/70 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
 
 export function Filters({ filter, problems, nodes }: Props) {
   const router = useRouter()
@@ -43,7 +43,7 @@ export function Filters({ filter, problems, nodes }: Props) {
         </label>
         <div className="mt-1">{control}</div>
         {errors && (
-          <p id={`${formId}-${key}-error`} className="mt-1 text-sm font-medium text-red">
+          <p id={`${formId}-${key}-error`} className="mt-1 text-sm font-medium text-negative">
             {errors.join(" ")}
           </p>
         )}
@@ -59,7 +59,7 @@ export function Filters({ filter, problems, nodes }: Props) {
 
   // `key` makes the fields start again from what the server resolved whenever it sends a different filter.
   return (
-    <form key={JSON.stringify(filter)} onSubmit={apply} noValidate aria-label="Filter transactions" className="border border-rule bg-sheet p-4">
+    <form key={JSON.stringify(filter)} onSubmit={apply} noValidate aria-label="Filter transactions" className="border border-line bg-panel p-4">
       <div className="grid grid-cols-2 gap-x-4 gap-y-3 lg:grid-cols-4">
         {field(
           "node",
@@ -110,10 +110,10 @@ export function Filters({ filter, problems, nodes }: Props) {
           <input type="checkbox" name="deleted" value="1" defaultChecked={filter.deleted === "1"} className="size-4 accent-pen" />
           Show deleted
         </label>
-        <button type="submit" className="rounded-sm bg-pen px-4 py-2 text-sm font-medium text-pen-ink">
+        <button type="submit" className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-accent-fg">
           Apply filters
         </button>
-        <Link href="/transactions" className="text-sm font-medium text-pen underline underline-offset-4">
+        <Link href="/transactions" className="text-sm font-medium text-accent underline underline-offset-4">
           Reset to this month
         </Link>
       </div>

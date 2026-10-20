@@ -15,7 +15,7 @@ const COPY = {
 } as const
 
 // The same pad as the rest of the app: ink on analysis paper, the wordmark over a double rule, blue for the one thing to do.
-const inputClass = "w-full rounded-sm border border-rule-strong bg-paper px-3 py-2 text-ink"
+const inputClass = "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 text-fg"
 
 export function AuthForm({ mode, action }: Props) {
   const [state, formAction, pending] = useActionState(action, { error: null })
@@ -29,7 +29,7 @@ export function AuthForm({ mode, action }: Props) {
       <div className="w-full max-w-sm">
         <p className="font-display text-3xl font-bold tracking-tight">AccuFi</p>
         <div className="double-rule mt-1" />
-        <form action={formAction} className="mt-6 space-y-4 bg-sheet p-6">
+        <form action={formAction} className="mt-6 space-y-4 bg-panel p-6">
           <h1 className="font-display text-xl font-semibold">{copy.title}</h1>
           <label className="block space-y-1 text-sm font-medium">
             Email
@@ -57,23 +57,23 @@ export function AuthForm({ mode, action }: Props) {
               autoComplete={mode === "signup" ? "new-password" : "current-password"}
               className={inputClass}
             />
-            {mode === "signup" && <span className="block text-xs font-normal text-ink-soft">At least 8 characters.</span>}
+            {mode === "signup" && <span className="block text-xs font-normal text-fg-soft">At least 8 characters.</span>}
           </label>
           {state.error && (
-            <p role="alert" className="bg-red-wash px-3 py-2 text-sm font-medium text-red">
+            <p role="alert" className="bg-negative-wash px-3 py-2 text-sm font-medium text-negative">
               {state.error}
             </p>
           )}
           <button
             type="submit"
             disabled={pending}
-            className="w-full rounded-sm bg-pen px-3 py-2 font-medium text-pen-ink disabled:opacity-60"
+            className="w-full rounded-sm bg-accent px-3 py-2 font-medium text-accent-fg disabled:opacity-60"
           >
             {pending ? "Please wait..." : copy.submit}
           </button>
-          <p className="text-center text-sm text-ink-soft">
+          <p className="text-center text-sm text-fg-soft">
             {copy.altText}{" "}
-            <Link href={copy.altHref} className="font-medium text-pen underline underline-offset-4">
+            <Link href={copy.altHref} className="font-medium text-accent underline underline-offset-4">
               {copy.altLabel}
             </Link>
           </p>

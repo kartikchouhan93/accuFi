@@ -74,9 +74,9 @@ const draftOf = (transaction: TransactionView): Draft => ({
 })
 
 const inputClass =
-  "w-full rounded-sm border border-rule-strong bg-paper px-3 py-2 text-ink placeholder:text-ink-soft/70 disabled:opacity-60 aria-[invalid=true]:border-red aria-[invalid=true]:border-2"
-const buttonClass = "rounded-sm border border-rule-strong px-3 py-1.5 text-sm font-medium hover:bg-paper disabled:opacity-60"
-const linkButtonClass = "rounded-sm text-sm font-medium text-pen underline underline-offset-4 disabled:opacity-60"
+  "w-full rounded-sm border border-line-strong bg-canvas px-3 py-2 text-fg placeholder:text-fg-soft/70 disabled:opacity-60 aria-[invalid=true]:border-negative aria-[invalid=true]:border-2"
+const buttonClass = "rounded-sm border border-line-strong px-3 py-1.5 text-sm font-medium hover:bg-canvas disabled:opacity-60"
+const linkButtonClass = "rounded-sm text-sm font-medium text-accent underline underline-offset-4 disabled:opacity-60"
 
 const unique = (messages: string[]) => [...new Set(messages)]
 
@@ -287,7 +287,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       }}
       noValidate
       aria-labelledby={`${formId}-title`}
-      className="border border-rule border-t-4 border-t-ink bg-sheet p-5"
+      className="border border-line border-t-4 border-t-ink bg-panel p-5"
     >
       <h2 id={`${formId}-title`} className="font-display text-xl font-semibold">
         {heading}
@@ -345,7 +345,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
           <fieldset className="space-y-3">
             <legend className="text-sm font-medium">Split across</legend>
             {legs.map((leg, index) => (
-              <div key={index} role="group" aria-label={`Leg ${index + 1}`} className="space-y-3 border-l-2 border-rule-strong pl-3">
+              <div key={index} role="group" aria-label={`Leg ${index + 1}`} className="space-y-3 border-l-2 border-line-strong pl-3">
                 <Field idBase={`${formId}-leg-${index}-to`} label="To" errors={errorsAt(`legs.${index}.toNodeId`)}>
                   {(props) => (
                     <NodePicker
@@ -402,7 +402,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
                 Use one destination
               </button>
             </div>
-            <p aria-live="polite" className="figures text-sm text-ink-soft">
+            <p aria-live="polite" className="figures text-sm text-fg-soft">
               {tally}
             </p>
           </fieldset>
@@ -457,12 +457,12 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
           >
             Add split
           </button>
-          <span className="text-ink-soft"> to divide it across several destinations</span>
+          <span className="text-fg-soft"> to divide it across several destinations</span>
         </p>
       )}
 
       {outcome?.conflict && (
-        <div role="alert" className="mt-4 bg-amber-wash p-3 text-sm text-amber-ink">
+        <div role="alert" className="mt-4 bg-notice-wash p-3 text-sm text-notice-fg">
           <p className="font-medium">{outcome.failure.message}</p>
           <p className="figures mt-1">
             Stored now: {nameOf(outcome.conflict.fromNodeId)} → {nameOf(outcome.conflict.toNodeId)},{" "}
@@ -502,13 +502,13 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       )}
 
       {alertText && (
-        <p role="alert" className="mt-4 bg-red-wash px-3 py-2 text-sm text-red">
+        <p role="alert" className="mt-4 bg-negative-wash px-3 py-2 text-sm text-negative">
           {alertText}
         </p>
       )}
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
-        <button type="submit" disabled={pending} className="rounded-sm bg-pen px-4 py-2.5 font-medium text-pen-ink disabled:opacity-60">
+        <button type="submit" disabled={pending} className="rounded-sm bg-accent px-4 py-2.5 font-medium text-accent-fg disabled:opacity-60">
           {editing ? "Save changes" : isSplit ? "Record split" : "Record transaction"}
         </button>
         {editing ? (
@@ -552,16 +552,16 @@ function Field({ idBase, label, optional, hint, errors, children }: FieldProps) 
         <label htmlFor={idBase} className="text-sm font-medium">
           {label}
         </label>
-        {optional && <span className="text-xs text-ink-soft">optional</span>}
+        {optional && <span className="text-xs text-fg-soft">optional</span>}
       </div>
       <div className="mt-1">{children({ id: idBase, "aria-invalid": invalid || undefined, "aria-describedby": describedBy })}</div>
       {hint && (
-        <p id={hintId} className="mt-1 text-xs text-ink-soft">
+        <p id={hintId} className="mt-1 text-xs text-fg-soft">
           {hint}
         </p>
       )}
       {invalid && (
-        <p id={errorId} className="mt-1 text-sm font-medium text-red">
+        <p id={errorId} className="mt-1 text-sm font-medium text-negative">
           {errors.join(" ")}
         </p>
       )}
