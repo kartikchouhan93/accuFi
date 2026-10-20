@@ -329,7 +329,9 @@ export function isFlowAllowed(from: LedgerKind, to: LedgerKind): boolean
 
 export interface NodeSummary { id: string; kind: LedgerKind; archivedAt: Date | null; systemRole: SystemNodeRole | null }
 export interface TransactionDraft { fromNode: NodeSummary; toNode: NodeSummary; amount: Paise; occurredAt: CalendarDate }
-export type ViolationCode = "SAME_NODE" | "NON_POSITIVE_AMOUNT" | "ILLEGAL_FLOW" | "ARCHIVED_NODE"
+export type ViolationCode = "SAME_NODE" | "NON_POSITIVE_AMOUNT" | "ILLEGAL_FLOW" | "ARCHIVED_SOURCE" | "ARCHIVED_TARGET"
+// NOTE: a single ARCHIVED_NODE code was planned; it was split in two during Task 13 so the
+// UI can highlight the field that is actually archived rather than always blaming the target.
 export interface RuleViolation { code: ViolationCode; message: string }
 export function validateTransaction(draft: TransactionDraft, opts?: { allowArchived?: boolean }): RuleViolation[]
 ```
@@ -361,7 +363,7 @@ it("rejects a transaction from a node to itself", /* SAME_NODE */)
 it("rejects a zero amount", /* NON_POSITIVE_AMOUNT */)
 it("rejects a negative amount", /* NON_POSITIVE_AMOUNT */)
 it("rejects an illegal kind pair naming both kinds in the message", /* ILLEGAL_FLOW */)
-it("rejects an archived node by default", /* ARCHIVED_NODE */)
+it("rejects an archived node by default", /* ARCHIVED_SOURCE / ARCHIVED_TARGET */)
 it("permits an archived node when allowArchived is set", /* [] — EC-14 */)
 it("returns every applicable violation, not just the first", /* two codes */)
 ```

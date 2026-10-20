@@ -171,7 +171,7 @@ Unit price is also integer paise, per single unit.
 
 ### 6.3 Split rounding
 
-Splitting ₹100.00 three ways cannot produce three equal integers. The rule: compute each leg by integer division, then distribute the remainder one paisa at a time to the legs in descending order of magnitude (ties broken by entry order). The legs must sum to exactly the original amount; this is asserted in code and covered by a property-based test.
+Splitting ₹100.00 three ways cannot produce three equal integers. The rule: compute each leg by integer division, then distribute the remainder one paisa at a time to the legs in descending order of **fractional remainder** (ties broken by entry order). An earlier wording said "descending order of magnitude", which differs for unequal weights — for a total of 7 split by weights [5, 3], largest-remainder gives [4, 3] where largest-magnitude gives [5, 2]. Largest-remainder is the standard rule and the fairer one, and is what the code implements. The legs must sum to exactly the original amount; this is asserted in code and covered by a property-based test.
 
 The same rule governs percentage-based splits and any proportional allocation in reports.
 
@@ -394,7 +394,7 @@ If profiling ever shows this is too slow, the documented lever is a monthly `Bal
 - Zod validation on every input, including numeric ranges and node ownership.
 - CSRF handled by Server Actions' built-in protection.
 - Rate limiting on auth endpoints.
-- No financial data in URLs or logs.
+- No balances, identifiers, or account details in URLs or logs. **Scoped deliberately:** the transaction list keeps its filters in the query string — including amount bounds and note search — so a filtered view is bookmarkable, shareable and reversible with the back button. That is a considered trade-off, not an oversight: those values describe what the user is looking for, not what they hold, and the usability gain is real. Balances, node identifiers and transaction identifiers stay out of URLs.
 
 ---
 
