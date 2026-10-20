@@ -432,6 +432,57 @@ describe("editTransaction", () => {
     expect(await balanceOf(user.id, bank)).toBe(200_00n)
   })
 
+  it("warns when an edit lowers the deposit behind an account and leaves it negative", async () => {
+    // The unguarded, common case of the test above: the account that goes negative is the DESTINATION of the edited
+    // row, not its source (an INCOME_SOURCE), so judging only the source would say nothing at all.
+    const { user, bank, food, deposit } = await setup(1_000_00n)
+    await record(user.id, bank, food, 800_00n)
+    const edited = await editTransaction(user.id, deposit.id, { amount: 100_00n }, deposit.version)
+    expect(codes(edited.warnings)).toEqual(["OVERDRAWN"])
+    expect(edited.warnings[0].message).toContain("Bank")
+    expect(edited.warnings[0].message).toContain("-₹700.00")
+    expect(await balanceOf(user.id, bank)).toBe(-700_00n)
+  })
+
+  it("warns about the account an edit moved the row away from, if that is now negative", async () => {
+    // Re-pointing a deposit from one account to another takes the money out of the old destination.
+    const { user, bank, savings, food, deposit } = await setup(1_000_00n)
+    await record(user.id, bank, food, 800_00n)
+    const edited = await editTransaction(user.id, deposit.id, { toNodeId: savings.id }, deposit.version)
+    expect(codes(edited.warnings)).toEqual(["OVERDRAWN"])
+    expect(edited.warnings[0].message).toContain("Bank")
+  })
+
+  it("names each touched node once, however many ends of the row it is", async () => {
+    const { user, bank, savings, food } = await setup(100_00n)
+    const view = await record(user.id, bank, savings, 50_00n)
+    // bank -> savings edited to bank -> food: bank is both the old and the new source; it is reported once
+    const edited = await editTransaction(user.id, view.id, { toNodeId: food.id, amount: 150_00n }, view.version)
+    expect(codes(edited.warnings)).toEqual(["OVERDRAWN"])
+  })
+
+  it("refuses to re-point an edit onto an archived node the row never referenced", async () => {
+    // EC-14: archived nodes are never selectable for new entries, and choosing one in an edit is choosing it afresh
+    const { user, bank, savings, food } = await setup()
+    const view = await record(user.id, bank, food, 100_00n)
+    await archiveLedgerNode(user.id, savings.id)
+    const toArchived = await rejection(editTransaction(user.id, view.id, { toNodeId: savings.id }, view.version))
+    expect(toArchived).toBeInstanceOf(InvalidTransactionError)
+    expect((toArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    const fromArchived = await rejection(editTransaction(user.id, view.id, { fromNodeId: savings.id }, view.version))
+    expect((fromArchived as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["ARCHIVED_NODE"])
+    expect(await prisma.transaction.findUniqueOrThrow({ where: { id: view.id } })).toMatchObject({ fromNodeId: bank.id, toNodeId: food.id, version: 0 })
+  })
+
+  it("lets an edit name a node the row already references even though it is archived", async () => {
+    // Swapping the two ends, or restating an end unchanged, introduces nothing new
+    const { user, bank, food } = await setup()
+    const view = await record(user.id, food, bank, 100_00n) // a refund: EXPENSE -> ASSET
+    await archiveLedgerNode(user.id, food.id)
+    const edited = await editTransaction(user.id, view.id, { fromNodeId: food.id, toNodeId: bank.id, amount: 120_00n }, view.version)
+    expect(edited.amountPaise).toBe("12000")
+  })
+
   it("does not block an edit that leaves an already-negative blockNegative account no worse", async () => {
     const { user, bank, food } = await setup(100_00n)
     const view = await record(user.id, bank, food, 150_00n) // overdrawn before the flag is set

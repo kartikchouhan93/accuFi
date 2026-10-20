@@ -262,6 +262,20 @@ describe("unit of work", () => {
     expect(await snapshotTransactions(a.user.id)).toEqual(aTx)
     expect(await snapshotTransactions(b.user.id)).toEqual(bTx)
   })
+
+  isolation("inTransaction", "keeps the user scoping of updateTransaction, undeleteTransaction and sumBalances made through it", async () => {
+    const deleted = await registry.makeTransaction(b.user.id, b.bank.id, b.food.id, { deletedAt: new Date() })
+    const bTx = await snapshotTransactions(b.user.id)
+    // B's rows by id, from inside A's transaction: not-found, never a conflict that would confirm the row exists
+    await expectNotFound(
+      inTransaction((uow) => txRepo.updateTransaction(a.user.id, b.tx.id, { note: "pwned" }, b.tx.version, uow)),
+    )
+    await expectNotFound(inTransaction((uow) => txRepo.undeleteTransaction(a.user.id, deleted.id, uow)))
+    // and A's balances, read inside the transaction, carry none of B's nodes
+    const seen = await inTransaction((uow) => txRepo.sumBalances(a.user.id, undefined, uow))
+    expect(seen.some((r) => [b.bank.id, b.food.id].includes(r.nodeId))).toBe(false)
+    expect(await snapshotTransactions(b.user.id)).toEqual(bTx)
+  })
 })
 
 describe("coverage", () => {

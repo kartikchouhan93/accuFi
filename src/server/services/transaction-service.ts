@@ -26,6 +26,14 @@ import { findUserTimezone } from "@/server/repositories/user-repository"
 // transaction is recorded either way (EC-10, EC-11, EC-12). The one thing that blocks is an asset with `blockNegative`
 // set, which refuses a write that would take it below zero.
 //
+// blockNegative policy, in one place. A guarded node (an ASSET with `blockNegative`) is never taken below zero by a
+// record, an edit (at either end of either version of the row) or a restore. Deletion is NEVER blocked: a user must
+// always be able to remove a mistaken entry, and refusing would strand the error with no way out.
+//
+// Scope: warnings and the guard read balances at one day (`asOf`, today or the transaction's own later day), not across
+// history. A backdated spend that holds an account negative for three weeks in the past and is covered by a later
+// deposit warns about nothing: M1 judges the position as it stands, not every day it passed through.
+//
 // Sign convention (spec §4.2), the one every balance in the application follows: a balance is inflows - outflows with
 // no per-kind special case, so a liability you owe on is NEGATIVE. Nothing below flips that: an overdrawn asset is a
 // balance below zero; a card is over its limit when its balance is below minus the limit.
@@ -142,41 +150,51 @@ async function writeUnlessOverdrawn<T>(
 }
 
 /**
- * The warnings a stored transaction carries, judged against the balances as they are now. Only the source node is
- * examined: it is the one this movement lowers. A card whose balance is -60,000 against a 50,000 limit is over it
- * (owed = -balance); an asset below zero is overdrawn; a liability or an expense below zero says nothing.
+ * The warnings a stored transaction carries, judged against the balances as they are now, over the nodes `touched`
+ * (de-duplicated by id; a node that is both the old and the new end is judged once). A create or a restore touches its
+ * source only: the node it lowers. An edit touches all four ends, as the overdraft guard does, because money can leave a
+ * node at either end of either version of the row (lowering a deposit overdraws its destination, not its source).
+ * A card whose balance is -60,000 against a 50,000 limit is over it (owed = -balance); an asset below zero is
+ * overdrawn; a liability or an expense below zero says nothing. Ordered OVERDRAWN, OVER_CREDIT_LIMIT, FUTURE_DATED.
  */
-async function warningsFor(userId: string, row: Transaction, from: LedgerNode, today: CalendarDate): Promise<Warning[]> {
+async function warningsFor(userId: string, row: Transaction, touched: readonly LedgerNode[], today: CalendarDate): Promise<Warning[]> {
   const occurredAt = fromDbDate(row.occurredAt)
-  const balances = await sumBalances(userId, asOfFor(today, occurredAt))
-  const balance = balances.find((b) => b.nodeId === from.id)?.balance ?? 0n
-  const warnings: Warning[] = []
-  if (from.kind === "ASSET" && balance < 0n) {
-    warnings.push({ code: "OVERDRAWN", message: `${from.name} is overdrawn: its balance is ${formatPaise(balance)}.` })
+  const balances = new Map((await sumBalances(userId, asOfFor(today, occurredAt))).map((b) => [b.nodeId, b.balance]))
+  const nodes = [...new Map(touched.map((node) => [node.id, node])).values()]
+  const overdrawn: Warning[] = []
+  const overLimit: Warning[] = []
+  for (const node of nodes) {
+    const balance = balances.get(node.id) ?? 0n
+    if (node.kind === "ASSET" && balance < 0n) {
+      overdrawn.push({ code: "OVERDRAWN", message: `${node.name} is overdrawn: its balance is ${formatPaise(balance)}.` })
+    }
+    if (node.kind === "LIABILITY" && node.creditLimitPaise !== null && -balance > node.creditLimitPaise) {
+      overLimit.push({
+        code: "OVER_CREDIT_LIMIT",
+        message: `${node.name} is over its credit limit: ${formatPaise(-balance)} owed against a limit of ${formatPaise(node.creditLimitPaise)}.`,
+      })
+    }
   }
-  if (from.kind === "LIABILITY" && from.creditLimitPaise !== null && -balance > from.creditLimitPaise) {
-    warnings.push({
-      code: "OVER_CREDIT_LIMIT",
-      message: `${from.name} is over its credit limit: ${formatPaise(-balance)} owed against a limit of ${formatPaise(from.creditLimitPaise)}.`,
-    })
-  }
-  if (compareDates(occurredAt, today) > 0) {
-    warnings.push({
-      code: "FUTURE_DATED",
-      message: `This is dated ${occurredAt}, after today, so it is left out of the current balance and shown as projected.`,
-    })
-  }
-  return warnings
+  const future: Warning[] =
+    compareDates(occurredAt, today) > 0
+      ? [
+          {
+            code: "FUTURE_DATED",
+            message: `This is dated ${occurredAt}, after today, so it is left out of the current balance and shown as projected.`,
+          },
+        ]
+      : []
+  return [...overdrawn, ...overLimit, ...future]
 }
 
 /**
- * The view of a stored row, with its warnings. `from` and `today` are passed when the caller already has them. A
- * soft-deleted row has no warnings: it moves no money.
+ * The view of a stored row, with its warnings. `touched` and `today` are passed when the caller already has them
+ * (default: the row's source node). A soft-deleted row has no warnings: it moves no money.
  */
-async function viewOf(userId: string, row: Transaction, from?: LedgerNode, today?: CalendarDate): Promise<TransactionView> {
+async function viewOf(userId: string, row: Transaction, touched?: readonly LedgerNode[], today?: CalendarDate): Promise<TransactionView> {
   if (row.deletedAt !== null) return toTransactionView(row)
-  const source = from ?? (await requireNode(userId, row.fromNodeId))
-  return toTransactionView(row, await warningsFor(userId, row, source, today ?? (await todayFor(userId))))
+  const nodes = touched ?? [await requireNode(userId, row.fromNodeId)]
+  return toTransactionView(row, await warningsFor(userId, row, nodes, today ?? (await todayFor(userId))))
 }
 
 /**
@@ -193,7 +211,8 @@ export async function recordTransaction(userId: string, input: RecordTransaction
   // The schema refuses this; the service is also called by code that never saw the schema. The repository stores ""
   // as a real key but its duplicate lookup treats it as none, so a second "" would surface as a raw database error.
   if (input.idempotencyKey === "") throw new InvalidTransactionError("A request key is required")
-  const [from, to] = [await requireNode(userId, input.fromNodeId), await requireNode(userId, input.toNodeId)]
+  const from = await requireNode(userId, input.fromNodeId)
+  const to = await requireNode(userId, input.toNodeId)
   const today = await todayFor(userId)
 
   let row: Transaction
@@ -222,10 +241,14 @@ export async function recordTransaction(userId: string, input: RecordTransaction
       return inserted
     })
   } catch (error) {
+    // The repository's duplicate lookup runs on the shared client, not on the aborted transaction, and it runs while
+    // this call's transaction connection is still being released. So a burst of N replays of one key can briefly hold
+    // up to 2N pool connections (N transactions failing, N lookups). Headroom is ample today; whoever tunes the
+    // Prisma `connection_limit` down should keep it above the largest burst of identical submissions they expect.
     if (error instanceof DuplicateIdempotencyKeyError) return viewOf(userId, error.existing)
     throw error
   }
-  return viewOf(userId, row, from, today)
+  return viewOf(userId, row, [from], today)
 }
 
 /**
@@ -252,7 +275,19 @@ export async function editTransaction(
   const occurredAt = input.occurredAt ?? fromDbDate(existing.occurredAt)
   const from = await requireNode(userId, fromId)
   const to = await requireNode(userId, toId)
+  // Archived nodes are tolerated, so a historical row that references one stays correctable (EC-14) ...
   assertLegal(from, to, amount, occurredAt, true)
+  // ... but only the ones it already references. A node this edit newly names is a fresh selection, and archived
+  // nodes are never selectable for that (EC-14): refuse it as a new entry would be.
+  const existingEnds = [existing.fromNodeId, existing.toNodeId]
+  const introduced: RuleViolation[] = []
+  if (input.fromNodeId !== undefined && !existingEnds.includes(from.id) && from.archivedAt !== null) {
+    introduced.push({ code: "ARCHIVED_NODE", message: "The source node is archived." })
+  }
+  if (input.toNodeId !== undefined && !existingEnds.includes(to.id) && to.archivedAt !== null) {
+    introduced.push({ code: "ARCHIVED_NODE", message: "The target node is archived." })
+  }
+  if (introduced.length > 0) throw new InvalidTransactionError(introduced.map((v) => v.message).join(" "), introduced)
 
   // Money can leave a guarded node at either end of either version of the row: a larger spend, a smaller deposit, a
   // changed account. The old ends are checked as well as the new ones.
@@ -269,7 +304,7 @@ export async function editTransaction(
   const row = await writeUnlessOverdrawn(userId, touched, asOfFor(today, occurredAt), (uow) =>
     updateTransaction(userId, id, changes, expectedVersion, uow),
   )
-  return viewOf(userId, row, from, today)
+  return viewOf(userId, row, touched, today)
 }
 
 /**

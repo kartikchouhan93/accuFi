@@ -30,9 +30,11 @@ const occurredAt = z.string().transform((text, ctx): CalendarDate => {
 })
 const note = z.string().trim().max(NOTE_MAX_LENGTH, `At most ${NOTE_MAX_LENGTH} characters`)
 const tags = z.array(z.string().trim().min(1, "A tag cannot be empty").max(TAG_MAX_LENGTH)).max(TAGS_MAX)
+// "Required" is for a missing or empty key; a key that was supplied but is too short says so, with the length.
 const idempotencyKey = z
   .string()
-  .min(IDEMPOTENCY_KEY_MIN_LENGTH, "A request key is required")
+  .min(1, { error: "A request key is required", abort: true })
+  .min(IDEMPOTENCY_KEY_MIN_LENGTH, `A request key must be at least ${IDEMPOTENCY_KEY_MIN_LENGTH} characters`)
   .max(IDEMPOTENCY_KEY_MAX_LENGTH)
 
 export const recordTransactionSchema = z.strictObject({

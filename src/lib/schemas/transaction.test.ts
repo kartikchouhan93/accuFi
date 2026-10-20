@@ -39,6 +39,16 @@ describe("recordTransactionSchema", () => {
     expect(recordTransactionSchema.safeParse({ ...valid, idempotencyKey: "x".repeat(IDEMPOTENCY_KEY_MIN_LENGTH) }).success).toBe(true)
   })
 
+  it("words a missing key and a too-short key differently", () => {
+    const message = (idempotencyKey: string) => {
+      const result = recordTransactionSchema.safeParse({ ...valid, idempotencyKey })
+      return result.success ? "" : result.error.issues[0].message
+    }
+    expect(message("")).toBe("A request key is required")
+    expect(message("short-key")).toBe(`A request key must be at least ${IDEMPOTENCY_KEY_MIN_LENGTH} characters`)
+    expect(message("short-key")).not.toMatch(/required/)
+  })
+
   it("requires an idempotency key", () => {
     const { idempotencyKey: _omitted, ...without } = valid
     void _omitted
