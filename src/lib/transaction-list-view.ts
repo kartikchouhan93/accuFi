@@ -36,6 +36,8 @@ export type ListEntry =
       fromNodeId: string | null
       /** The sum of `legs`, in paise. */
       totalPaise: string
+      /** Every leg is deleted: the split was deleted whole and is listed so it can be restored. */
+      deleted: boolean
       legs: TransactionView[]
     }
 
@@ -55,9 +57,11 @@ export interface FilterValues {
   max: string
   tag: string
   q: string
+  /** "1" to list deleted transactions too (so one can be restored), "" otherwise. */
+  deleted: string
 }
 
-export const FILTER_KEYS = ["node", "kind", "from", "to", "min", "max", "tag", "q"] as const satisfies readonly (keyof FilterValues)[]
+export const FILTER_KEYS = ["node", "kind", "from", "to", "min", "max", "tag", "q", "deleted"] as const satisfies readonly (keyof FilterValues)[]
 
 export interface TransactionScreen {
   /** Today in the user's own timezone: what a new entry is dated and what "current balance" means. */

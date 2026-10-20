@@ -27,6 +27,11 @@ export interface TransactionFilter {
   tags?: string[]
   /** Case-insensitive substring of the note. */
   search?: string
+  /**
+   * Soft-deleted transactions are listed too, among the live ones. Off by default: a listing is of what counts. This is
+   * how a deleted entry is found again to be restored; it changes no balance (`sumBalances` never counts a deleted row).
+   */
+  includeDeleted?: boolean
 }
 
 export interface Page<T> {
@@ -101,7 +106,7 @@ function filterConditions(filter: TransactionFilter): Prisma.TransactionWhereInp
   return conditions
 }
 
-/** Soft-deleted transactions are never listed. */
+/** Soft-deleted transactions are left out unless `filter.includeDeleted` is set. */
 export async function findTransactions(
   userId: string,
   filter: TransactionFilter = {},
@@ -118,7 +123,7 @@ export async function findTransactions(
   }
   // One extra row says whether another page exists without a second count query.
   const rows = await prisma.transaction.findMany({
-    where: { userId, deletedAt: null, AND: conditions },
+    where: { userId, ...(filter.includeDeleted ? {} : { deletedAt: null }), AND: conditions },
     orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
     take: pageSize + 1,
   })
@@ -127,15 +132,16 @@ export async function findTransactions(
 }
 
 /**
- * Every live member of each of these groups, whatever filter found the group: a page of `findTransactions` can end in
+ * Every live member of each of these groups (deleted ones too when `includeDeleted`, which is how a deleted split is
+ * shown whole), whatever filter found the group: a page of `findTransactions` can end in
  * the middle of a split, and the legs that did not fit are still part of it. Ordered as the legs were written (all of a
  * split's legs are inserted in one database transaction, so they share a creation time and `id` breaks the tie).
  * Groups that are not this user's, or have no live member, contribute nothing.
  */
-export function findGroupMembers(userId: string, groupIds: readonly string[]): Promise<Transaction[]> {
+export function findGroupMembers(userId: string, groupIds: readonly string[], includeDeleted = false): Promise<Transaction[]> {
   if (groupIds.length === 0) return Promise.resolve([])
   return prisma.transaction.findMany({
-    where: { userId, deletedAt: null, groupId: { in: [...groupIds] } },
+    where: { userId, ...(includeDeleted ? {} : { deletedAt: null }), groupId: { in: [...groupIds] } },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   })
 }

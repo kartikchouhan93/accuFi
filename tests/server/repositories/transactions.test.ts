@@ -273,6 +273,13 @@ describe("findGroupMembers", () => {
     expect(await findGroupMembers(user.id, [group.id])).toEqual([])
   })
 
+  it("includes the deleted members of a group when asked, so a deleted split can be shown whole", async () => {
+    const { user, group, a, b, c } = await grouped()
+    await softDeleteTransaction(user.id, b.id)
+    expect((await findGroupMembers(user.id, [group.id], true)).map((row) => row.id)).toEqual([a.id, b.id, c.id])
+    expect((await findGroupMembers(user.id, [group.id], false)).map((row) => row.id)).toEqual([a.id, c.id])
+  })
+
   it("reads several groups at once, and nothing for no groups or an unknown one", async () => {
     const one = await grouped()
     expect(await findGroupMembers(one.user.id, [])).toEqual([])
@@ -300,6 +307,27 @@ describe("findTransactions", () => {
   it("lists newest first", async () => {
     const { user, t1, t2, t3, t4 } = await seeded()
     expect(await ids(user.id, {})).toEqual([t4.id, t3.id, t2.id, t1.id])
+  })
+
+  it("leaves deleted rows out unless asked, and lists them among the live ones, still newest first, when asked", async () => {
+    const { user, t1, t2, t3, t4 } = await seeded()
+    await softDeleteTransaction(user.id, t3.id)
+    expect(await ids(user.id, {})).toEqual([t4.id, t2.id, t1.id])
+    expect(await ids(user.id, { includeDeleted: false })).toEqual([t4.id, t2.id, t1.id])
+    const all = await findTransactions(user.id, { includeDeleted: true })
+    expect(all.items.map((t) => t.id)).toEqual([t4.id, t3.id, t2.id, t1.id])
+    expect(all.items.map((t) => t.deletedAt !== null)).toEqual([false, true, false, false])
+  })
+
+  it("applies the other filters to deleted rows too, and never reaches another user's", async () => {
+    const { user, food, t2, t3, t4 } = await seeded()
+    await softDeleteTransaction(user.id, t2.id)
+    await softDeleteTransaction(user.id, t3.id)
+    expect(await ids(user.id, { includeDeleted: true, nodeIds: [food.id] })).toEqual([t4.id, t2.id])
+    expect(await ids(user.id, { includeDeleted: true, from: d("2026-04-11") })).toEqual([t4.id, t3.id])
+    const stranger = await setup()
+    await registry.makeTransaction(stranger.user.id, stranger.bank.id, stranger.food.id, { amountPaise: 1n, occurredAt: "2026-04-12" })
+    expect((await findTransactions(user.id, { includeDeleted: true })).items.every((t) => t.userId === user.id)).toBe(true)
   })
 
   it("filters by node on either side", async () => {

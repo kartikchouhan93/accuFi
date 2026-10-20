@@ -104,7 +104,12 @@ export function Filters({ filter, problems, nodes }: Props) {
         {field("tag", "Tag", <input {...common("tag")} type="text" autoComplete="off" defaultValue={filter.tag} className={inputClass} />)}
         {field("q", "Note contains", <input {...common("q")} type="text" autoComplete="off" defaultValue={filter.q} className={inputClass} />)}
       </div>
-      <div className="mt-4 flex items-center gap-4">
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-3">
+        <label className="flex cursor-pointer items-center gap-2 text-sm">
+          {/* Deleted entries are listed among the others, muted, each with a Restore: the way back to one deleted by mistake. */}
+          <input type="checkbox" name="deleted" value="1" defaultChecked={filter.deleted === "1"} className="size-4 accent-pen" />
+          Show deleted
+        </label>
         <button type="submit" className="rounded-sm bg-pen px-4 py-2 text-sm font-medium text-pen-ink">
           Apply filters
         </button>

@@ -212,6 +212,15 @@ describe("transactionQuerySchema", () => {
     })
   })
 
+  it("reads the deleted switch as on only for \"1\", and as absent for anything else", () => {
+    const on = transactionQuerySchema.safeParse({ deleted: "1" })
+    expect(on.success && on.data).toEqual({ deleted: true })
+    for (const other of ["", "0", "yes", "true"]) {
+      const off = transactionQuerySchema.safeParse({ deleted: other })
+      expect(off.success && off.data).toEqual({})
+    }
+  })
+
   it("ignores parameters it does not know", () => {
     expect(transactionQuerySchema.safeParse({ utm_source: "mail" }).success).toBe(true)
   })
@@ -229,5 +238,7 @@ describe("listTransactionsSchema", () => {
     const parsed = listTransactionsSchema.safeParse({ from: "2026-03-01", cursor: "abc" })
     expect(parsed.success && parsed.data).toEqual({ from: "2026-03-01", cursor: "abc" })
     expect(listTransactionsSchema.safeParse({ userId: "x" }).success).toBe(false)
+    const withDeleted = listTransactionsSchema.safeParse({ deleted: "1", cursor: "abc" })
+    expect(withDeleted.success && withDeleted.data).toEqual({ deleted: true, cursor: "abc" })
   })
 })

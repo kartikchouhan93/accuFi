@@ -13,6 +13,7 @@ const view = (id: string, groupId: string | null = null): TransactionView => ({
   note: null,
   tags: [],
   groupId,
+  deleted: false,
   version: 0,
   warnings: [],
 })
@@ -23,6 +24,7 @@ const group = (groupId: string, ...legIds: string[]): ListEntry => ({
   occurredAt: calendarDate("2026-04-01"),
   fromNodeId: "bank",
   totalPaise: String(legIds.length * 100),
+  deleted: false,
   legs: legIds.map((id) => view(id, groupId)),
 })
 const names = (entries: ListEntry[]) => entries.map((e) => (e.kind === "group" ? e.groupId : e.transaction.id))

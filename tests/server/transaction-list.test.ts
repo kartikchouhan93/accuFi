@@ -102,6 +102,45 @@ describe("loadTransactionPage", () => {
     expect(page.entries[0]).toMatchObject({ kind: "single", transaction: { id: rows[0].id, groupId: rows[0].groupId } })
   })
 
+  it("lists deleted rows only when asked, marked as deleted, and still shows the live ones beside them", async () => {
+    const { user, bank, food, salary } = await world()
+    const kept = await registry.makeTransaction(user.id, salary.id, bank.id, { occurredAt: "2026-04-01", note: "kept" })
+    const gone = await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: "2026-04-02", note: "gone" })
+    await prisma.transaction.update({ where: { id: gone.id }, data: { deletedAt: new Date() } })
+
+    expect((await loadTransactionPage(user.id, {})).entries.map((e) => e.kind === "single" && e.transaction.id)).toEqual([kept.id])
+    const page = await loadTransactionPage(user.id, { deleted: true })
+    expect(page.entries).toHaveLength(2)
+    expect(page.entries.map((e) => e.kind === "single" && [e.transaction.id, e.transaction.deleted])).toEqual([[gone.id, true], [kept.id, false]])
+  })
+
+  it("shows a deleted split as one deleted entry with every leg and its total, and a live split as live", async () => {
+    const { user, bank, food, clothes } = await world()
+    const dead = await makeGroup(user.id, bank.id, [{ to: food.id, amount: 6_000n }, { to: clothes.id, amount: 4_000n }], "2026-04-02")
+    await prisma.transaction.updateMany({ where: { groupId: dead.group.id }, data: { deletedAt: new Date() } })
+    const live = await makeGroup(user.id, bank.id, [{ to: food.id, amount: 100n }, { to: clothes.id, amount: 200n }], "2026-04-01")
+
+    expect((await loadTransactionPage(user.id, {})).entries.map((e) => e.kind === "group" && e.groupId)).toEqual([live.group.id])
+    const page = await loadTransactionPage(user.id, { deleted: true })
+    expect(page.entries.map(describeEntry)).toEqual(["group:2", "group:2"])
+    expect(page.entries[0]).toMatchObject({ kind: "group", groupId: dead.group.id, deleted: true, totalPaise: "10000" })
+    expect(page.entries[1]).toMatchObject({ kind: "group", groupId: live.group.id, deleted: false, totalPaise: "300" })
+  })
+
+  it("never counts a deleted row in a balance, whether or not the list shows it", async () => {
+    const { user, bank, salary } = await world()
+    const row = await registry.makeTransaction(user.id, salary.id, bank.id, { occurredAt: "2020-01-01", amountPaise: 5_000n })
+    await prisma.transaction.update({ where: { id: row.id }, data: { deletedAt: new Date() } })
+    const hidden = await loadTransactionScreen(user.id, { from: "", to: "" })
+    const shown = await loadTransactionScreen(user.id, { from: "", to: "", deleted: "1" })
+    expect(hidden.page.entries).toHaveLength(0)
+    expect(shown.page.entries).toHaveLength(1)
+    expect(hidden.balances[bank.id]).toBe("0")
+    expect(shown.balances[bank.id]).toBe("0")
+    expect(shown.filter.deleted).toBe("1")
+    expect(hidden.filter.deleted).toBe("")
+  })
+
   it("filters by the kind at either end, and finds nothing through another user's node", async () => {
     const { user, bank, food, salary } = await world()
     const other = await world()

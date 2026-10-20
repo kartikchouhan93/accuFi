@@ -356,6 +356,68 @@ test("deletes a whole split in one click and brings it back with undo", async ({
   expect(await prisma.transaction.count({ where: { userId, deletedAt: { not: null } } })).toBe(0)
 })
 
+test("finds a deleted transaction again after a reload and restores it, and the balance comes back", async ({ session: { page, userId } }) => {
+  await account(userId, "HDFC Savings", "10,000")
+  await post(userId, "HDFC Savings", "Groceries", "250", { note: "Wrong row" })
+  await page.goto("/transactions")
+  const bank = balances(page).getByRole("listitem").filter({ hasText: "HDFC Savings" })
+  await expect(bank).toContainText("₹9,750.00")
+  const wrong = entries(page).getByRole("listitem").filter({ hasText: "Wrong row" })
+  await wrong.getByRole("button", { expanded: false }).first().click()
+  await wrong.getByRole("button", { name: "Delete" }).click()
+  await expect(page.getByRole("status")).toContainText("Deleted HDFC Savings → Groceries")
+  await expect(bank).toContainText("₹10,000.00")
+
+  // The undo message is gone with the page: nothing on the list leads back to the entry until deleted ones are asked for.
+  await page.reload()
+  await expect(entries(page).getByRole("listitem").filter({ hasText: "Wrong row" })).toHaveCount(0)
+  await filters(page).getByLabel("Show deleted").check()
+  await filters(page).getByRole("button", { name: "Apply filters" }).click()
+
+  const found = entries(page).getByRole("listitem").filter({ hasText: "Wrong row" })
+  await expect(found).toHaveCount(1)
+  await expect(found).toContainText("Deleted")
+  await expect(found).toContainText("₹250.00")
+  // It is listed, not counted: the balance has not moved, and a deleted row offers a restore instead of an edit or a delete.
+  await expect(bank).toContainText("₹10,000.00")
+  await found.getByRole("button", { expanded: false }).first().click()
+  await expect(found.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0)
+  await expect(found.getByRole("button", { name: "Delete", exact: true })).toHaveCount(0)
+
+  await found.getByRole("button", { name: "Restore" }).click()
+  await expect(page.getByRole("status")).toContainText("Restored.")
+  await expect(bank).toContainText("₹9,750.00")
+  await expect(found).not.toContainText("Deleted")
+  expect(await prisma.transaction.count({ where: { userId, deletedAt: { not: null } } })).toBe(0)
+
+  // And with deleted ones hidden again it is an ordinary entry.
+  await page.goto("/transactions")
+  await expect(entries(page).getByRole("listitem").filter({ hasText: "Wrong row" })).toHaveCount(1)
+})
+
+test("finds a deleted split again after a reload and restores every leg together", async ({ session: { page, userId } }) => {
+  await account(userId, "HDFC Savings", "10,000")
+  await splitFromBank(userId, "100", ["Groceries", "Dining"], "Weekend shopping")
+  await page.goto("/transactions")
+  const bank = balances(page).getByRole("listitem").filter({ hasText: "HDFC Savings" })
+  const group = entries(page).getByRole("listitem").filter({ hasText: "Weekend shopping" })
+  await group.getByRole("button", { expanded: false }).first().click()
+  await group.getByRole("button", { name: "Delete split" }).click()
+  await expect(bank).toContainText("₹10,000.00")
+
+  await page.goto("/transactions?from=&to=&deleted=1")
+  await expect(filters(page).getByLabel("Show deleted")).toBeChecked()
+  const found = entries(page).getByRole("listitem").filter({ hasText: "Weekend shopping" })
+  await expect(found).toHaveCount(1)
+  await expect(found).toContainText("Deleted")
+  await found.getByRole("button", { expanded: false }).first().click()
+  await expect(found.getByRole("button", { name: /out of the split/ })).toHaveCount(0)
+  await found.getByRole("button", { name: "Restore split" }).click()
+  await expect(page.getByRole("status")).toContainText("Restored.")
+  await expect(bank).toContainText("₹9,900.00")
+  expect(await prisma.transaction.count({ where: { userId, deletedAt: { not: null } } })).toBe(0)
+})
+
 test("takes one leg out of a split and leaves the money where it went", async ({ session: { page, userId } }) => {
   await account(userId, "HDFC Savings", "10,000")
   await splitFromBank(userId, "100", ["Groceries", "Dining"], "Weekend shopping")

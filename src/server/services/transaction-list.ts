@@ -39,6 +39,7 @@ function toRepositoryFilter(filter: ListFilter): TransactionFilter {
     maxAmount: filter.max,
     tags: filter.tag,
     search: filter.q,
+    includeDeleted: filter.deleted === true,
   }
 }
 
@@ -50,6 +51,7 @@ function groupEntry(anchor: Transaction, groupId: string, legs: Transaction[]): 
     occurredAt: fromDbDate(anchor.occurredAt),
     fromNodeId: sources.size === 1 ? anchor.fromNodeId : null,
     totalPaise: serialisePaise(legs.reduce((sum, leg) => sum + leg.amountPaise, 0n)),
+    deleted: legs.every((leg) => leg.deletedAt !== null),
     legs: legs.map((leg) => toTransactionView(leg)),
   }
 }
@@ -61,28 +63,37 @@ function groupEntry(anchor: Transaction, groupId: string, legs: Transaction[]): 
  * and the legs on the other side bring it in again on the next page. The server keeps no memory of what it has sent, so
  * a caller that appends pages must drop an entry whose `groupId` it already holds (the list component does).
  *
- * A group shows once per page, at the position of its first leg, and its legs are every live member of it: if the
- * members cannot be read (they were deleted a moment ago) the leg that matched is shown as an ordinary row.
+ * A group shows once per page, at the position of its first leg, and its legs are every member of it in the same state
+ * as that leg (live, or deleted when `filter.deleted` asked for deleted rows too): if the members cannot be read (they
+ * were deleted a moment ago) the leg that matched is shown as an ordinary row.
  */
 export async function loadTransactionPage(userId: string, filter: ListFilter, cursor?: string): Promise<TransactionPage> {
+  const includeDeleted = filter.deleted === true
   const page = await findTransactions(userId, toRepositoryFilter(filter), cursor, DEFAULT_PAGE_SIZE)
   const members = await findGroupMembers(
     userId,
     page.items.flatMap((row) => (row.groupId === null ? [] : [row.groupId])),
+    includeDeleted,
   )
+  // A split is deleted and restored whole, so its legs normally all share one state. Keyed by state as well as group,
+  // a row only ever brings in the legs in its own state: a live leg never shows a deleted one as part of the split.
+  const legKey = (groupId: string, row: Transaction) => `${groupId}:${row.deletedAt === null ? "live" : "deleted"}`
   const legsOf = new Map<string, Transaction[]>()
   for (const member of members) {
-    if (member.groupId !== null) legsOf.set(member.groupId, [...(legsOf.get(member.groupId) ?? []), member])
+    if (member.groupId === null) continue
+    const key = legKey(member.groupId, member)
+    legsOf.set(key, [...(legsOf.get(key) ?? []), member])
   }
 
   const entries: ListEntry[] = []
   const emitted = new Set<string>()
   for (const row of page.items) {
-    const legs = row.groupId === null ? undefined : legsOf.get(row.groupId)
-    if (row.groupId === null || legs === undefined || legs.length < 2) {
+    const key = row.groupId === null ? null : legKey(row.groupId, row)
+    const legs = key === null ? undefined : legsOf.get(key)
+    if (key === null || row.groupId === null || legs === undefined || legs.length < 2) {
       entries.push({ kind: "single", transaction: toTransactionView(row) })
-    } else if (!emitted.has(row.groupId)) {
-      emitted.add(row.groupId)
+    } else if (!emitted.has(key)) {
+      emitted.add(key)
       entries.push(groupEntry(row, row.groupId, legs))
     }
   }

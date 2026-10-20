@@ -23,6 +23,8 @@ export interface TransactionView {
   note: string | null
   tags: string[]
   groupId: string | null
+  /** Soft-deleted: it counts toward no balance. Only a listing that asked for deleted rows ever contains one. */
+  deleted: boolean
   /** The optimistic-locking token: pass it back as `expectedVersion` when editing. */
   version: number
   /**
@@ -42,6 +44,7 @@ export function toTransactionView(row: Transaction, warnings: Warning[] = []): T
     note: row.note,
     tags: [...row.tags],
     groupId: row.groupId,
+    deleted: row.deletedAt !== null,
     version: row.version,
     warnings,
   }

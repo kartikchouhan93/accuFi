@@ -9,7 +9,7 @@ import { formatDay } from "@/lib/transaction-text"
 import type { TransactionView } from "@/lib/transaction-view"
 import type { ActionResult } from "@/server/action-support"
 import { removeTransactionAction, restoreTransactionAction, ungroupTransactionAction } from "./actions"
-import type { Announce } from "./notice"
+import type { Announce, TransactionNotice } from "./notice"
 import { nodeLabel } from "./pickers"
 import { describeTransactionFailure } from "./transaction-failure"
 
@@ -30,6 +30,8 @@ interface Context {
 
 const nameOf = (nodes: Context["nodes"], id: string) => nodes.get(id)?.name ?? "an unknown account"
 
+const deletedRowClass = "bg-sheet/50 text-ink-soft"
+
 function Tag({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
     <span title={title} className="rounded-sm border border-rule-strong px-1.5 py-0.5 align-middle text-xs font-normal text-ink-soft">
@@ -38,14 +40,23 @@ function Tag({ children, title }: { children: React.ReactNode; title?: string })
   )
 }
 
-/** Restores what a delete removed. It never touches the row that was deleted (it is gone from the screen by now). */
+const restoredNotice = (restored: TransactionView): TransactionNotice => ({
+  tone: restored.warnings.length > 0 ? "warning" : "success",
+  lines: ["Restored.", ...restored.warnings.map((w) => w.message)],
+})
+
+/**
+ * Restores what a delete removed, from the message that followed it. It never touches the row that was deleted (it is
+ * gone from the screen by now). Once that message is dismissed the way back is "Show deleted" on the filters, where the
+ * entry is listed with its own Restore.
+ */
 async function undoDelete(id: string, announce: Announce) {
   const result = await restoreTransactionAction({ id })
   if (!result.ok) {
     announce({ tone: "warning", lines: [`Could not restore it. ${describeTransactionFailure(result).message}`] })
     return
   }
-  announce({ tone: result.data.warnings.length > 0 ? "warning" : "success", lines: ["Restored.", ...result.data.warnings.map((w) => w.message)] })
+  announce(restoredNotice(result.data))
 }
 
 export function EntryRow({ entry, context }: { entry: ListEntry; context: Context }) {
@@ -114,7 +125,15 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
   const from = nodes.get(transaction.fromNodeId)
   const to = nodes.get(transaction.toNodeId)
   const title = `${nameOf(nodes, transaction.fromNodeId)} → ${nameOf(nodes, transaction.toNodeId)}`
-  const projected = compareDates(transaction.occurredAt, today) > 0
+  const deleted = transaction.deleted
+  // A deleted row counts toward nothing, so "not in your current balances" would be no news.
+  const projected = !deleted && compareDates(transaction.occurredAt, today) > 0
+
+  const restore = () =>
+    run(
+      () => restoreTransactionAction({ id: transaction.id }),
+      (restored) => announce(restoredNotice(restored), true),
+    )
 
   const remove = () =>
     run(
@@ -131,8 +150,24 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
     )
 
   return (
-    <li>
-      <Heading title={title} amount={transaction.amountPaise} open={open} panelId={panelId} onToggle={() => setOpen((current) => !current)}>
+    <li className={deleted ? deletedRowClass : undefined}>
+      <Heading
+        title={
+          <>
+            <span className={deleted ? "line-through" : undefined}>{title}</span>
+            {deleted && (
+              <>
+                {" "}
+                <Tag>Deleted</Tag>
+              </>
+            )}
+          </>
+        }
+        amount={transaction.amountPaise}
+        open={open}
+        panelId={panelId}
+        onToggle={() => setOpen((current) => !current)}
+      >
         <span className="figures">{formatDay(transaction.occurredAt)}</span>
         {projected && (
           <>
@@ -165,14 +200,23 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
               </>
             )}
           </dl>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={buttonClass} onClick={() => onEdit(transaction)}>
-              Edit
-            </button>
-            <button type="button" className={`${buttonClass} text-red`} disabled={pending} onClick={remove}>
-              Delete
-            </button>
-          </div>
+          {deleted ? (
+            <div className="space-y-3">
+              <p className="max-w-xl">Deleted: this is not in any balance. Restoring it puts it back, as it was.</p>
+              <button type="button" className={buttonClass} disabled={pending} onClick={restore}>
+                Restore
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={buttonClass} onClick={() => onEdit(transaction)}>
+                Edit
+              </button>
+              <button type="button" className={`${buttonClass} text-red`} disabled={pending} onClick={remove}>
+                Delete
+              </button>
+            </div>
+          )}
         </Panel>
       )}
     </li>
@@ -187,8 +231,16 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
   const first = entry.legs[0]
   const source = entry.fromNodeId === null ? "several sources" : nameOf(nodes, entry.fromNodeId)
   const destinations = entry.legs.map((leg) => nameOf(nodes, leg.toNodeId)).join(", ")
-  const projected = compareDates(entry.occurredAt, today) > 0
+  const deleted = entry.deleted
+  const projected = !deleted && compareDates(entry.occurredAt, today) > 0
   const total = formatPaiseText(entry.totalPaise)
+
+  // Any leg restores the whole split: the service brings back every deleted member of the group.
+  const restoreAll = () =>
+    run(
+      () => restoreTransactionAction({ id: first.id }),
+      (restored) => announce(restoredNotice(restored), true),
+    )
 
   const removeAll = () =>
     run(
@@ -216,11 +268,17 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
     )
 
   return (
-    <li>
+    <li className={deleted ? deletedRowClass : undefined}>
       <Heading
         title={
           <>
-            Split from {source} <Tag>Split</Tag>
+            <span className={deleted ? "line-through" : undefined}>Split from {source}</span> <Tag>Split</Tag>
+            {deleted && (
+              <>
+                {" "}
+                <Tag>Deleted</Tag>
+              </>
+            )}
           </>
         }
         amount={entry.totalPaise}
@@ -250,24 +308,37 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                 <span className="font-medium">→ {nameOf(nodes, leg.toNodeId)}</span>
                 <span className="leader" aria-hidden="true" />
                 <Amount text={figure(leg.amountPaise)} />
-                <button
-                  type="button"
-                  className="text-sm font-medium text-pen underline underline-offset-4 disabled:opacity-60"
-                  disabled={pending}
-                  aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
-                  onClick={() => takeOut(leg)}
-                >
-                  Take out of split
-                </button>
+                {!deleted && (
+                  <button
+                    type="button"
+                    className="text-sm font-medium text-pen underline underline-offset-4 disabled:opacity-60"
+                    disabled={pending}
+                    aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
+                    onClick={() => takeOut(leg)}
+                  >
+                    Take out of split
+                  </button>
+                )}
               </li>
             ))}
           </ul>
-          <p className="mb-3 max-w-xl text-ink-soft">
-            Taking a leg out keeps the money where it went and makes it an ordinary transaction. Deleting removes every leg.
-          </p>
-          <button type="button" className={`${buttonClass} text-red`} disabled={pending} onClick={removeAll}>
-            Delete split
-          </button>
+          {deleted ? (
+            <div className="space-y-3">
+              <p className="max-w-xl">Deleted: none of these legs is in any balance. Restoring brings back every leg, as it was.</p>
+              <button type="button" className={buttonClass} disabled={pending} onClick={restoreAll}>
+                Restore split
+              </button>
+            </div>
+          ) : (
+            <>
+              <p className="mb-3 max-w-xl text-ink-soft">
+                Taking a leg out keeps the money where it went and makes it an ordinary transaction. Deleting removes every leg.
+              </p>
+              <button type="button" className={`${buttonClass} text-red`} disabled={pending} onClick={removeAll}>
+                Delete split
+              </button>
+            </>
+          )}
         </Panel>
       )}
     </li>
