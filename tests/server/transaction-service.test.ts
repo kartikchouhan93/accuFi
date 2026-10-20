@@ -664,9 +664,11 @@ describe("purchases into an investment valued by quantity", () => {
 
 describe("purchases into an investment valued as a lump", () => {
   it("creates a lot of exactly one unit, with or without the quantity stated", async () => {
+    // Two lump investments: a lump is bought once, so each takes one purchase.
     const { user, bank, plot } = await investments()
+    const flat = await registry.makeNode(user.id, "INVESTMENT", "Flat", { valuationMode: "LUMP", unitLabel: "flat" })
     const unstated = await record(user.id, bank, plot, 25_00_000_00n)
-    const stated = await record(user.id, bank, plot, 1_00_000_00n, { quantity: UNIT })
+    const stated = await record(user.id, bank, flat, 1_00_000_00n, { quantity: UNIT })
     expect(await findLotByTransaction(user.id, unstated.id)).toMatchObject({ quantity: UNIT, costBasisPaise: 25_00_000_00n })
     expect(await findLotByTransaction(user.id, stated.id)).toMatchObject({ quantity: UNIT, costBasisPaise: 1_00_000_00n })
   })
@@ -680,6 +682,84 @@ describe("purchases into an investment valued as a lump", () => {
     expect((error as InvalidTransactionError).message).toBe("Plot is valued as one lump sum, so its quantity is always 1.")
     expect(await rowCount(user.id)).toBe(before)
     expect(await lotCount(user.id)).toBe(0)
+  })
+})
+
+describe("a lump investment is bought once", () => {
+  // A lump price values the whole asset, so a second live lot would be valued twice.
+  const once = "Plot is a lump investment, which is bought once. To add to it, create another investment."
+
+  it("refuses a second purchase while the first is live, writing nothing", async () => {
+    const { user, bank, plot } = await investments()
+    await record(user.id, bank, plot, 25_00_000_00n)
+    const before = await rowCount(user.id)
+    const error = await rejection(record(user.id, bank, plot, 1_00_000_00n))
+    expect(error).toBeInstanceOf(InvalidTransactionError)
+    expect((error as InvalidTransactionError).message).toBe(once)
+    expect(violationCodes(error)).toEqual(["LUMP_ALREADY_BOUGHT"])
+    expect(await rowCount(user.id)).toBe(before)
+    expect(await lotCount(user.id)).toBe(1)
+  })
+
+  it("takes a new purchase once the earlier one is deleted: a deleted purchase's lot does not count", async () => {
+    const { user, bank, plot } = await investments()
+    const first = await record(user.id, bank, plot, 25_00_000_00n)
+    await removeTransaction(user.id, first.id)
+    await record(user.id, bank, plot, 26_00_000_00n)
+    expect(await findLiveLots(user.id, plot.id)).toMatchObject([{ costBasisPaise: 26_00_000_00n }])
+  })
+
+  it("still answers a replayed purchase with the first result", async () => {
+    // EC-17: the replay meets the stored row before any rule, so its own lot does not count against it.
+    const { user, bank, plot } = await investments()
+    const key = randomUUID()
+    const first = await record(user.id, bank, plot, 25_00_000_00n, { idempotencyKey: key })
+    const replay = await record(user.id, bank, plot, 25_00_000_00n, { idempotencyKey: key })
+    expect(replay.id).toBe(first.id)
+    expect(await lotCount(user.id)).toBe(1)
+  })
+
+  it("refuses an edit that moves a purchase into a lump already bought, changing nothing", async () => {
+    const { user, bank, plot, sip } = await investments()
+    await record(user.id, bank, plot, 25_00_000_00n)
+    const view = await record(user.id, bank, sip, 500_00n)
+    const error = await rejection(editTransaction(user.id, view.id, { toNodeId: plot.id }, view.version))
+    expect((error as InvalidTransactionError).message).toBe(once)
+    expect(violationCodes(error)).toEqual(["LUMP_ALREADY_BOUGHT"])
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: view.id } })).toNodeId).toBe(sip.id)
+    expect(await findLiveLots(user.id, plot.id)).toHaveLength(1)
+  })
+
+  it("refuses a quantity for a legacy lump purchase while another purchase holds the lump", async () => {
+    const { user, bank, plot } = await investments()
+    const legacy = await registry.makeTransaction(user.id, bank.id, plot.id, { amountPaise: 1_000_00n })
+    await record(user.id, bank, plot, 25_00_000_00n)
+    const error = await rejection(editTransaction(user.id, legacy.id, { quantity: UNIT }, legacy.version))
+    expect(violationCodes(error)).toEqual(["LUMP_ALREADY_BOUGHT"])
+    expect(await findLotByTransaction(user.id, legacy.id)).toBeNull()
+  })
+
+  it("lets the purchase that holds the lump be edited", async () => {
+    const { user, bank, plot } = await investments()
+    const view = await record(user.id, bank, plot, 25_00_000_00n)
+    await editTransaction(user.id, view.id, { amount: 24_00_000_00n, quantity: UNIT }, view.version)
+    expect(await findLiveLots(user.id, plot.id)).toMatchObject([{ costBasisPaise: 24_00_000_00n }])
+  })
+
+  it("refuses to restore a deleted purchase while another holds the lump, restoring nothing", async () => {
+    const { user, bank, plot } = await investments()
+    const first = await record(user.id, bank, plot, 25_00_000_00n)
+    await removeTransaction(user.id, first.id)
+    const second = await record(user.id, bank, plot, 26_00_000_00n)
+    const error = await rejection(restoreTransaction(user.id, first.id))
+    expect(error).toBeInstanceOf(InvalidTransactionError)
+    expect((error as InvalidTransactionError).message).toBe(once)
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: first.id } })).deletedAt).not.toBeNull()
+    expect((await findLiveLots(user.id, plot.id)).map((lot) => lot.costBasisPaise)).toEqual([26_00_000_00n])
+    // with the other purchase deleted, it comes back
+    await removeTransaction(user.id, second.id)
+    await restoreTransaction(user.id, first.id)
+    expect((await findLiveLots(user.id, plot.id)).map((lot) => lot.costBasisPaise)).toEqual([25_00_000_00n])
   })
 })
 
@@ -718,7 +798,9 @@ describe("splits and lot-mode investments", () => {
       expect(error).toBeInstanceOf(InvalidTransactionError)
       expect((error as InvalidTransactionError).violations).toMatchObject([{ code: "LOT_SPLIT_LEG", leg: 1 }])
       expect((error as InvalidTransactionError).message).toContain("Leg 2")
-      expect((error as InvalidTransactionError).message).toContain("record an investment purchase on its own")
+      expect((error as InvalidTransactionError).message).toBe(
+        `Leg 2: ${target.name} is valued by its lots, so record an investment purchase on its own.`,
+      )
     }
     expect(await rowCount(user.id)).toBe(before)
   })

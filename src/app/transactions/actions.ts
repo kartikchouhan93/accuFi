@@ -52,7 +52,8 @@ function parseInput<S extends z.ZodType>(schema: S, input: unknown): { data: z.o
 // that is the control a user changes to fix it (the source is what they chose first), and the message names both. An
 // archived end is filed under its own control. The source is shared by every leg of a split, so its field has no leg.
 // The lot rules go under the field they are about: the quantity, the amount, the day, or the source that money cannot
-// leave this way; a switch, a split leg or a sold purchase being moved is fixed by choosing another destination.
+// leave this way; a switch, a split leg, a second purchase of a lump or a sold purchase being moved is fixed by choosing
+// another destination.
 const FIELD_OF_VIOLATION: Record<TransactionViolationCode, string> = {
   SAME_NODE: "toNodeId",
   ILLEGAL_FLOW: "toNodeId",
@@ -63,6 +64,7 @@ const FIELD_OF_VIOLATION: Record<TransactionViolationCode, string> = {
   QUANTITY_NOT_APPLICABLE: "quantity",
   QUANTITY_OUT_OF_RANGE: "quantity",
   LUMP_QUANTITY: "quantity",
+  LUMP_ALREADY_BOUGHT: "toNodeId",
   QUANTITY_BELOW_SOLD: "quantity",
   AMOUNT_BELOW_SOLD: "amount",
   SOLD_COST_CHANGED: "amount",
