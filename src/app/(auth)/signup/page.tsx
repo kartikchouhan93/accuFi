@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation"
-import { auth } from "@/server/auth"
+import { hasLiveSession } from "@/server/action-support"
 import { signupAction } from "../actions"
 import { AuthForm } from "../auth-form"
 
 export default async function SignupPage() {
-  if ((await auth())?.user?.id) redirect("/")
+  if (await hasLiveSession()) redirect("/")
   return <AuthForm mode="signup" action={signupAction} />
 }

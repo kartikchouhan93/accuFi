@@ -4,9 +4,20 @@ import type { Transaction } from "@prisma/client"
 // "no such row" and "someone else's row": a distinct "forbidden" would confirm to a prober that the id exists.
 // The message never contains the id.
 export class NotFoundError extends Error {
-  constructor(readonly entity: "node" | "transaction" | "group" | "user") {
+  constructor(readonly entity: "node" | "transaction" | "group") {
     super(`${entity} not found`)
     this.name = "NotFoundError"
+  }
+}
+
+// The *authenticated* user has no row: a session (a JWT, which cannot be revoked) that outlived its user. Not a
+// NotFoundError on purpose: that one means "the thing you asked for is not yours or not there" and is answered with
+// not-found, while this one means the session is dead and is answered by sending the caller to /login
+// (redirectIfUnauthenticated). Keeping them apart means neither can be mistaken for the other by an instanceof check.
+export class UserNotFoundError extends Error {
+  constructor() {
+    super("user not found")
+    this.name = "UserNotFoundError"
   }
 }
 

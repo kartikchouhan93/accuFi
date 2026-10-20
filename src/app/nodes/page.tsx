@@ -11,14 +11,13 @@ export const metadata: Metadata = { title: "Ledger" }
 // Reads the whole ledger on the server (archived nodes included, so every total is the true one) and hands the client
 // plain data: money is paise text, never a bigint, which JSON cannot carry.
 export default async function NodesPage() {
-  let userId: string
+  let overview: Awaited<ReturnType<typeof loadNodeOverview>>
   try {
-    userId = await requireUserId()
+    overview = await loadNodeOverview(await requireUserId())
   } catch (error) {
-    redirectIfUnauthenticated(error) // the route guard normally catches this first
+    redirectIfUnauthenticated(error) // the route guard normally catches a missing session first; a deleted user's it cannot
     throw error
   }
-  const overview = await loadNodeOverview(userId)
   return (
     <AppShell>
       <NodeWorkspace overview={overview} netWorth={<NetWorth overview={overview} />} />

@@ -1,5 +1,5 @@
 import type { LedgerNode } from "@prisma/client"
-import { todayIn, type CalendarDate } from "@/domain/calendar-date"
+import { type CalendarDate } from "@/domain/calendar-date"
 import type { LedgerKind } from "@/domain/ledger-kind"
 import type { Paise } from "@/domain/money"
 import { validateTransaction } from "@/domain/transaction-rules"
@@ -16,7 +16,6 @@ import {
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
 import { todayFor } from "@/server/services/clock"
 import { inTransaction } from "@/server/repositories/unit-of-work"
-import { findUserTimezone } from "@/server/repositories/user-repository"
 
 // The node lifecycle. The database has no CHECK constraints, so everything it cannot enforce is enforced here: a
 // system node is never renamed, archived or deleted; a node that transactions reference is never deleted; the
@@ -180,12 +179,13 @@ export async function createLedgerNode(userId: string, input: CreateNodeInput): 
   const name = cleanName(input.name)
   await validateParent(userId, input)
 
+  // Read for every node, not only one with an opening balance: it is also what stops a session whose user row is gone
+  // from reaching the insert, where the missing user would surface as a foreign-key violation instead of UserNotFoundError.
+  const today = await todayFor(userId)
   const openingBalance = "openingBalance" in input ? input.openingBalance : undefined
   let plan: OpeningBalancePlan | null = null
   if (openingBalance !== undefined) {
-    const timezone = await findUserTimezone(userId)
-    if (timezone === null) throw new NotFoundError("user")
-    plan = await planOpeningBalance(userId, input.kind, openingBalance, todayIn(timezone))
+    plan = await planOpeningBalance(userId, input.kind, openingBalance, today)
   }
 
   // `input` also carries `openingBalance`, which is not a column; the repository copies only the fields it allows.

@@ -1,7 +1,9 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
 import type { TransactionView } from "@/lib/transaction-view"
-import { UnauthenticatedError } from "@/server/auth"
+import { auth, UnauthenticatedError } from "@/server/auth"
+import { UserNotFoundError } from "@/server/repositories/errors"
+import { findUserTimezone } from "@/server/repositories/user-repository"
 
 // Shared by every Server Action file. It cannot live in one: a "use server" module may export only async functions.
 
@@ -44,9 +46,24 @@ export const failed = (code: ActionErrorCode, message: string, fieldErrors?: Rec
  * UnauthenticatedError in that case; an action calls this first in its catch block and everything else carries on.
  * `redirect` throws, so this never returns for an UnauthenticatedError. The route guard (src/proxy.ts) already
  * redirects page navigations without a session; this covers an action that arrives after the session has lapsed.
+ *
+ * A session can also be validly signed for a user whose row is gone (a JWT cannot be revoked, so it outlives its user
+ * by up to its lifetime). The services answer that with UserNotFoundError, and it takes the same road: the session is
+ * dead, so the person is sent to sign in, and no default is substituted for what the missing row would have said.
+ * Every page and action already calls this, so a new read of the user row needs nothing else. (The stale cookie is
+ * left to expire or be replaced at the next sign-in: a Server Component cannot clear it.)
  */
 export function redirectIfUnauthenticated(error: unknown): void {
-  if (error instanceof UnauthenticatedError) redirect("/login")
+  if (error instanceof UnauthenticatedError || error instanceof UserNotFoundError) redirect("/login")
+}
+
+/**
+ * Whether the request carries a session for a user who still exists. The sign-in and sign-up pages send such a
+ * person on to "/"; with only the cookie to go by, a ghost session would be sent to "/", back to /login, and so on.
+ */
+export async function hasLiveSession(): Promise<boolean> {
+  const userId = (await auth())?.user?.id
+  return typeof userId === "string" && userId.length > 0 && (await findUserTimezone(userId)) !== null
 }
 
 /**

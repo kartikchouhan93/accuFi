@@ -14,14 +14,13 @@ export const metadata: Metadata = { title: "Dashboard" }
 // server's (archived accounts included in each total) and reaches the markup as text. The route guard sends anyone
 // without a session to /login before this runs.
 export default async function DashboardPage() {
-  let userId: string
+  let dashboard: Awaited<ReturnType<typeof getDashboard>>
   try {
-    userId = await requireUserId()
+    dashboard = await getDashboard(await requireUserId())
   } catch (error) {
     redirectIfUnauthenticated(error)
     throw error
   }
-  const dashboard = await getDashboard(userId)
   return (
     <AppShell current="dashboard">
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-8 sm:px-6">
