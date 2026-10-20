@@ -118,6 +118,21 @@ test("lets an account refuse to be overdrawn, says as of when, and then refuses"
   await expect(record.getByRole("alert")).toContainText("does not allow a negative balance")
 })
 
+test("points aria-controls at the details panel only while it exists", async ({ session: { page, userId } }) => {
+  await account(userId, "Everyday", "100")
+  await page.goto("/nodes")
+  const toggle = row(page, "Everyday").getByRole("button", { expanded: false }).first()
+  // Closed: there is no panel in the page, so there is nothing to control.
+  await expect(toggle).not.toHaveAttribute("aria-controls")
+  await toggle.click()
+  const opened = row(page, "Everyday").getByRole("button", { expanded: true }).first()
+  const panelId = await opened.getAttribute("aria-controls")
+  expect(panelId).toBeTruthy()
+  await expect(page.locator(`[id="${panelId}"]`)).toHaveCount(1)
+  await opened.click()
+  await expect(row(page, "Everyday").getByRole("button", { expanded: false }).first()).not.toHaveAttribute("aria-controls")
+})
+
 test("shows archived accounts when the filter is toggled", async ({ ledger: page }) => {
   await addNode(page, "Account", { Name: "Old savings", "Account type": "Savings", "Amount (₹)": "5,000" })
   await page.getByRole("button", { name: "Add account" }).click()

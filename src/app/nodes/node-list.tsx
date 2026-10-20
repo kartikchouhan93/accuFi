@@ -249,7 +249,7 @@ function NodeRow({ node, balance, announce }: RowProps) {
       <button
         type="button"
         aria-expanded={open}
-        aria-controls={panelId}
+        aria-controls={open ? panelId : undefined}
         onClick={() => setOpen((current) => !current)}
         className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-3 py-3 text-left"
       >
