@@ -253,6 +253,34 @@ describe("loadTransactionScreen", () => {
     expect(screen.balances[food.id]).toBe("2500")
   })
 
+  it("shows an investment held by lots at its value, as the ledger does, or as not valued with why; one valued by what was put in at its balance", async () => {
+    const { user, bank, today } = await seeded()
+    const investment = (name: string, valuationMode: "QUANTITY" | "CONTRIBUTION_ONLY") =>
+      registry.makeNode(user.id, "INVESTMENT", name, { valuationMode, unitLabel: "g" })
+    const gold = await investment("Gold", "QUANTITY")
+    const silver = await investment("Silver", "QUANTITY")
+    const old = await investment("Old fund", "QUANTITY")
+    const ppf = await investment("PPF", "CONTRIBUTION_ONLY")
+    const purchase = (to: string, amount: bigint, quantity?: bigint) =>
+      recordTransaction(user.id, { fromNodeId: bank.id, toNodeId: to, amount, quantity, occurredAt: calendarDate("2026-01-10"), idempotencyKey: randomUUID() })
+    await purchase(gold.id, 70_000_00n, 10_000_000n)
+    await purchase(silver.id, 24_000_00n, 250_000_000n)
+    await purchase(ppf.id, 1_50_000_00n)
+    await registry.makeTransaction(user.id, bank.id, old.id, { amountPaise: 20_000_00n, occurredAt: "2026-01-05" }) // no lot: from before lots
+    await prisma.priceSnapshot.create({ data: { userId: user.id, nodeId: gold.id, asOf: toDbDate(calendarDate("2026-03-01")), pricePerUnitPaise: 7_800_00n } })
+
+    const screen = await loadTransactionScreen(user.id, { from: "", to: "" })
+    expect(screen.balances[gold.id]).toBe("7800000") // 10 g at ₹7,800, not the ₹70,000 it cost
+    expect(screen.priced[gold.id]).toEqual({ asOf: "2026-03-01", stale: today > "2026-03-31" })
+    expect(screen.unvalued[gold.id]).toBeUndefined()
+    expect(screen.unvalued[silver.id]).toBe("NO_PRICE")
+    expect(screen.unvalued[old.id]).toBe("NEEDS_QUANTITY")
+    expect(screen.priced[silver.id]).toBeUndefined()
+    expect(screen.balances[ppf.id]).toBe("15000000")
+    expect(screen.unvalued[ppf.id]).toBeUndefined()
+    expect(() => JSON.stringify(screen)).not.toThrow()
+  })
+
   it("answers a bad filter with the reasons beside their fields and an empty list, not a list the filter did not make", async () => {
     const { user } = await seeded()
     const screen = await loadTransactionScreen(user.id, { from: "2026-02-30", min: "lots", kind: "BANK" })

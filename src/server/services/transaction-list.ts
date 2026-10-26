@@ -20,7 +20,9 @@ import {
   type TransactionFilter,
 } from "@/server/repositories/transaction-repository"
 import { findLotQuantities, findSaleTransactionIds } from "@/server/repositories/lot-repository"
+import { buildNodeOverview } from "@/lib/node-overview"
 import { todayFor } from "@/server/services/clock"
+import { loadValuationStates } from "@/server/services/investment-service"
 import { listAllNodes } from "@/server/services/node-service"
 import type { z } from "zod"
 
@@ -120,15 +122,21 @@ export async function loadTransactionScreen(userId: string, query: Record<string
 
   const filter = Object.fromEntries(FILTER_KEYS.map((key) => [key, (asked[key] ?? "").trim()])) as unknown as FilterValues
   const parsed = transactionQuerySchema.safeParse(filter)
-  const [nodes, balances, page] = await Promise.all([
+  const [nodes, balances, states, page] = await Promise.all([
     listAllNodes(userId),
     sumBalances(userId, today),
+    loadValuationStates(userId, today),
     parsed.success ? loadTransactionPage(userId, parsed.data) : { entries: [], nextCursor: null },
   ])
+  // The figures the ledger and the dashboard show, from the same calculation: an investment held by lots at its value
+  // today, or not valued (EC-23), never at what it cost.
+  const overview = buildNodeOverview(nodes, balances, states.valuations, { unvalued: states.unvalued, priced: states.priced })
   return {
     today,
     nodes: nodes.map(toPickerNode),
-    balances: Object.fromEntries(balances.map((row) => [row.nodeId, serialisePaise(row.balance)])),
+    balances: overview.balances,
+    unvalued: overview.unvalued,
+    priced: overview.priced,
     filter,
     problems: parsed.success ? {} : fieldErrorsOf(parsed.error),
     page,

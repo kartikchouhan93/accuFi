@@ -1,6 +1,7 @@
 import type { LedgerNode } from "@prisma/client"
 import type { CalendarDate } from "../domain/calendar-date"
 import type { LedgerKind, SystemNodeRole } from "../domain/ledger-kind"
+import type { NotValuedReason, PriceState } from "./investment-view"
 import type { TransactionView } from "./transaction-view"
 
 // What the transaction screen is made of, in a shape that can cross to the browser: money as paise text, days as
@@ -87,8 +88,15 @@ export interface TransactionScreen {
   today: CalendarDate
   /** Every node, archived included: history still names them. The form's pickers narrow this themselves. */
   nodes: PickerNode[]
-  /** Paise text by node id, as of today: future-dated transactions are not in it (EC-10). */
+  /**
+   * Paise text by node id, as of today: future-dated transactions are not in it (EC-10). An investment held by lots is at
+   * its value today, as on the ledger, or "0" when it is not valued, and then `unvalued` says why (EC-23).
+   */
   balances: Record<string, string>
+  /** The investments that could not be valued, by node id, with why. */
+  unvalued: Record<string, NotValuedReason>
+  /** For each investment valued at a price: the price's day and whether it is stale (EC-24). */
+  priced: Record<string, PriceState>
   filter: FilterValues
   /** Problems with the filter, by field. When there are any, `page` is empty rather than a list the filter did not make. */
   problems: Record<string, string[]>

@@ -51,7 +51,7 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
 
       <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
         <div className="min-w-0 space-y-8">
-          <Balances nodes={screen.nodes} balances={screen.balances} />
+          <Balances nodes={screen.nodes} balances={screen.balances} unvalued={screen.unvalued} priced={screen.priced} />
           <Filters filter={screen.filter} problems={screen.problems} nodes={screen.nodes} />
           <TransactionList
             page={screen.page}

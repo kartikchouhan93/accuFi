@@ -1,6 +1,8 @@
 import { Amount } from "@/app/amount"
+import { PriceLine } from "@/app/price-line"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { KIND_ICON } from "@/app/nodes/kind-icons"
+import { NOT_VALUED_COPY, type NotValuedReason, type PriceState } from "@/lib/investment-view"
 import { HOLDING_KINDS } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
 import type { PickerNode } from "@/lib/transaction-list-view"
@@ -10,8 +12,19 @@ import { groupByKind } from "./pickers"
 // server's: transactions dated after today are not in these figures. A card you owe on reads as money owed, once:
 // describeBalance turns the negative balance into the amount and the word, and nothing here negates it again. No total
 // is drawn, so there is nothing here that could disagree with the rows above it; net worth is the ledger screen's.
+//
+// An investment held by lots reads as it does on the ledger and the dashboard, from the same figures: its value today with
+// the day of the price behind it (and Stale once that price is old, EC-24), or "Not valued" and why, never a figure it
+// does not have (EC-23). One valued by what was put in shows that money.
 
-export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: Record<string, string> }) {
+interface Props {
+  nodes: PickerNode[]
+  balances: Record<string, string>
+  unvalued: Record<string, NotValuedReason>
+  priced: Record<string, PriceState>
+}
+
+export function Balances({ nodes, balances, unvalued, priced }: Props) {
   const holding = nodes.filter((node) => HOLDING_KINDS.has(node.kind) && !node.archived && node.systemRole === null)
   const groups = groupByKind(holding)
   return (
@@ -41,7 +54,7 @@ export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: R
                   {group.nodes.map((node) => (
                     <li key={node.id} className="flex items-baseline justify-between gap-3 py-2">
                       <span className="min-w-0 truncate font-medium">{node.name}</span>
-                      <Amount text={describeBalance(node.kind, balances[node.id] ?? "0")} />
+                      <Figure kind={node.kind} balance={balances[node.id] ?? "0"} notValued={unvalued[node.id]} priced={priced[node.id]} />
                     </li>
                   ))}
                 </ul>
@@ -52,4 +65,24 @@ export function Balances({ nodes, balances }: { nodes: PickerNode[]; balances: R
       )}
     </section>
   )
+}
+
+function Figure({ kind, balance, notValued, priced }: { kind: PickerNode["kind"]; balance: string; notValued?: NotValuedReason; priced?: PriceState }) {
+  if (notValued) {
+    return (
+      <span className="shrink-0 text-right">
+        <span className="block font-medium text-fg-soft">Not valued</span>
+        <span className="block text-xs text-fg-soft">{NOT_VALUED_COPY[notValued]}</span>
+      </span>
+    )
+  }
+  if (priced) {
+    return (
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        <Amount text={describeBalance(kind, balance)} />
+        <PriceLine priced={priced} className="justify-end" />
+      </span>
+    )
+  }
+  return <Amount text={describeBalance(kind, balance)} />
 }
