@@ -285,6 +285,9 @@ export async function recordTransaction(userId: string, input: RecordTransaction
   let row: Transaction
   try {
     row = await writeUnlessOverdrawn(userId, [from, to], asOfFor(today, input.occurredAt), async (uow) => {
+      // A purchase into an investment held by lots decides from what its lots hold (a lump is bought once): hold them
+      // still first, before any row is written, so two first purchases of one lump from two tabs cannot both pass.
+      await lockLotHoldings(userId, [to], uow)
       const [inserted] = await insertTransactions(
         userId,
         [
@@ -596,7 +599,7 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
 /**
  * Break one leg out of its split group (EC-19): it becomes a plain transaction and the money does not move. If that
  * leaves a single leg, that leg is released too and the empty group removed, since a group of one is not a split.
- * A disposal group (EC-19) is edited as a unit and refuses. Idempotent: a transaction in no group is returned as it is. Throws NotFoundError for an unknown, deleted or other
+ * A disposal group (EC-19), a sale, is deleted as a unit and never edited, so it refuses. Idempotent: a transaction in no group is returned as it is. Throws NotFoundError for an unknown, deleted or other
  * user's transaction.
  */
 export async function ungroupTransaction(userId: string, id: string): Promise<TransactionView> {
@@ -606,7 +609,7 @@ export async function ungroupTransaction(userId: string, id: string): Promise<Tr
     if (existing.groupId !== null) {
       const group = await findGroupById(userId, existing.groupId, uow)
       if (group?.kind === "DISPOSAL") {
-        throw new InvalidTransactionError("A disposal is edited as a unit, so one leg cannot be taken out of it.")
+        throw new InvalidTransactionError("A sale is deleted as a unit, so one leg cannot be taken out of it.")
       }
     }
     return detachFromGroup(userId, id, uow)

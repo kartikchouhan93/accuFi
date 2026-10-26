@@ -425,13 +425,13 @@ describe("ungroupTransaction", () => {
     expect(await ungroupTransaction(user.id, plain.id)).toMatchObject({ id: plain.id, groupId: null, version: plain.version })
   })
 
-  it("refuses to break a leg out of a disposal group, which is edited as a unit (EC-19)", async () => {
+  it("refuses to break a leg out of a disposal group: a sale is deleted as a unit, never edited (EC-19)", async () => {
     const { user, bank, groceries, clothes } = await setup()
     const [first, second] = await split(user.id, bank, [leg(groceries, 100n), leg(clothes, 200n)])
     await prisma.transactionGroup.update({ where: { id: first.groupId ?? "" }, data: { kind: "DISPOSAL" } })
     const error = await rejection(ungroupTransaction(user.id, first.id))
     expect(error).toBeInstanceOf(InvalidTransactionError)
-    expect((error as Error).message).toBe("A disposal is edited as a unit, so one leg cannot be taken out of it.")
+    expect((error as Error).message).toBe("A sale is deleted as a unit, so one leg cannot be taken out of it.")
     const rows = await prisma.transaction.findMany({ where: { id: { in: [first.id, second.id] } }, orderBy: { idempotencyKey: "asc" } })
     expect(rows.map((r) => [r.groupId, r.version])).toEqual([
       [first.groupId, first.version],

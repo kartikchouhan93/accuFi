@@ -404,6 +404,48 @@ describe("purchases edited or deleted while a sale runs", () => {
   })
 })
 
+describe("the first purchase of a lump, from two tabs at once", () => {
+  // As above: the second write starts a little later each round (0-9 ms), so a missing lock is caught every run.
+  const ROUNDS = 20
+  const after = <T>(ms: number, write: () => Promise<T>): Promise<T> =>
+    new Promise((resolve) => setTimeout(resolve, ms)).then(write)
+
+  async function lumpWorld() {
+    const user = await registry.makeUser()
+    const income = await registry.makeNode(user.id, "INCOME_SOURCE", "Salary")
+    const bank = await registry.makeNode(user.id, "ASSET", "Bank")
+    const plot = await registry.makeNode(user.id, "INVESTMENT", "Plot", { valuationMode: "LUMP", unitLabel: "plot" })
+    await registry.makeTransaction(user.id, income.id, bank.id, { amountPaise: 1_00_00_000_00n, occurredAt: "2025-12-01" })
+    const purchase = (idempotencyKey: string) =>
+      recordTransaction(user.id, { fromNodeId: bank.id, toNodeId: plot.id, amount: 50_00_000_00n, occurredAt: MAR_1, idempotencyKey })
+    return { user, plot, purchase }
+  }
+
+  it("records one of two purchases sent with different keys and refuses the other as a second purchase of the lump", async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const { user, plot, purchase } = await lumpWorld()
+      const results = await Promise.allSettled([purchase(randomUUID()), after(round % 10, () => purchase(randomUUID()))])
+      expect(results.map((r) => r.status).sort(), `round ${round}`).toEqual(["fulfilled", "rejected"])
+      const refused = (results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason
+      expect(refused).toBeInstanceOf(InvalidTransactionError)
+      expect((refused as InvalidTransactionError).violations.map((v) => v.code)).toEqual(["LUMP_ALREADY_BOUGHT"])
+      expect(await prisma.investmentLot.count({ where: { userId: user.id, nodeId: plot.id } }), `round ${round}`).toBe(1)
+      expect(await prisma.transaction.count({ where: { userId: user.id, toNodeId: plot.id } })).toBe(1)
+    }
+  })
+
+  it("still answers a double submit with one key with the first result, both times", async () => {
+    for (let round = 0; round < 5; round += 1) {
+      const { user, plot, purchase } = await lumpWorld()
+      const key = randomUUID()
+      const [first, second] = await Promise.all([purchase(key), after(round % 3, () => purchase(key))])
+      expect(second.id).toBe(first.id)
+      expect(await prisma.investmentLot.count({ where: { userId: user.id, nodeId: plot.id } })).toBe(1)
+      expect((await purchase(key)).id).toBe(first.id) // and once more, afterwards
+    }
+  })
+})
+
 describe("sellInvestment refuses, writing nothing", () => {
   async function expectNothingWritten(world: World, attempt: () => Promise<unknown>): Promise<unknown> {
     const before = await counts(world.user.id)
