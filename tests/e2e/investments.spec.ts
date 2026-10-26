@@ -1,8 +1,9 @@
 import type { Page } from "@playwright/test"
+import { formatDay } from "@/lib/transaction-text"
 import { prisma } from "@/server/db"
 import { expect, test } from "./fixtures"
-import { account, buy, investment, nodeId, post, price } from "./seed"
-import { balanceOf, entries } from "./screens"
+import { account, buy, investment, nodeId, post, price, today } from "./seed"
+import { balanceOf, entries, optionsOf } from "./screens"
 
 // The investments screen (spec §8.2): the portfolio, one card per investment, its lots on demand, and selling through
 // the Sell / redeem form. Prices are put in with the seed helper; entering them on screen is the price screen's spec.
@@ -215,4 +216,200 @@ test("a lump is sold whole, a contribution-only investment has nothing to sell, 
   await expect(page.getByRole("status")).toContainText("Cost basis ₹50,00,000.00 · loss ₹5,00,000.00")
   await expect(flat).toContainText("Nothing held")
   await expect(flat.getByRole("button", { name: "Sell / redeem" })).toHaveCount(0)
+})
+
+// The price screen (/investments/prices): pick an investment, a day and a price; the form says what the price would do to
+// today's value before it is saved; below it, the investment's prices, newest first, each deletable.
+
+const priceForm = (page: Page) => page.getByRole("form", { name: "Record a price" })
+const history = (page: Page, name: string) => page.getByRole("region", { name: `Prices of ${name}`, exact: true })
+
+async function openPrices(page: Page) {
+  await page.goto("/investments/prices")
+  await expect(page.getByRole("heading", { level: 1, name: "Record prices" })).toBeVisible()
+}
+
+/** The day after `day`, as "YYYY-MM-DD". */
+const dayAfter = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)
+
+test("records a price after previewing it, refuses a future day, replaces a day, and deleting the only price unvalues it", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
+  await buy(userId, "Bank", "Gold", "37,000", "5", "2026-02-01")
+  await investment(userId, "Silver", { unit: "kg" })
+  await investment(userId, "PPF", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await post(userId, "Bank", "PPF", "1,50,000", { date: "2026-01-20" })
+  const now = await today(userId)
+
+  // The card's "Record a price" link leads to a working screen.
+  await openInvestments(page)
+  await card(page, "Gold").getByRole("link", { name: "Record a price" }).click()
+  await expect(page.getByRole("heading", { level: 1, name: "Record prices" })).toBeVisible()
+  await expect(page).toHaveURL(/\/investments\/prices$/)
+  await expect(page.getByRole("link", { name: /Investments/ }).first()).toBeVisible()
+
+  const form = priceForm(page)
+  // Only the investments revalued by a price are offered: the PPF is valued by what was put in.
+  expect(await optionsOf(form.getByLabel("Investment"))).toEqual(["Gold", "Silver"])
+  await expect(form.getByLabel("Date")).toHaveValue(now)
+  await expect(form.getByLabel("Date")).toHaveAttribute("max", now)
+
+  // The price's label follows the investment's unit; choosing one never puts its id in the URL.
+  await form.getByLabel("Investment").selectOption({ label: "Silver" })
+  await expect(form.getByLabel("Price per kg (₹)")).toBeVisible()
+  await form.getByLabel("Investment").selectOption({ label: "Gold" })
+  await expect(form.getByLabel("Price per g (₹)")).toBeVisible()
+  await expect(page).toHaveURL(/\/investments\/prices$/)
+  await expect(history(page, "Gold")).toContainText("No prices yet")
+
+  // Before saving: what the price would make it worth today. Gold had no price, so it was not valued.
+  await form.getByLabel("Price per g (₹)").fill("7,800")
+  await expect(form.getByText("Not valued yet → ₹1,17,000.00")).toBeVisible()
+
+  // A day after today is refused, beside the Date field: by the preview while typing, and on saving.
+  await form.getByLabel("Date").fill(dayAfter(now))
+  await expect(form.getByText("A price cannot be dated after today.")).toBeVisible()
+  await expect(form.getByText("Not valued yet → ₹1,17,000.00")).toHaveCount(0)
+  await form.getByRole("button", { name: "Save price" }).click()
+  await expect(form.getByLabel("Date")).toHaveAttribute("aria-invalid", "true")
+  await expect(form.getByLabel("Date")).toBeFocused()
+  await expect(form.getByText("A price cannot be dated after today.")).toHaveCount(1)
+  await expect(form.getByRole("alert")).toHaveCount(0)
+  await expect(history(page, "Gold")).toContainText("No prices yet")
+
+  // Saved for 1 Mar 2026: said, with the focus on the message; the history lists it, stale by now.
+  await form.getByLabel("Date").fill("2026-03-01")
+  await expect(form.getByText("Not valued yet → ₹1,17,000.00")).toBeVisible()
+  await form.getByRole("button", { name: "Save price" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved ₹7,800.00 per g for 1 Mar 2026.")
+  await expect(page.getByRole("status")).toBeFocused()
+  await expect(form.getByLabel("Investment")).toHaveValue(await nodeId(userId, "Gold")) // still chosen
+  const rows = history(page, "Gold").getByRole("listitem")
+  await expect(rows).toHaveCount(1)
+  await expect(rows.first()).toContainText("1 Mar 2026")
+  await expect(rows.first()).toContainText("₹7,800.00 per g")
+  await expect(rows.first().getByText("Stale", { exact: true })).toBeVisible()
+
+  // Now valued: a rise and a fall are said with their sign, the fall in the negative tone.
+  await form.getByLabel("Price per g (₹)").fill("8,000")
+  await expect(form.getByText("Value now ₹1,17,000.00 → ₹1,20,000.00 (+₹3,000.00)")).toBeVisible()
+  await form.getByLabel("Price per g (₹)").fill("7,500")
+  await expect(form.getByText("Value now ₹1,17,000.00 → ₹1,12,500.00 (-₹4,500.00)")).toBeVisible()
+  await expect(form.locator(".text-negative", { hasText: "-₹4,500.00" })).toBeVisible() // a fall is in the negative tone
+
+  // Saving the same day again replaces its price: one row, with the second price.
+  await form.getByLabel("Price per g (₹)").fill("7,900")
+  await expect(form.getByText("Value now ₹1,17,000.00 → ₹1,18,500.00 (+₹1,500.00)")).toBeVisible()
+  await form.getByRole("button", { name: "Save price" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved ₹7,900.00 per g for 1 Mar 2026: it replaced the price for that day (₹7,800.00 per g).")
+  await expect(rows).toHaveCount(1)
+  await expect(rows.first()).toContainText("₹7,900.00 per g")
+
+  await openInvestments(page)
+  await expect(card(page, "Gold")).toContainText("₹1,18,500.00")
+  await expect(card(page, "Gold")).toContainText("₹7,900.00 per g")
+
+  // Deleting the only price: the focus goes to the message (the row is gone), and the card is not valued again.
+  await openPrices(page)
+  await priceForm(page).getByLabel("Investment").selectOption({ label: "Gold" })
+  await history(page, "Gold").getByRole("button", { name: "Delete the price for 1 Mar 2026" }).click()
+  await expect(page.getByRole("status")).toContainText("Deleted the price for 1 Mar 2026 (₹7,900.00 per g).")
+  await expect(page.getByRole("status")).toBeFocused()
+  await expect(history(page, "Gold")).toContainText("No prices yet")
+  await openInvestments(page)
+  await expect(card(page, "Gold")).toContainText("Not valued")
+  await expect(card(page, "Gold")).toContainText("No price yet")
+})
+
+test("an investment missing quantities cannot be valued by a price, and the form works from the keyboard alone", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "60,00,000")
+  await investment(userId, "Old fund", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await post(userId, "Bank", "Old fund", "20,000", { date: "2026-01-05" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Old fund") }, data: { valuationMode: "QUANTITY", lotMethod: "FIFO" } })
+  await investment(userId, "Flat", { valuation: "LUMP", unit: "flat" })
+  await post(userId, "Bank", "Flat", "50,00,000", { date: "2026-01-15" })
+  await investment(userId, "PPF", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  const now = await today(userId)
+
+  await openPrices(page)
+  const form = priceForm(page)
+  expect(await optionsOf(form.getByLabel("Investment"))).toEqual(["Flat", "Old fund"])
+
+  // No price can value what is held when some purchases have no quantity: said in words, never as a figure.
+  await form.getByLabel("Investment").selectOption({ label: "Old fund" })
+  await form.getByLabel("Price per unit (₹)").fill("100")
+  await expect(form.getByText("Some purchases of this investment have no quantity, so a price cannot value it yet.")).toBeVisible()
+  await expect(form.getByText(/→/)).toHaveCount(0)
+
+  // The whole form from the keyboard: choose by typing, move by Tab, save with Enter.
+  const select = form.getByLabel("Investment")
+  await select.focus()
+  await page.keyboard.type("Fl")
+  await expect(select).toHaveValue(await nodeId(userId, "Flat"))
+  const field = form.getByLabel("Price of the whole (₹)")
+  for (let i = 0; i < 6 && !(await field.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press("Tab")
+  await expect(field).toBeFocused()
+  await page.keyboard.type("52,00,000")
+  await expect(form.getByText("Not valued yet → ₹52,00,000.00")).toBeVisible()
+  await page.keyboard.press("Enter")
+  const status = page.getByRole("status")
+  await expect(status).toContainText(`Saved ₹52,00,000.00 for ${formatDay(now)}.`)
+  await expect(status).toBeFocused()
+  // Back from the message to the history's Delete button, delete with Enter, then undo from the message.
+  await expect(history(page, "Flat").getByRole("listitem")).toHaveCount(1)
+  await page.keyboard.press("Shift+Tab")
+  await expect(history(page, "Flat").getByRole("button", { name: `Delete the price for ${formatDay(now)}` })).toBeFocused()
+  await page.keyboard.press("Enter")
+  await expect(status).toContainText(`Deleted the price for ${formatDay(now)} (₹52,00,000.00).`)
+  await expect(status).toBeFocused()
+  await expect(history(page, "Flat")).toContainText("No prices yet")
+  await expect(status.getByRole("button", { name: "Dismiss" })).toHaveCount(1) // the message before it has finished leaving
+  await page.keyboard.press("Tab")
+  await expect(status.getByRole("button", { name: "Undo" })).toBeFocused()
+  await page.keyboard.press("Enter")
+  await expect(status).toContainText(`Put back the price for ${formatDay(now)} (₹52,00,000.00).`)
+  await expect(history(page, "Flat").getByRole("listitem")).toHaveCount(1)
+})
+
+test("a slow preview answer about an earlier price never replaces the answer about the price typed now", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "1,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
+
+  // The preview of ₹8,000 is held back until well after the preview of ₹9,000 has been answered.
+  let releaseSlow: () => void = () => {}
+  const slowSent = new Promise<void>((resolve) => {
+    void page.route("**/*", async (route) => {
+      const request = route.request()
+      if (request.method() !== "POST" || !("next-action" in request.headers())) return route.fallback()
+      if (!(request.postData() ?? "").includes('"8000"')) return route.fallback()
+      resolve()
+      await new Promise<void>((release) => (releaseSlow = release))
+      return route.fallback()
+    })
+  })
+
+  await openPrices(page)
+  const form = priceForm(page)
+  await form.getByLabel("Investment").selectOption({ label: "Gold" })
+  await form.getByLabel("Price per g (₹)").fill("8000")
+  await slowSent // the debounce has passed and the request for ₹8,000 is out
+  // Everything the page ever shows from here on, so a figure shown for an instant is caught too.
+  await page.evaluate(() => {
+    const seen: string[] = ((window as unknown as { seen: string[] }).seen = [])
+    new MutationObserver(() => seen.push(document.body.innerText)).observe(document.body, { subtree: true, childList: true, characterData: true })
+  })
+  await form.getByLabel("Price per g (₹)").fill("9000")
+  await page.waitForTimeout(600) // past the debounce: the request for ₹9,000 is sent (Next queues it behind the first)
+  releaseSlow()
+  await expect(form.getByText("Not valued yet → ₹90,000.00")).toBeVisible()
+  await page.waitForTimeout(500)
+  await expect(form.getByText("Not valued yet → ₹90,000.00")).toBeVisible()
+  const seen = await page.evaluate(() => (window as unknown as { seen: string[] }).seen)
+  expect(seen.some((text) => text.includes("₹80,000.00"))).toBe(false)
 })

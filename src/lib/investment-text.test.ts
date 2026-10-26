@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { describeGain, describeSaleFigures, formatBasisPoints, quantityText } from "./investment-text"
+import { describeGain, describeRevaluation, describeSaleFigures, formatBasisPoints, priceText, quantityText } from "./investment-text"
 
 describe("formatBasisPoints", () => {
   it("prints basis points as a percentage to two places, in integer arithmetic", () => {
@@ -39,5 +39,42 @@ describe("quantityText", () => {
     expect(quantityText("15", "g")).toBe("15 g")
     expect(quantityText("142.3871", null)).toBe("142.3871")
     expect(quantityText("3", "")).toBe("3")
+  })
+})
+
+describe("priceText", () => {
+  it("prices a unit, or the whole of a lump", () => {
+    expect(priceText("780000", "g", false)).toBe("₹7,800.00 per g")
+    expect(priceText("780000", null, false)).toBe("₹7,800.00 per unit")
+    expect(priceText("520000000", "flat", true)).toBe("₹52,00,000.00")
+  })
+})
+
+describe("describeRevaluation", () => {
+  it("says the value before and after, and the change with its sign and tone", () => {
+    expect(describeRevaluation({ beforePaise: "11700000", afterPaise: "12000000", changePaise: "300000" })).toEqual({
+      lead: "Value now ₹1,17,000.00 → ₹1,20,000.00",
+      change: { amount: "+₹3,000.00", qualifier: null, tone: "positive" },
+    })
+    expect(describeRevaluation({ beforePaise: "11700000", afterPaise: "11250000", changePaise: "-450000" })).toEqual({
+      lead: "Value now ₹1,17,000.00 → ₹1,12,500.00",
+      change: { amount: "-₹4,500.00", qualifier: null, tone: "negative" },
+    })
+    expect(describeRevaluation({ beforePaise: "100", afterPaise: "100", changePaise: "0" })?.change).toEqual({
+      amount: "no change",
+      qualifier: null,
+      tone: "muted",
+    })
+  })
+
+  it("has no before figure for an investment that was not valued", () => {
+    expect(describeRevaluation({ beforePaise: null, afterPaise: "11700000", changePaise: null })).toEqual({
+      lead: "Not valued yet → ₹1,17,000.00",
+      change: null,
+    })
+  })
+
+  it("has nothing to print when no price can value the investment", () => {
+    expect(describeRevaluation({ beforePaise: null, afterPaise: null, changePaise: null })).toBeNull()
   })
 })

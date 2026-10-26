@@ -84,3 +84,16 @@ export function InvestmentsSkeleton() {
     </Shell>
   )
 }
+
+export function PricesSkeleton() {
+  return (
+    <Shell label="the price screen">
+      <Skeleton className="h-5 w-32" />
+      <Skeleton className="mt-4 h-10 w-56" />
+      <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.85fr)] lg:items-start">
+        <Skeleton className="h-[26rem] rounded-3xl" />
+        <Skeleton className="h-72 rounded-3xl" />
+      </div>
+    </Shell>
+  )
+}

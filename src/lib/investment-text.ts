@@ -1,5 +1,5 @@
 import { formatPaise } from "../domain/money"
-import type { SalePreviewView } from "./investment-view"
+import type { RevaluationPreviewView, SalePreviewView } from "./investment-view"
 import type { BalanceText } from "./node-money"
 import { deserialisePaise } from "./serialise"
 
@@ -36,3 +36,31 @@ const formatPaiseText = (paise: string) => formatPaise(deserialisePaise(paise))
 
 /** "15 g"; a quantity alone for an investment with no unit. */
 export const quantityText = (quantity: string, unit: string | null): string => (unit ? `${quantity} ${unit}` : quantity)
+
+/**
+ * A price as the price screen prints it: "₹7,800.00 per g" for an investment valued by quantity ("per unit" without a
+ * unit), the figure alone for a lump, whose price is the whole asset's.
+ */
+export function priceText(paise: string, unit: string | null, lump: boolean): string {
+  return lump ? formatPaiseText(paise) : `${formatPaiseText(paise)} per ${unit ?? "unit"}`
+}
+
+/**
+ * What saving a price would do to today's value, from `previewRevaluation`: the lead ("Value now ₹A → ₹B", or "Not
+ * valued yet → ₹B" when there was no value) and the change, signed ("+₹C", "-₹C" in the negative tone, "no change"), or
+ * none when there was nothing to change from. Null when no price can value the investment (`afterPaise` is null: some
+ * purchases have no quantity), so a screen says why in words and never prints a figure it does not have.
+ */
+export function describeRevaluation(preview: RevaluationPreviewView): { lead: string; change: BalanceText | null } | null {
+  if (preview.afterPaise === null) return null
+  const after = formatPaiseText(preview.afterPaise)
+  if (preview.beforePaise === null || preview.changePaise === null) return { lead: `Not valued yet → ${after}`, change: null }
+  const change = deserialisePaise(preview.changePaise)
+  return {
+    lead: `Value now ${formatPaiseText(preview.beforePaise)} → ${after}`,
+    change:
+      change === 0n
+        ? { amount: "no change", qualifier: null, tone: "muted" }
+        : { amount: `${change > 0n ? "+" : ""}${formatPaise(change)}`, qualifier: null, tone: change > 0n ? "positive" : "negative" },
+  }
+}
