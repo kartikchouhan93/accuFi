@@ -179,6 +179,20 @@ export async function findLotByTransaction(
 }
 
 /**
+ * The quantity each of `transactionIds` bought, by transaction id, for those of the caller's that acquired a lot (live
+ * or not: the row says whether it is deleted). A transaction that bought none, or is not this user's, is not in the map.
+ * What a screen shows beside a purchase, so an edit starts from the quantity it holds.
+ */
+export async function findLotQuantities(userId: string, transactionIds: readonly string[], uow?: UnitOfWork): Promise<Map<string, Quantity>> {
+  if (transactionIds.length === 0) return new Map()
+  const rows = await dbOf(uow).investmentLot.findMany({
+    where: { userId, transactionId: { in: [...new Set(transactionIds)] }, transaction: { userId } },
+    select: { transactionId: true, quantity: true },
+  })
+  return new Map(rows.map((row) => [row.transactionId, toQuantity(row.quantity)]))
+}
+
+/**
  * Every consumption row of the lot `transactionId` acquired, live or not: a deleted sale's rows still point at the lot
  * (they are what restoring the sale brings back), and the database will not delete a lot they reference.
  */

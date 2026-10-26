@@ -151,6 +151,22 @@ describe("loadTransactionPage", () => {
     expect((await loadTransactionPage(user.id, { node: other.bank.id })).entries).toHaveLength(0)
   })
 
+  it("gives each purchase the quantity its lot holds, null for one without a lot, and nothing on a split's legs", async () => {
+    const { user, bank, food, clothes } = await world()
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const bought = await registry.makeTransaction(user.id, bank.id, gold.id, { amountPaise: 70_000_00n, occurredAt: "2026-04-03", note: "bought" })
+    await prisma.investmentLot.create({
+      data: { userId: user.id, nodeId: gold.id, transactionId: bought.id, quantity: "10.5", costBasisPaise: 70_000_00n, acquiredAt: day("2026-04-03") },
+    })
+    await registry.makeTransaction(user.id, bank.id, gold.id, { amountPaise: 1_000_00n, occurredAt: "2026-04-02", note: "legacy" })
+    await makeGroup(user.id, bank.id, [{ to: food.id, amount: 100n }, { to: clothes.id, amount: 200n }], "2026-04-01")
+    const page = await loadTransactionPage(user.id, {})
+    const singles = page.entries.flatMap((entry) => (entry.kind === "single" ? [entry.transaction] : []))
+    expect(singles.map((view) => [view.note, view.quantity])).toEqual([["bought", "10.5"], ["legacy", null]])
+    const group = page.entries.find((entry) => entry.kind === "group")
+    expect(group?.kind === "group" && group.legs.every((leg) => !("quantity" in leg))).toBe(true)
+  })
+
   it("is plain data", async () => {
     const { user, bank, food, clothes } = await world()
     await makeGroup(user.id, bank.id, [{ to: food.id, amount: 100n }, { to: clothes.id, amount: 200n }], "2026-04-01")

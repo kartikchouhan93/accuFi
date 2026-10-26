@@ -26,6 +26,7 @@ import {
   RequestKeyConflictError,
   restoreTransaction,
   SplitTotalMismatchError,
+  storedViewOf,
   ungroupTransaction,
   type TransactionViolation,
   type TransactionViolationCode,
@@ -164,8 +165,9 @@ export async function recordSplitAction(input: unknown): Promise<ActionResult<Sp
 }
 
 export async function editTransactionAction(input: unknown): Promise<ActionResult<TransactionView>> {
+  let userId: string | null = null
   try {
-    const userId = await requireUserId()
+    userId = await requireUserId()
     const parsed = parseInput(editTransactionSchema, input)
     if ("ok" in parsed) return parsed
     const { id, changes, expectedVersion } = parsed.data
@@ -173,7 +175,12 @@ export async function editTransactionAction(input: unknown): Promise<ActionResul
     wrote()
     return ok(view)
   } catch (error) {
-    return toFailure(error)
+    const failure = toFailure(error)
+    // The form offers to take up the stored version whole, so a purchase's comes with what its lot holds now.
+    if (userId !== null && error instanceof VersionConflictError) {
+      return { ok: false, error: { ...failure.error, current: await storedViewOf(userId, error.current) } }
+    }
+    return failure
   }
 }
 

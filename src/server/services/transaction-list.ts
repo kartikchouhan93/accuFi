@@ -19,6 +19,7 @@ import {
   sumBalances,
   type TransactionFilter,
 } from "@/server/repositories/transaction-repository"
+import { findLotQuantities } from "@/server/repositories/lot-repository"
 import { todayFor } from "@/server/services/clock"
 import { listAllNodes } from "@/server/services/node-service"
 import type { z } from "zod"
@@ -85,13 +86,16 @@ export async function loadTransactionPage(userId: string, filter: ListFilter, cu
     legsOf.set(key, [...(legsOf.get(key) ?? []), member])
   }
 
+  // What each purchase on the page bought, so the edit form opens on it. A split's legs never have a lot.
+  const quantities = await findLotQuantities(userId, page.items.map((row) => row.id))
+
   const entries: ListEntry[] = []
   const emitted = new Set<string>()
   for (const row of page.items) {
     const key = row.groupId === null ? null : legKey(row.groupId, row)
     const legs = key === null ? undefined : legsOf.get(key)
     if (key === null || row.groupId === null || legs === undefined || legs.length < 2) {
-      entries.push({ kind: "single", transaction: toTransactionView(row) })
+      entries.push({ kind: "single", transaction: toTransactionView(row, [], quantities.get(row.id) ?? null) })
     } else if (!emitted.has(key)) {
       emitted.add(key)
       entries.push(groupEntry(row, row.groupId, legs))

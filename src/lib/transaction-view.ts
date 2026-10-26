@@ -1,5 +1,6 @@
 import type { Transaction } from "@prisma/client"
 import { fromDbDate, type CalendarDate } from "../domain/calendar-date"
+import { formatQuantity, type Quantity } from "../domain/quantity"
 import { serialisePaise } from "./serialise"
 
 // A transaction as it crosses to the browser: into a Server Action's result, a Server Component's props, a client
@@ -32,9 +33,16 @@ export interface TransactionView {
    * the transaction is recorded either way. Empty for a row that was merely read.
    */
   warnings: Warning[]
+  /**
+   * What the purchase's lot holds, as decimal text ("10.5"), or null when it has no lot (any row that is not a purchase
+   * into an investment valued by quantity or as a lump, and a purchase from before lots existed). Present only where the
+   * lot was read: the list the edit form opens from, and a version conflict. Left out everywhere else.
+   */
+  quantity?: string | null
 }
 
-export function toTransactionView(row: Transaction, warnings: Warning[] = []): TransactionView {
+/** `quantity` is the row's lot's (null for none); leave it out where the lot was not read. */
+export function toTransactionView(row: Transaction, warnings: Warning[] = [], quantity?: Quantity | null): TransactionView {
   return {
     id: row.id,
     fromNodeId: row.fromNodeId,
@@ -47,5 +55,6 @@ export function toTransactionView(row: Transaction, warnings: Warning[] = []): T
     deleted: row.deletedAt !== null,
     version: row.version,
     warnings,
+    ...(quantity === undefined ? {} : { quantity: quantity === null ? null : formatQuantity(quantity) }),
   }
 }

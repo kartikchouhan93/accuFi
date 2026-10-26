@@ -195,6 +195,18 @@ describe("editTransactionAction", () => {
     expectNoBigint(result) // the repository's error carries a bigint and Date fields; none may reach here
   })
 
+  it("gives a purchase's conflict the quantity its lot holds now, so using the stored version keeps it", async () => {
+    const { user, input, bank } = await signedInWorld(2_00_000_00n)
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const created = await actions.recordTransactionAction(input({ fromNodeId: bank.id, toNodeId: gold.id, amount: "70000", quantity: "10" }))
+    if (!created.ok) throw new Error(`setup failed: ${created.error.message}`)
+    const body = { id: created.data.id, expectedVersion: created.data.version }
+    expect((await actions.editTransactionAction({ ...body, changes: { quantity: "12.5" } })).ok).toBe(true)
+    const result = await actions.editTransactionAction({ ...body, changes: { note: "late" } })
+    expect(result).toMatchObject({ ok: false, error: { code: "version_conflict", current: { id: created.data.id, quantity: "12.5" } } })
+    expectNoBigint(result)
+  })
+
   it("answers not-found for an unknown or another user's transaction", async () => {
     const mine = await signedInWorld()
     const created = await actions.recordTransactionAction(mine.input())

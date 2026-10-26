@@ -465,6 +465,12 @@ describe("lot repository", () => {
     expect(await lotRepo.countConsumptionsOfLot(theirs.userId, theirs.buy.id)).toBe(1)
   })
 
+  isolation("findLotQuantities", "gives nothing for another user's purchase, even beside the caller's own", async () => {
+    expect(await lotRepo.findLotQuantities(mine.userId, [theirs.buy.id])).toEqual(new Map())
+    expect(await lotRepo.findLotQuantities(mine.userId, [mine.buy.id, theirs.buy.id])).toEqual(new Map([[mine.buy.id, 10_000_000n]]))
+    expect(await lotRepo.findLotQuantities(theirs.userId, [theirs.buy.id])).toEqual(new Map([[theirs.buy.id, 10_000_000n]]))
+  })
+
   isolation("findLotGaps", "counts nothing for another user's node", async () => {
     const none = { inflowsWithoutLot: 0, outflowsWithoutConsumption: 0 }
     expect(await lotRepo.findLotGaps(mine.userId, theirs.gold.id)).toEqual(none)

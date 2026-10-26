@@ -6,6 +6,7 @@ import { validateTransaction, type RuleViolation } from "@/domain/transaction-ru
 import { SPLIT_LEGS_MAX, SPLIT_LEGS_MIN } from "@/lib/schemas/transaction"
 import { toTransactionView, type TransactionView, type Warning } from "@/lib/transaction-view"
 import { DuplicateIdempotencyKeyError, NotFoundError } from "@/server/repositories/errors"
+import { findLotQuantities } from "@/server/repositories/lot-repository"
 import { findNodeById } from "@/server/repositories/node-repository"
 import {
   createTransactionGroup,
@@ -251,6 +252,15 @@ export async function viewOf(
   if (row.deletedAt !== null) return toTransactionView(row)
   const nodes = touched ?? [await requireNode(userId, row.fromNodeId)]
   return toTransactionView(row, await warningsFor(userId, row, nodes, today ?? (await todayFor(userId))))
+}
+
+/**
+ * The view of a stored row with what its lot holds (`quantity`), for a form that is about to edit it: the stored side of a
+ * version conflict, which the form can take up whole. No warnings: nothing was written.
+ */
+export async function storedViewOf(userId: string, row: Transaction): Promise<TransactionView> {
+  const quantities = await findLotQuantities(userId, [row.id])
+  return toTransactionView(row, [], quantities.get(row.id) ?? null)
 }
 
 /**

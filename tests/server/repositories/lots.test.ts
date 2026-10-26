@@ -10,6 +10,7 @@ import {
   findLiveLots,
   findLotByTransaction,
   findLotGaps,
+  findLotQuantities,
   insertConsumptions,
   insertLot,
   updateLot,
@@ -145,6 +146,21 @@ describe("findLotByTransaction", () => {
     await softDelete(tx.id)
     expect(await findLotByTransaction(user.id, tx.id)).toMatchObject({ id: lot.id, live: false })
     expect(await findLotByTransaction(user.id, disposal.id)).toBeNull()
+  })
+})
+
+describe("findLotQuantities", () => {
+  it("gives the quantity each of the transactions bought, and nothing for one that bought no lot", async () => {
+    const { user, buy, sale, lotFor } = await setup()
+    const first = await buy()
+    await lotFor(first.id, 10n * UNIT)
+    const second = await buy(37_000_00n, "2026-02-01")
+    await lotFor(second.id, 5_500_000n, 37_000_00n, "2026-02-01")
+    const legacy = await buy(1_000n)
+    const disposal = await sale()
+    const quantities = await findLotQuantities(user.id, [first.id, second.id, legacy.id, disposal.id])
+    expect(quantities).toEqual(new Map([[first.id, 10n * UNIT], [second.id, 5_500_000n]]))
+    expect(await findLotQuantities(user.id, [])).toEqual(new Map())
   })
 })
 
