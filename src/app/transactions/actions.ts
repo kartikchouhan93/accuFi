@@ -176,9 +176,11 @@ export async function editTransactionAction(input: unknown): Promise<ActionResul
     return ok(view)
   } catch (error) {
     const failure = toFailure(error)
-    // The form offers to take up the stored version whole, so a purchase's comes with what its lot holds now.
+    // The form offers to take up the stored version whole, so a purchase's comes with what its lot holds now. That is a
+    // second read: if it fails, the conflict is still answered, with the row as stored and no quantity.
     if (userId !== null && error instanceof VersionConflictError) {
-      return { ok: false, error: { ...failure.error, current: await storedViewOf(userId, error.current) } }
+      const current = await storedViewOf(userId, error.current).catch(() => null)
+      if (current !== null) return { ok: false, error: { ...failure.error, current } }
     }
     return failure
   }

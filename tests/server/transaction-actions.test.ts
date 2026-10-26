@@ -17,6 +17,7 @@ const { revalidatePath } = vi.hoisted(() => ({ revalidatePath: vi.fn() }))
 vi.mock("next/cache", () => ({ revalidatePath }))
 
 const actions = await import("@/app/transactions/actions")
+const transactionService = await import("@/server/services/transaction-service")
 
 const registry = createRegistry()
 afterAll(registry.cleanup)
@@ -205,6 +206,28 @@ describe("editTransactionAction", () => {
     const result = await actions.editTransactionAction({ ...body, changes: { note: "late" } })
     expect(result).toMatchObject({ ok: false, error: { code: "version_conflict", current: { id: created.data.id, quantity: "12.5" } } })
     expectNoBigint(result)
+  })
+
+  it("still answers a version conflict as a result when reading the stored view for it fails", async () => {
+    const { input } = await signedInWorld()
+    const created = await actions.recordTransactionAction(input({ note: "original" }))
+    if (!created.ok) throw new Error("setup failed")
+    const body = { id: created.data.id, expectedVersion: created.data.version }
+    await actions.editTransactionAction({ ...body, changes: { note: "tab one" } })
+    const read = vi.spyOn(transactionService, "storedViewOf").mockRejectedValueOnce(new Error("connection reset"))
+    try {
+      const result = await actions.editTransactionAction({ ...body, changes: { note: "tab two" } })
+      expect(read).toHaveBeenCalledTimes(1)
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "version_conflict", current: { id: created.data.id, version: 1, note: "tab one" } },
+      })
+      // The plain conflict: the row as stored, without what its lot holds.
+      expect(result.ok === false && result.error.current && "quantity" in result.error.current).toBe(false)
+      expectNoBigint(result)
+    } finally {
+      read.mockRestore()
+    }
   })
 
   it("answers not-found for an unknown or another user's transaction", async () => {
