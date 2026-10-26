@@ -11,6 +11,9 @@ import { balanceOf, entries } from "./screens"
 const card = (page: Page, name: string) => page.getByRole("region", { name, exact: true })
 const portfolio = (page: Page) => page.getByRole("region", { name: "Portfolio", exact: true })
 const sellForm = (page: Page, name: string) => page.getByRole("form", { name: `Sell ${name}` })
+/** One figure of the portfolio card, by its label ("Current value", "Put in", "Unrealised gain"). */
+const heroFigure = (page: Page, label: string) =>
+  portfolio(page).locator("dt", { hasText: label }).locator("xpath=following-sibling::dd[1]")
 
 /** Open the investments screen and wait for the real page, not its loading skeleton. */
 async function openInvestments(page: Page) {
@@ -43,6 +46,8 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await investment(userId, "Gold", { unit: "g" })
   await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
   await buy(userId, "Bank", "Gold", "37,000", "5", "2026-02-01")
+  await investment(userId, "Silver", { unit: "kg" })
+  await buy(userId, "Bank", "Silver", "24,000", "0.25", "2026-02-10") // never priced in this test
 
   // No price yet: the card says so, and never shows a figure for the value.
   await openInvestments(page)
@@ -53,9 +58,15 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await expect(gold).toContainText("No price yet")
   await expect(gold.getByRole("link", { name: "Record a price" })).toHaveAttribute("href", "/investments/prices")
   await expect(gold).not.toContainText("₹1,17,000.00")
-  await expect(portfolio(page)).toContainText("1 not valued")
-  await expect(portfolio(page)).toContainText("Gold could not be valued")
-  await expect(portfolio(page)).toContainText("₹1,07,000.00") // what was put in is known all the same
+  // Nothing can be valued, so the portfolio has no figures at all, never ₹0.00; it names what is left out, with what was put in.
+  await expect(portfolio(page)).toContainText("2 not valued")
+  await expect(heroFigure(page, "Current value")).toHaveText("Not valued")
+  await expect(heroFigure(page, "Unrealised gain")).toHaveText("Not valued")
+  await expect(heroFigure(page, "Put in")).toHaveCount(0)
+  await expect(portfolio(page)).not.toContainText("₹0.00")
+  await expect(portfolio(page)).toContainText(
+    "Nothing here can be valued yet: Gold (₹1,07,000.00 put in) and Silver (₹24,000.00 put in) are not valued and are left out of these figures.",
+  )
 
   // Priced at ₹7,800 a gram on 1 Mar 2026, a price old enough to be stale by now.
   await price(userId, "Gold", "7,800", "2026-03-01")
@@ -66,9 +77,14 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await expect(gold).toContainText("₹7,800.00 per g")
   await expect(gold).toContainText("as of 1 Mar 2026")
   await expect(gold.getByText("Stale", { exact: true })).toBeVisible()
-  await expect(portfolio(page)).toContainText("₹1,17,000.00")
-  await expect(portfolio(page)).toContainText("+₹10,000.00 (9.35%)")
-  await expect(portfolio(page)).not.toContainText("not valued")
+  // The three portfolio figures are over the same holdings, Gold alone: worth 1,17,000 less 1,07,000 put in is a 10,000 gain.
+  // Silver is named as left out, with its own cost, rather than being counted in one figure and not the others.
+  await expect(heroFigure(page, "Current value")).toHaveText("₹1,17,000.00")
+  await expect(heroFigure(page, "Put in")).toHaveText("₹1,07,000.00")
+  await expect(heroFigure(page, "Unrealised gain")).toHaveText("+₹10,000.00 (9.35%)")
+  await expect(portfolio(page)).toContainText("1 not valued")
+  await expect(portfolio(page)).toContainText("Silver (₹24,000.00 put in) is not valued and is left out of these figures.")
+  await expect(portfolio(page)).toContainText("Gold is valued at a price more than its stale window old.")
 
   // The holding as a whole, and its lots on demand.
   await openHolding(page, "Gold")
@@ -91,6 +107,7 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await sell.getByRole("button", { name: "Sell", exact: true }).click()
   await expect(page.getByRole("status")).toContainText("Sold 8 g of Gold for ₹68,000.00 into Bank.")
   await expect(page.getByRole("status")).toContainText("Cost basis ₹56,000.00 · gain ₹12,000.00")
+  await expect(page.getByRole("status")).toBeFocused() // the form that had the focus is gone; the message has it
 
   // FIFO took 8 g of the first lot: 7 g are left, which cost ₹51,000 (₹14,000 of the first lot and all of the second).
   await expect(sellForm(page, "Gold")).toHaveCount(0)
@@ -111,12 +128,16 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await expect(again.getByLabel(/^Quantity/)).toHaveAttribute("aria-invalid", "true")
   await expect(again.getByText(/Only 7 g of Gold is available/)).toHaveCount(1)
   await expect(again.getByRole("alert")).toHaveCount(0)
+  // Cancel closes the form and hands the focus back to what opened it.
+  await again.getByRole("button", { name: "Cancel" }).click()
+  await expect(sellForm(page, "Gold")).toHaveCount(0)
+  await expect(gold.getByRole("button", { name: "Sell / redeem" })).toBeFocused()
 
   // On the transactions screen: the sale is one entry, a cost-basis leg and a Realised Gain leg, both into the bank,
-  // whose balance rose by the ₹68,000 (2,00,000 - 70,000 - 37,000 + 68,000).
+  // whose balance rose by the ₹68,000 (2,00,000 - 70,000 - 37,000 - 24,000 for the silver + 68,000).
   await openTransactions(page)
-  await expect(balanceOf(page, "Bank")).toContainText("₹1,61,000.00")
-  const sale = entries(page).getByRole("listitem").filter({ hasText: "Split from" }).first()
+  await expect(balanceOf(page, "Bank")).toContainText("₹1,37,000.00")
+  const sale = entries(page).getByRole("listitem").filter({ hasText: "Split from several sources" })
   await expect(sale).toContainText("₹68,000.00")
   await sale.getByRole("button", { expanded: false }).first().click()
   const legs = sale.getByRole("list", { name: "Legs" })
@@ -131,11 +152,11 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await expect(first.getByRole("alert")).toContainText("Delete the sale first")
 
   // Deleting the sale gives the 8 g back to the first lot, and the money back out of the bank.
-  const sold = entries(page).getByRole("listitem").filter({ hasText: "Split from" }).first()
+  const sold = entries(page).getByRole("listitem").filter({ hasText: "Split from several sources" })
   await sold.getByRole("button", { expanded: false }).first().click()
   await sold.getByRole("button", { name: "Delete split" }).click()
   await expect(page.getByRole("status")).toContainText("Deleted the split")
-  await expect(balanceOf(page, "Bank")).toContainText("₹93,000.00")
+  await expect(balanceOf(page, "Bank")).toContainText("₹69,000.00")
 
   await openInvestments(page)
   await openHolding(page, "Gold")
@@ -171,8 +192,13 @@ test("a lump is sold whole, a contribution-only investment has nothing to sell, 
   await expect(old).toContainText("Not valued")
   await expect(old).toContainText("Some purchases have no quantity")
   await expect(old).not.toContainText("₹") // no figure at all: not even what it cost, which is not known
+  // The portfolio's figures are the Flat's alone: the PPF is valued by what was put in, and the old fund's cost is not known.
   await expect(portfolio(page)).toContainText("1 not valued")
-  await expect(portfolio(page)).toContainText("Old fund could not be valued")
+  await expect(heroFigure(page, "Current value")).toHaveText("₹52,00,000.00")
+  await expect(heroFigure(page, "Put in")).toHaveText("₹50,00,000.00")
+  await expect(heroFigure(page, "Unrealised gain")).toHaveText("+₹2,00,000.00 (4.00%)")
+  await expect(portfolio(page)).toContainText("Old fund (its cost is not known) is not valued and is left out of these figures.")
+  await expect(portfolio(page)).toContainText("PPF is valued by what was put in, so not counted here")
 
   // A lump has no quantity to choose: the form sells the whole of it. Selling below cost is a loss, said as one.
   const flat = card(page, "Flat")

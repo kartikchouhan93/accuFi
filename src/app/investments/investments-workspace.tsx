@@ -30,6 +30,12 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
   const archivedCount = portfolio.holdings.filter((holding) => holding.archived).length
   const visible = showArchived ? portfolio.holdings : portfolio.holdings.filter((holding) => !holding.archived)
 
+  // A sale closes the form that had the keyboard's focus; the message is where focus lands, as on the other screens.
+  function announce(lines: string[], moveFocus = false) {
+    setNotice({ tone: "success", lines })
+    if (moveFocus) requestAnimationFrame(() => statusRef.current?.focus())
+  }
+
   return (
     <main className="mx-auto max-w-6xl px-4 pb-28 pt-8 sm:px-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -77,7 +83,7 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
                 destinations={destinations}
                 today={today}
                 index={index}
-                announce={(lines) => setNotice({ tone: "success", lines })}
+                announce={announce}
               />
             ))}
           </div>

@@ -5,7 +5,7 @@ import { allocateLots, InsufficientQuantityError, type LotAllocation } from "@/d
 import type { Paise } from "@/domain/money"
 import { formatQuantity, type Quantity } from "@/domain/quantity"
 import { validateTransaction } from "@/domain/transaction-rules"
-import { openLots, valueHolding, type HoldingLot, type PricePoint } from "@/domain/valuation"
+import { basisPoints, openLots, valueHolding, type HoldingLot, type PricePoint } from "@/domain/valuation"
 import type { HoldingDetail, HoldingView, LotView, NotValuedReason, Portfolio, PriceState } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { serialisePaise } from "@/lib/serialise"
@@ -478,9 +478,9 @@ export async function loadHolding(userId: string, nodeId: string, asOf?: Calenda
 }
 
 /**
- * Every investment of the user, archived ones included, on `asOf` (today by default), and the totals across them: what
- * was put in (every holding's cost), and the value and gain of the ones that can be valued, with a count of those that
- * cannot. Plain data, safe to hand to a client component.
+ * Every investment of the user, archived ones included, on `asOf` (today by default), and the totals across the ones
+ * revalued by lots that have a value: what they cost, what they are worth and the gain, all over that one set, with a
+ * count of those that cannot be valued (see `Portfolio.totals`). Plain data, safe to hand to a client component.
  */
 export async function loadPortfolio(userId: string, asOf?: CalendarDate): Promise<Portfolio> {
   const day = asOf ?? (await todayFor(userId))
@@ -493,16 +493,28 @@ export async function loadPortfolio(userId: string, asOf?: CalendarDate): Promis
         : lotHoldingView(node, await readHoldingInputs(userId, node.id), day, userWindow),
     ),
   )
-  const sum = (pick: (holding: HoldingView) => string | null): string =>
-    serialisePaise(holdings.reduce((total, holding) => total + BigInt(pick(holding) ?? "0"), 0n))
+  return { holdings, totals: portfolioTotals(holdings) }
+}
+
+/** The totals over the holdings revalued by lots that have a value (see `Portfolio.totals`), in bigint paise. */
+function portfolioTotals(holdings: readonly HoldingView[]): Portfolio["totals"] {
+  const valued = holdings.filter((h) => h.valuationMode !== "CONTRIBUTION_ONLY" && h.valuePaise !== null)
+  const notValuedCount = holdings.filter((h) => h.notValued !== null).length
+  if (valued.length === 0) {
+    return { valuedCount: 0, costBasisPaise: null, valuePaise: null, unrealisedGainPaise: null, gainBasisPoints: null, notValuedCount }
+  }
+  const sum = (pick: (holding: HoldingView) => string | null): Paise => valued.reduce((total, h) => total + BigInt(pick(h) ?? "0"), 0n)
+  const cost = sum((h) => h.costBasisPaise)
+  const value = sum((h) => h.valuePaise)
+  const gain = value - cost
   return {
-    holdings,
-    totals: {
-      contributedPaise: sum((h) => h.costBasisPaise),
-      valuePaise: sum((h) => h.valuePaise),
-      unrealisedGainPaise: sum((h) => h.unrealisedGainPaise),
-      notValuedCount: holdings.filter((h) => h.notValued !== null).length,
-    },
+    valuedCount: valued.length,
+    costBasisPaise: serialisePaise(cost),
+    valuePaise: serialisePaise(value),
+    unrealisedGainPaise: serialisePaise(gain),
+    // A handful of digits (see HoldingView.gainBasisPoints), far inside what a number holds exactly.
+    gainBasisPoints: cost > 0n ? Number(basisPoints(gain, cost)) : null,
+    notValuedCount,
   }
 }
 

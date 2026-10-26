@@ -1,23 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { HoldingView } from "./investment-view"
-import { describeGain, describeSaleFigures, formatBasisPoints, portfolioGainBasisPoints, quantityText } from "./investment-text"
-
-const holding = (over: Partial<HoldingView>): HoldingView => ({
-  nodeId: "n",
-  name: "n",
-  unitLabel: "g",
-  valuationMode: "QUANTITY",
-  archived: false,
-  quantityHeld: "1",
-  costBasisPaise: "0",
-  valuePaise: null,
-  unrealisedGainPaise: null,
-  gainBasisPoints: null,
-  price: null,
-  notValued: null,
-  lotCount: 0,
-  ...over,
-})
+import { describeGain, describeSaleFigures, formatBasisPoints, quantityText } from "./investment-text"
 
 describe("formatBasisPoints", () => {
   it("prints basis points as a percentage to two places, in integer arithmetic", () => {
@@ -57,22 +39,5 @@ describe("quantityText", () => {
     expect(quantityText("15", "g")).toBe("15 g")
     expect(quantityText("142.3871", null)).toBe("142.3871")
     expect(quantityText("3", "")).toBe("3")
-  })
-})
-
-describe("portfolioGainBasisPoints", () => {
-  it("is the gain over the cost of the revalued holdings that have a value", () => {
-    const holdings = [
-      holding({ costBasisPaise: "10700000", unrealisedGainPaise: "1000000" }), // gold, valued
-      holding({ costBasisPaise: "2000000", notValued: "NO_PRICE" }), // left out: no value, no gain
-      holding({ valuationMode: "CONTRIBUTION_ONLY", costBasisPaise: "15000000", unrealisedGainPaise: "0" }), // not revalued
-    ]
-    expect(portfolioGainBasisPoints(holdings)).toBe(935)
-  })
-
-  it("is null when nothing revalued has a value or a cost", () => {
-    expect(portfolioGainBasisPoints([holding({ notValued: "NO_PRICE" })])).toBeNull()
-    expect(portfolioGainBasisPoints([holding({ costBasisPaise: "0", unrealisedGainPaise: "0" })])).toBeNull()
-    expect(portfolioGainBasisPoints([])).toBeNull()
   })
 })

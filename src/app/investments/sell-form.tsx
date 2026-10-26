@@ -57,6 +57,8 @@ interface Preview {
   figures: SalePreviewView | null
   /** A refusal about the quantity (more than is held, too small to sell), shown beside it. */
   problem: string | null
+  /** The preview could not be asked for at all. */
+  unavailable: boolean
 }
 
 const unique = (messages: string[]) => [...new Set(messages)]
@@ -105,13 +107,20 @@ export function SellForm({ holding, destinations, today, onSold, onCancel }: Pro
     const sent = ++latestPreview.current
     const input = JSON.parse(previewKey) as typeof request
     const timer = setTimeout(async () => {
-      const result = await previewSaleAction(input)
+      let result: Awaited<ReturnType<typeof previewSaleAction>>
+      try {
+        result = await previewSaleAction(input)
+      } catch {
+        // The request itself failed (the network, the server). Submitting still works, and says what it posted.
+        if (sent === latestPreview.current) setPreview({ key: previewKey, figures: null, problem: null, unavailable: true })
+        return
+      }
       if (sent !== latestPreview.current) return // a newer request has been sent since: this answer is out of date
-      if (result.ok) return setPreview({ key: previewKey, figures: result.data, problem: null })
+      if (result.ok) return setPreview({ key: previewKey, figures: result.data, problem: null, unavailable: false })
       // A quantity the lots cannot cover, or one too small to sell, is worth saying while typing. A field that does not
       // parse yet is not: it is usually half typed, and submitting says what is wrong with it.
       const aboutQuantity = result.error.code !== "invalid_input" ? result.error.fieldErrors?.quantity : undefined
-      setPreview({ key: previewKey, figures: null, problem: aboutQuantity ? unique(aboutQuantity).join(" ") : null })
+      setPreview({ key: previewKey, figures: null, problem: aboutQuantity ? unique(aboutQuantity).join(" ") : null, unavailable: false })
     }, PREVIEW_DELAY_MS)
     return () => clearTimeout(timer)
   }, [previewKey]) // the request is read back from its key, so the key is all the effect depends on
@@ -292,7 +301,11 @@ export function SellForm({ holding, destinations, today, onSold, onCancel }: Pro
 
       {/* What the sale would post, from the server, for exactly what is typed now. */}
       <p aria-live="polite" className="figures mt-4 min-h-6 text-sm font-medium empty:hidden">
-        {shown?.figures ? describeSaleFigures(shown.figures) : null}
+        {shown?.figures ? (
+          describeSaleFigures(shown.figures)
+        ) : shown?.unavailable ? (
+          <span className="font-normal text-fg-soft">Could not check the figures just now.</span>
+        ) : null}
       </p>
 
       {alertText && (
@@ -307,7 +320,8 @@ export function SellForm({ holding, destinations, today, onSold, onCancel }: Pro
           {pending && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
           Sell
         </button>
-        <button type="button" className={secondary} onClick={onCancel}>
+        {/* Not while a sale is out: closing the form then would drop its answer, a refusal included, unseen. */}
+        <button type="button" className={secondary} disabled={pending} onClick={onCancel}>
           Cancel
         </button>
       </div>

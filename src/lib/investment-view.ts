@@ -67,13 +67,22 @@ export interface HoldingDetail extends HoldingView {
 export interface Portfolio {
   /** Every investment, archived ones included (`archived` says which): hiding them is the screen's choice. */
   holdings: HoldingView[]
+  /**
+   * The portfolio's figures, all over one set of holdings, so they always agree with each other: the ones revalued (by
+   * quantity or as a lump) that have a value, archived and sold-out ones included (the latter at 0). One not valued is
+   * left out of all of them and counted in `notValuedCount`; one valued by what was put into it has no value of its own
+   * to add and no gain, so it is left out too (its card shows what was put in). With no holding valued, every figure is
+   * null, never "0" (EC-23).
+   */
   totals: {
-    /** The sum of every holding's `costBasisPaise`. */
-    contributedPaise: string
-    /** The sum of the holdings that have a value: the ones not valued are left out, and counted in `notValuedCount`. */
-    valuePaise: string
-    /** The sum of the holdings that have a gain. */
-    unrealisedGainPaise: string
+    valuedCount: number
+    /** Paise: what the valued holdings' units cost. */
+    costBasisPaise: string | null
+    valuePaise: string | null
+    /** Paise: value minus cost, with a leading "-" for a loss. */
+    unrealisedGainPaise: string | null
+    /** The gain as basis points of the cost; null also when the cost is nothing (only sold-out holdings valued). */
+    gainBasisPoints: number | null
     notValuedCount: number
   }
 }

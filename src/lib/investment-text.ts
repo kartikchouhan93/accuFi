@@ -1,6 +1,5 @@
 import { formatPaise } from "../domain/money"
-import { basisPoints } from "../domain/valuation"
-import type { HoldingView, SalePreviewView } from "./investment-view"
+import type { SalePreviewView } from "./investment-view"
 import type { BalanceText } from "./node-money"
 import { deserialisePaise } from "./serialise"
 
@@ -37,20 +36,3 @@ const formatPaiseText = (paise: string) => formatPaise(deserialisePaise(paise))
 
 /** "15 g"; a quantity alone for an investment with no unit. */
 export const quantityText = (quantity: string, unit: string | null): string => (unit ? `${quantity} ${unit}` : quantity)
-
-/**
- * The portfolio's unrealised gain as basis points of what its gain is measured against: the cost of the holdings that
- * are revalued (by quantity or as a lump) and have a value. One valued by what was put into it has no gain to measure,
- * and one not valued has none to count, so neither dilutes the figure. Null when that cost is nothing.
- */
-export function portfolioGainBasisPoints(holdings: readonly HoldingView[]): number | null {
-  let cost = 0n
-  let gain = 0n
-  for (const holding of holdings) {
-    if (holding.valuationMode === "CONTRIBUTION_ONLY" || holding.unrealisedGainPaise === null) continue
-    cost += deserialisePaise(holding.costBasisPaise)
-    gain += deserialisePaise(holding.unrealisedGainPaise)
-  }
-  // A handful of digits (see HoldingView.gainBasisPoints), far inside what a number holds exactly.
-  return cost > 0n ? Number(basisPoints(gain, cost)) : null
-}

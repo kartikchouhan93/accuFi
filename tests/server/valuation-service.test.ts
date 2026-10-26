@@ -268,18 +268,41 @@ describe("loadPortfolio", () => {
       lotCount: 0,
     })
 
-    // Put in: 1,07,000 + 14,000 + 10,000. Worth, of what can be valued: 1,17,000 + 10,000. Gain on that: 10,000.
-    expect(portfolio.totals).toEqual({ contributedPaise: "13100000", valuePaise: "12700000", unrealisedGainPaise: "1000000", notValuedCount: 1 })
+    // Every figure is over the one holding revalued and valued, Gold: cost 1,07,000, worth 1,17,000, gain 10,000 (9.35%).
+    // Silver (not valued) and the SIP (valued by what was put in) are in none of them, so the three always agree.
+    expect(portfolio.totals).toEqual({
+      valuedCount: 1,
+      costBasisPaise: "10700000",
+      valuePaise: "11700000",
+      unrealisedGainPaise: "1000000",
+      gainBasisPoints: 935,
+      notValuedCount: 1,
+    })
+    const valued = portfolio.holdings.filter((h) => h.valuationMode !== "CONTRIBUTION_ONLY" && h.valuePaise !== null)
     const sum = (pick: (h: (typeof portfolio.holdings)[number]) => string | null) =>
-      String(portfolio.holdings.reduce((total, h) => total + BigInt(pick(h) ?? "0"), 0n))
-    expect(portfolio.totals.contributedPaise).toBe(sum((h) => h.costBasisPaise))
+      String(valued.reduce((total, h) => total + BigInt(pick(h) ?? "0"), 0n))
+    expect(portfolio.totals.costBasisPaise).toBe(sum((h) => h.costBasisPaise))
     expect(portfolio.totals.valuePaise).toBe(sum((h) => h.valuePaise))
     expect(portfolio.totals.unrealisedGainPaise).toBe(sum((h) => h.unrealisedGainPaise))
+    expect(BigInt(portfolio.totals.valuePaise ?? "") - BigInt(portfolio.totals.costBasisPaise ?? "")).toBe(BigInt(portfolio.totals.unrealisedGainPaise ?? ""))
     expect(portfolio.totals.notValuedCount).toBe(portfolio.holdings.filter((h) => h.notValued !== null).length)
 
     expect(() => JSON.stringify(portfolio)).not.toThrow()
     expect(typesIn(portfolio)).not.toContain("bigint")
     expect(typesIn(portfolio)).not.toContain("Date")
+  })
+
+  it("has no figure at all, never zero, when nothing revalued can be valued", async () => {
+    const world = await setup() // Gold bought but not priced, and a contribution-only SIP
+    await buy(world.user.id, world.bank, world.fund, 10_000_00n, undefined, "2026-02-15")
+    expect((await loadPortfolio(world.user.id)).totals).toEqual({
+      valuedCount: 0,
+      costBasisPaise: null,
+      valuePaise: null,
+      unrealisedGainPaise: null,
+      gainBasisPoints: null,
+      notValuedCount: 1,
+    })
   })
 
   it("does not list another user's investments", async () => {

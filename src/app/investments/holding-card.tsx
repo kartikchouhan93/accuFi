@@ -3,7 +3,7 @@
 import { Building2, ChevronDown, CircleAlert, HandCoins, PiggyBank, Scale } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useEffect, useId, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Amount } from "@/app/amount"
 import { PriceLine } from "@/app/price-line"
 import { Collapse } from "@/components/ui/collapse"
@@ -37,7 +37,8 @@ interface Props {
   destinations: PickerNode[]
   today: CalendarDate
   index: number
-  announce: (lines: string[]) => void
+  /** Show a message; with `moveFocus`, the message takes the keyboard's focus (the control that had it is gone). */
+  announce: (lines: string[], moveFocus?: boolean) => void
 }
 
 const MODE_ICON = { QUANTITY: Scale, LUMP: Building2, CONTRIBUTION_ONLY: PiggyBank } as const
@@ -55,10 +56,14 @@ function subtitle(holding: HoldingView): string {
 
 const linkClass = "rounded-md font-medium text-link underline underline-offset-4"
 
-/** The detail read for one state of the holding: kept with the figures it was read for, so a stale read is never shown. */
+/**
+ * The detail read for one state of the holding: kept with the figures it was read for, so a stale read is never shown.
+ * `result` is null when the request itself failed (the network, the server), rather than being refused.
+ */
 interface Loaded {
   version: string
-  result: ActionResult<HoldingDetail>
+  attempt: number
+  result: ActionResult<HoldingDetail> | null
 }
 
 export function HoldingCard({ holding, destinations, today, index, announce }: Props) {
@@ -70,6 +75,8 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
   const [selling, setSelling] = useState(false)
   const [showLots, setShowLots] = useState(false)
   const [loaded, setLoaded] = useState<Loaded | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const sellButton = useRef<HTMLButtonElement>(null)
 
   const lotMode = holding.valuationMode === "QUANTITY" || holding.valuationMode === "LUMP"
   const lump = holding.valuationMode === "LUMP"
@@ -80,18 +87,19 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
 
   // What the server said the holding is now. When it changes (a sale, a refresh), the lots are read again.
   const version = [holding.quantityHeld, holding.costBasisPaise, holding.valuePaise, holding.lotCount].join("|")
-  const detail = loaded !== null && loaded.version === version ? loaded.result : null
+  const fresh = loaded !== null && loaded.version === version && loaded.attempt === attempt ? loaded : null
 
   useEffect(() => {
     if (!open || !lotMode) return
     let current = true
-    void getHoldingAction({ nodeId: holding.nodeId }).then((result) => {
-      if (current) setLoaded({ version, result })
-    })
+    getHoldingAction({ nodeId: holding.nodeId }).then(
+      (result) => current && setLoaded({ version, attempt, result }),
+      () => current && setLoaded({ version, attempt, result: null }),
+    )
     return () => {
       current = false
     }
-  }, [open, lotMode, holding.nodeId, version])
+  }, [open, lotMode, holding.nodeId, version, attempt])
 
   return (
     <SpotlightCard
@@ -138,6 +146,7 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
           {canSell && (
             <button
               type="button"
+              ref={sellButton}
               aria-expanded={selling}
               aria-controls={selling ? sellId : undefined}
               onClick={() => setSelling((current) => !current)}
@@ -169,15 +178,20 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
             </Switch>
             <Collapse open={showLots}>
               <div className="pt-3">
-                {detail === null ? (
+                {fresh === null ? (
                   <p className="text-fg-soft">Reading the lots…</p>
-                ) : detail.ok ? (
-                  <LotTable name={holding.name} unit={unit} lots={detail.data.lots} />
+                ) : fresh.result?.ok ? (
+                  <LotTable name={holding.name} unit={unit} lots={fresh.result.data.lots} />
                 ) : (
-                  <p role="alert" className="flex items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 font-medium text-negative">
+                  <div role="alert" className="flex flex-wrap items-start gap-2.5 rounded-xl bg-negative-wash px-3.5 py-2.5 font-medium text-negative">
                     <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
-                    <span>Could not read the lots. {detail.error.message}</span>
-                  </p>
+                    <span className="flex-1">
+                      Could not read the lots. {fresh.result ? fresh.result.error.message : "Try again."}
+                    </span>
+                    <button type="button" className={linkClass} onClick={() => setAttempt((n) => n + 1)}>
+                      Try again
+                    </button>
+                  </div>
                 )}
               </div>
             </Collapse>
@@ -192,10 +206,13 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
               holding={holding}
               destinations={destinations}
               today={today}
-              onCancel={() => setSelling(false)}
+              onCancel={() => {
+                setSelling(false)
+                sellButton.current?.focus() // the form had the focus; it goes back to what opened it
+              }}
               onSold={(lines) => {
                 setSelling(false)
-                announce(lines)
+                announce(lines, true)
                 router.refresh()
               }}
             />
@@ -236,6 +253,7 @@ function Figures({ holding, unit }: { holding: HoldingView; unit: string | null 
         ) : (
           <p className="mt-1 max-w-prose text-sm text-fg-soft">
             Some purchases have no quantity, so how much is held is not known. Edit those transactions on the{" "}
+            {/* Every month, not only the current one: the purchases without a quantity are usually older than this month. */}
             <Link href="/transactions?from=&to=" className={linkClass}>
               Transactions
             </Link>{" "}
@@ -255,7 +273,10 @@ function Figures({ holding, unit }: { holding: HoldingView; unit: string | null 
     )
   }
 
-  const value = describeBalance("INVESTMENT", holding.valuePaise ?? "0")
+  // Not valued without a reason should not happen; if it does, it is still not a figure (EC-23).
+  if (holding.valuePaise === null) return <p className="mt-5 text-2xl font-medium tracking-tight text-fg-soft">Not valued</p>
+
+  const value = describeBalance("INVESTMENT", holding.valuePaise)
   return (
     <div className="mt-5 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
       <div>
