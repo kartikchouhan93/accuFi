@@ -88,6 +88,17 @@ function lotFlowViolation(from: LedgerNode, to: LedgerNode): TransactionViolatio
   return null
 }
 
+/**
+ * Lock the holdings (lockHoldings) of every investment among `nodes` that holds lots, once each and in id order, so
+ * that two writes locking overlapping sets cannot deadlock. Nodes that hold no lots are not locked: nothing about them
+ * is judged from what a lot still holds. The order rule every write path follows: these locks are taken BEFORE the
+ * write touches any transaction row, never after, so a row lock is never held while waiting for a node lock.
+ */
+export async function lockLotHoldings(userId: string, nodes: readonly LedgerNode[], uow: UnitOfWork): Promise<void> {
+  const ids = [...new Set(nodes.filter((node) => lotModeOf(node) !== null).map((node) => node.id))].sort()
+  for (const id of ids) await lockHoldings(userId, id, uow)
+}
+
 export function assertNoLotFlow(from: LedgerNode, to: LedgerNode): void {
   const violation = lotFlowViolation(from, to)
   if (violation) throw new InvalidTransactionError(violation.message, [violation])
@@ -247,13 +258,11 @@ export interface LotEdit {
 /**
  * Bring the row's lot in line with the edited row, inside the edit's database transaction: create it, update it, move
  * it or delete it. Throws, and the edit rolls back, if a rule refuses. The lot of a row is always in the row's
- * destination, so `oldTo` is where it is now.
+ * destination, so `oldTo` is where it is now. The caller has locked `oldTo` and `to` (lockLotHoldings) before writing
+ * the row, so a sale of either running now is seen whole or not at all.
  */
 export async function applyLotEdit(userId: string, edit: LotEdit, uow: UnitOfWork): Promise<void> {
   const { existing, oldTo, to } = edit
-  // Before the lot is read, so a sale of either investment running now is seen whole or not at all (lockHoldings). In
-  // id order, so two edits moving lots between the same two investments in opposite directions cannot deadlock.
-  for (const nodeId of [...new Set([oldTo.id, to.id])].sort()) await lockHoldings(userId, nodeId, uow)
   const lot = await findLotByTransaction(userId, existing.id, uow)
   const moved = to.id !== existing.toNodeId
   const mode = lotModeOf(to)
@@ -305,12 +314,15 @@ export async function applyLotEdit(userId: string, edit: LotEdit, uow: UnitOfWor
  * longer counts. The lot itself stays (a deleted purchase's lot simply stops counting). `node` is the row's destination.
  */
 export async function assertPurchaseRemovable(userId: string, row: Transaction, uow: UnitOfWork): Promise<void> {
-  // A row's lot is in its destination. Locked before the lot is read, so a sale taking from it right now is seen.
-  await lockHoldings(userId, row.toNodeId, uow)
+  // A row's lot is in its destination, and only an investment that holds lots has one (the valuation mode is fixed at
+  // creation). Locked before the lot is read, and before the delete writes the row, so a sale taking from it right now
+  // is seen; anything else is deleted without a lock.
+  const node = await findNodeById(userId, row.toNodeId, uow)
+  if (!node || lotModeOf(node) === null) return
+  await lockHoldings(userId, node.id, uow)
   const lot = await findLotByTransaction(userId, row.id, uow)
   if (!lot || lot.consumptions.length === 0) return
-  const node = await findNodeById(userId, row.toNodeId, uow)
-  throw new LotInUseError(`${node ? alreadySold(lot, node) : "Already sold."} Delete the sale first.`)
+  throw new LotInUseError(`${alreadySold(lot, node)} Delete the sale first.`)
 }
 
 /**
@@ -333,12 +345,12 @@ export async function assertRestoredLotAllowed(userId: string, row: Transaction,
  * and hold what the live sales now take with it, cost at least what they take, and cost exactly that if they take all of
  * it: what assertSalesStillCovered asks of an edit. Throws InsufficientQuantityError when the units are not there and
  * LotInUseError when the cost no longer fits, so the restore rolls back. Does nothing for a row that took from no lot.
+ * The caller has locked the sale's investment (lockLotHoldings) before restoring the row.
  */
 export async function assertRestoredSaleCovered(userId: string, row: Transaction, uow: UnitOfWork): Promise<void> {
   const taken = await findConsumptionsByTransaction(userId, row.id, uow)
   if (taken.length === 0) return
   // A lot taken from never leaves its investment (assertLotMovable), so every one is in the sale's source node.
-  await lockHoldings(userId, row.fromNodeId, uow)
   const node = await findNodeById(userId, row.fromNodeId, uow)
   if (!node) throw new NotFoundError("node")
   const lots = new Map((await findLiveLots(userId, node.id, uow)).map((lot) => [lot.id, lot]))

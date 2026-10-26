@@ -6,7 +6,7 @@ import { openLots } from "@/domain/valuation"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { findLiveLots } from "@/server/repositories/lot-repository"
-import { sumBalances } from "@/server/repositories/transaction-repository"
+import { sumBalances, VersionConflictError } from "@/server/repositories/transaction-repository"
 import { previewSale, sellInvestment, type SellInput } from "@/server/services/investment-service"
 import { archiveLedgerNode } from "@/server/services/node-service"
 import {
@@ -338,6 +338,50 @@ describe("purchases edited or deleted while a sale runs", () => {
         after(round % 10, () => editTransaction(world.user.id, world.buyA.id, { quantity: g(3n) }, world.buyA.version)),
       ])
       await expectLotsConsistent(world.user.id)
+    }
+  })
+
+  // An edit and a delete of one row, racing. Either order is a legitimate outcome: the delete first leaves the edit
+  // not finding the row; the edit first is simply followed by the delete. What must never happen is a deadlock between
+  // them (Postgres aborts one, and the user sees a raw server error): every path takes its investment locks before it
+  // writes a transaction row.
+  async function expectEditAndDeleteClean(userId: string, rowId: string, version: number, changes: Parameters<typeof editTransaction>[2], round: number) {
+    const results = await Promise.allSettled([
+      editTransaction(userId, rowId, changes, version),
+      after(round % 10, () => removeTransaction(userId, rowId)),
+    ])
+    const [edited, removed] = results
+    for (const result of results) {
+      if (result.status === "rejected") {
+        const clean = [NotFoundError, VersionConflictError, LotInUseError].some((type) => result.reason instanceof type)
+        expect(clean, `round ${round}: ${String(result.reason)}`).toBe(true)
+      }
+    }
+    // the delete is never refused here (nothing has been sold), so it always lands, and the row ends deleted
+    expect(removed.status, `round ${round}`).toBe("fulfilled")
+    expect(edited.status === "fulfilled" || (edited as PromiseRejectedResult).reason instanceof NotFoundError).toBe(true)
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: rowId } })).deletedAt).not.toBeNull()
+  }
+
+  it("never deadlocks an edit and a delete of the same purchase", async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const world = await setup()
+      await expectEditAndDeleteClean(world.user.id, world.buyA.id, world.buyA.version, { amount: 71_000_00n, quantity: g(11n) }, round)
+      await expectLotsConsistent(world.user.id)
+    }
+  })
+
+  it("never deadlocks an edit and a delete of the same ordinary expense", async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const world = await setup()
+      const spend = await recordTransaction(world.user.id, {
+        fromNodeId: world.bank.id,
+        toNodeId: world.food.id,
+        amount: 500_00n,
+        occurredAt: MAR_1,
+        idempotencyKey: randomUUID(),
+      })
+      await expectEditAndDeleteClean(world.user.id, spend.id, spend.version, { amount: 600_00n }, round)
     }
   })
 })

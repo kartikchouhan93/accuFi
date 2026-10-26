@@ -230,6 +230,17 @@ describe("transaction repository", () => {
   }
   const snapshotGroups = (userId: string) => prisma.transactionGroup.findMany({ where: { userId }, orderBy: { id: "asc" } })
 
+  isolation("findRestorable", "returns nothing of another user's deleted transaction or group", async () => {
+    const theirs = await bGroupWithRows(true)
+    try {
+      expect(await inTransaction((uow) => txRepo.findRestorable(a.user.id, theirs.rows[0].id, uow))).toEqual([])
+      const own = await inTransaction((uow) => txRepo.findRestorable(b.user.id, theirs.rows[0].id, uow))
+      expect(own.map((row) => row.id).sort()).toEqual(theirs.rows.map((row) => row.id).sort())
+    } finally {
+      await theirs.cleanup()
+    }
+  })
+
   isolation("findTransactionsByIdempotencyKeys", "never returns another user's rows, even for their exact key", async () => {
     const theirs = await prisma.transaction.update({ where: { id: b.tx.id }, data: { idempotencyKey: "isolation-key-b-0000" } })
     try {

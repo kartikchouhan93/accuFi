@@ -11,6 +11,7 @@ import {
   createTransactionGroup,
   detachFromGroup,
   findGroupById,
+  findRestorable,
   findTransactionById,
   findTransactionsByIdempotencyKeys,
   insertTransactions,
@@ -33,6 +34,7 @@ import {
   assertPurchaseRemovable,
   assertRestoredLotAllowed,
   assertRestoredSaleCovered,
+  lockLotHoldings,
   lotModeOf,
   lotSourceViolation,
   splitLegViolation,
@@ -132,8 +134,8 @@ export class OverdraftBlockedError extends Error {
 }
 
 /** The caller's node, archived or not; NotFoundError for anyone else's. Shared with the sale path. */
-export async function requireNode(userId: string, nodeId: string): Promise<LedgerNode> {
-  const node = await findNodeById(userId, nodeId) // archived nodes included: history still points at them
+export async function requireNode(userId: string, nodeId: string, uow?: UnitOfWork): Promise<LedgerNode> {
+  const node = await findNodeById(userId, nodeId, uow) // archived nodes included: history still points at them
   if (!node) throw new NotFoundError("node") // someone else's node is simply "not found"
   return node
 }
@@ -368,6 +370,8 @@ export async function editTransaction(
   }
   const today = await todayFor(userId)
   const row = await writeUnlessOverdrawn(userId, touched, asOfFor(today, occurredAt), async (uow) => {
+    // The investments whose lots this edit may change, locked before the row is written (lockLotHoldings).
+    await lockLotHoldings(userId, [oldTo, to], uow)
     const updated = await updateTransaction(userId, id, changes, expectedVersion, uow)
     await applyLotEdit(userId, { existing, oldTo, to, amount, occurredAt, quantity: input.quantity }, uow)
     return updated
@@ -408,12 +412,19 @@ export async function removeTransaction(userId: string, id: string): Promise<voi
 export async function restoreTransaction(userId: string, id: string): Promise<TransactionView> {
   const today = await todayFor(userId)
   const row = await inTransaction(async (uow) => {
+    // The investments the restored rows touch, locked before any row is written (lockLotHoldings): a restored sale's
+    // lots are judged below, and a restored purchase's lot counts again.
+    const restorable = await findRestorable(userId, id, uow)
+    const ends = [...new Set(restorable.flatMap((each) => [each.fromNodeId, each.toNodeId]))]
+    const nodes: LedgerNode[] = []
+    for (const nodeId of ends) nodes.push(await requireNode(userId, nodeId, uow))
+    await lockLotHoldings(userId, nodes, uow)
     const restored = await undeleteTransaction(userId, id, uow)
     const siblings = restored.groupId === null ? [] : await undeleteGroup(userId, restored.groupId, uow)
     for (const each of [restored, ...siblings]) {
       await assertRestoredLotAllowed(userId, each, uow)
       await assertRestoredSaleCovered(userId, each, uow)
-      const from = await requireNode(userId, each.fromNodeId)
+      const from = await requireNode(userId, each.fromNodeId, uow)
       if (isGuarded(from)) {
         assertNoOverdraft([from], await balancesAt(userId, asOfFor(today, fromDbDate(each.occurredAt)), uow))
       }

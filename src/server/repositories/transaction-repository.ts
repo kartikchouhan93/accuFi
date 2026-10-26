@@ -285,6 +285,23 @@ export async function softDeleteTransaction(userId: string, id: string, uow?: Un
 }
 
 /**
+ * The rows restoring `id` would bring back (undeleteTransaction and undeleteGroup): the transaction, if it is this
+ * user's and deleted, and the other deleted members of its group. Empty otherwise. Read before the restore writes
+ * anything, so that a caller can lock what those rows touch first.
+ */
+export async function findRestorable(userId: string, id: string, uow: UnitOfWork): Promise<Transaction[]> {
+  const db = clientOf(uow)
+  const row = await db.transaction.findFirst({ where: { id, userId, deletedAt: { not: null } } })
+  if (!row) return []
+  if (row.groupId === null) return [row]
+  const siblings = await db.transaction.findMany({
+    where: { userId, groupId: row.groupId, deletedAt: { not: null }, id: { not: row.id } },
+    orderBy: { id: "asc" },
+  })
+  return [row, ...siblings]
+}
+
+/**
  * The inverse of softDeleteTransaction: clears `deletedAt`, bumps `version` and returns the row. Throws NotFoundError
  * if the transaction is not this user's, or is not deleted. `uow` as for updateTransaction.
  */
