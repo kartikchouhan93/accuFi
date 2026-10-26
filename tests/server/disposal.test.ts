@@ -260,6 +260,86 @@ describe("sellInvestment", () => {
     const held = (await remaining(world.user.id, world.gold)).reduce((sum, [quantity]) => sum + quantity, 0n)
     expect(held).toBe(g(7n))
   })
+
+  it("pays the proceeds towards a liability", async () => {
+    const world = await setup()
+    const card = await prisma.ledgerNode.create({
+      data: { userId: world.user.id, kind: "LIABILITY", name: "Card", liabilitySubtype: "CREDIT_CARD", creditLimitPaise: 1_00_000_00n },
+    })
+    await registry.makeTransaction(world.user.id, world.bank.id, card.id, { amountPaise: 1n, occurredAt: "2025-12-02" }) // any history
+    const before = await balanceOf(world.user.id, card)
+    const { legs } = await sell(world, g(8n), 68_000_00n, { toNodeId: card.id })
+    expect(legShape(legs)).toEqual([
+      [world.gold.id, card.id, "5600000"],
+      [world.gain.id, card.id, "1200000"],
+    ])
+    expect((await balanceOf(world.user.id, card)) - before).toBe(68_000_00n)
+    expect(await balanceOf(world.user.id, world.gold)).toBe(51_000_00n)
+  })
+
+  it("can take from a lot bought on the sale's own day (call 6: on or before)", async () => {
+    const world = await setup()
+    const { preview } = await sell(world, g(12n), 90_000_00n, { occurredAt: calendarDate("2026-02-01") })
+    expect(preview.allocations).toEqual([
+      { acquiredAt: "2026-01-01", quantity: g(10n), costBasisPaise: 70_000_00n },
+      { acquiredAt: "2026-02-01", quantity: g(2n), costBasisPaise: 14_800_00n },
+    ])
+    // the day before, lot B does not exist yet
+    const error = await rejection(sell(world, g(1n), 7_000_00n, { occurredAt: calendarDate("2026-01-31") }))
+    expect((error as InsufficientQuantityError).available).toBe(0n)
+  })
+})
+
+/**
+ * The lot invariants a race could break: no lot is sold beyond what it holds, and no live sale takes from a lot whose
+ * purchase is deleted.
+ */
+async function expectLotsConsistent(userId: string): Promise<void> {
+  const lots = await prisma.investmentLot.findMany({
+    where: { userId },
+    include: { transaction: true, consumptions: { include: { transaction: true } } },
+  })
+  for (const lot of lots) {
+    const live = lot.consumptions.filter((c) => c.transaction.deletedAt === null)
+    const sold = live.reduce((sum, c) => sum + BigInt(c.quantity.mul(1_000_000).toFixed(0)), 0n)
+    expect(sold <= BigInt(lot.quantity.mul(1_000_000).toFixed(0)), `lot ${lot.id} oversold`).toBe(true)
+    if (lot.transaction.deletedAt !== null) expect(live, `deleted lot ${lot.id} still sold from`).toEqual([])
+  }
+}
+
+describe("purchases edited or deleted while a sale runs", () => {
+  // Each round starts the purchase's write a little later than the last (0-9 ms), sweeping it across the sale's
+  // transaction, so that a missing lock is caught every run rather than when the timing happens to line up.
+  const ROUNDS = 20
+  const after = <T>(ms: number, write: () => Promise<T>): Promise<T> =>
+    new Promise((resolve) => setTimeout(resolve, ms)).then(write)
+
+  it("never lets a sale take from a purchase deleted at the same moment", async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const world = await setup()
+      // 12g needs lot B; deleting B's purchase at the same time must leave one of them refused.
+      const results = await Promise.allSettled([
+        sell(world, g(12n), 90_000_00n),
+        after(round % 10, () => removeTransaction(world.user.id, world.buyB.id)),
+      ])
+      expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"])
+      const refused = (results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason
+      expect(refused instanceof InsufficientQuantityError || refused instanceof LotInUseError).toBe(true)
+      await expectLotsConsistent(world.user.id)
+    }
+  })
+
+  it("never lets a purchase be cut below what a sale at the same moment takes from it", async () => {
+    for (let round = 0; round < ROUNDS; round += 1) {
+      const world = await setup()
+      // The sale takes 8g of lot A; the edit cuts lot A to 3g. Whichever runs second must see the other.
+      await Promise.allSettled([
+        sell(world, g(8n), 60_000_00n),
+        after(round % 10, () => editTransaction(world.user.id, world.buyA.id, { quantity: g(3n) }, world.buyA.version)),
+      ])
+      await expectLotsConsistent(world.user.id)
+    }
+  })
 })
 
 describe("sellInvestment refuses, writing nothing", () => {
@@ -603,7 +683,7 @@ describe("deleting and restoring a sale", () => {
     const first = await sell(world, g(8n), 68_000_00n)
     await removeTransaction(world.user.id, first.legs[0].id)
     const second = await sell(world, g(12n), 90_000_00n)
-    await rejection(restoreTransaction(world.user.id, first.legs[0].id))
+    expect(await rejection(restoreTransaction(world.user.id, first.legs[0].id))).toBeInstanceOf(InsufficientQuantityError)
     await removeTransaction(world.user.id, second.legs[0].id)
     await restoreTransaction(world.user.id, first.legs[0].id)
     expect(await remaining(world.user.id, world.gold)).toEqual([

@@ -21,6 +21,9 @@ function textFor(code: ActionErrorCode, serverMessage: string, hasFieldErrors: b
       return { message: serverMessage, isFieldProblem: false }
     case "request_conflict":
       return { message: serverMessage, isFieldProblem: false }
+    case "insufficient_quantity":
+      // The service states what is available, in the investment's unit (EC-21), or why a sale cannot be restored.
+      return { message: serverMessage, isFieldProblem: false }
     case "system_node":
     case "has_history":
     case "hierarchy_depth":

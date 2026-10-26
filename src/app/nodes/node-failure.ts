@@ -30,6 +30,7 @@ function textFor(code: ActionErrorCode, serverMessage: string): FailureText {
     case "version_conflict":
     case "overdraft_blocked":
     case "request_conflict":
+    case "insufficient_quantity":
       // Transaction refusals: a node action cannot give them, and the transaction screens word them themselves.
       return { message: serverMessage, isFieldProblem: false }
     case "invalid":

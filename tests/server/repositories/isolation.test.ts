@@ -72,6 +72,7 @@ describe("node repository", () => {
 
   isolation("findNodeById", "returns null for another user's node", async () => {
     expect(await nodeRepo.findNodeById(a.user.id, b.bank.id)).toBeNull()
+    expect(await inTransaction((uow) => nodeRepo.findNodeById(a.user.id, b.bank.id, uow))).toBeNull()
     expect(await nodeRepo.findNodeById(a.user.id, a.bank.id)).not.toBeNull()
   })
 
@@ -233,6 +234,7 @@ describe("transaction repository", () => {
     const theirs = await prisma.transaction.update({ where: { id: b.tx.id }, data: { idempotencyKey: "isolation-key-b-0000" } })
     try {
       expect(await txRepo.findTransactionsByIdempotencyKeys(a.user.id, ["isolation-key-b-0000"])).toEqual([])
+      expect(await inTransaction((uow) => txRepo.findTransactionsByIdempotencyKeys(a.user.id, ["isolation-key-b-0000"], uow))).toEqual([])
       expect((await txRepo.findTransactionsByIdempotencyKeys(b.user.id, ["isolation-key-b-0000"])).map((r) => r.id)).toEqual([theirs.id])
     } finally {
       await prisma.transaction.update({ where: { id: b.tx.id }, data: { idempotencyKey: null } })

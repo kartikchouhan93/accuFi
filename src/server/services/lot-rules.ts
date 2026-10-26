@@ -251,6 +251,9 @@ export interface LotEdit {
  */
 export async function applyLotEdit(userId: string, edit: LotEdit, uow: UnitOfWork): Promise<void> {
   const { existing, oldTo, to } = edit
+  // Before the lot is read, so a sale of either investment running now is seen whole or not at all (lockHoldings). In
+  // id order, so two edits moving lots between the same two investments in opposite directions cannot deadlock.
+  for (const nodeId of [...new Set([oldTo.id, to.id])].sort()) await lockHoldings(userId, nodeId, uow)
   const lot = await findLotByTransaction(userId, existing.id, uow)
   const moved = to.id !== existing.toNodeId
   const mode = lotModeOf(to)
@@ -302,9 +305,11 @@ export async function applyLotEdit(userId: string, edit: LotEdit, uow: UnitOfWor
  * longer counts. The lot itself stays (a deleted purchase's lot simply stops counting). `node` is the row's destination.
  */
 export async function assertPurchaseRemovable(userId: string, row: Transaction, uow: UnitOfWork): Promise<void> {
+  // A row's lot is in its destination. Locked before the lot is read, so a sale taking from it right now is seen.
+  await lockHoldings(userId, row.toNodeId, uow)
   const lot = await findLotByTransaction(userId, row.id, uow)
   if (!lot || lot.consumptions.length === 0) return
-  const node = await findNodeById(userId, row.toNodeId)
+  const node = await findNodeById(userId, row.toNodeId, uow)
   throw new LotInUseError(`${node ? alreadySold(lot, node) : "Already sold."} Delete the sale first.`)
 }
 
@@ -315,7 +320,7 @@ export async function assertPurchaseRemovable(userId: string, row: Transaction, 
 export async function assertRestoredLotAllowed(userId: string, row: Transaction, uow: UnitOfWork): Promise<void> {
   const lot = await findLotByTransaction(userId, row.id, uow)
   if (!lot?.live) return
-  const node = await findNodeById(userId, row.toNodeId)
+  const node = await findNodeById(userId, row.toNodeId, uow)
   if (!node || lotModeOf(node) !== "LUMP") return
   if ((await findLiveLots(userId, node.id, uow)).length > 1) refuse("LUMP_ALREADY_BOUGHT", lumpBoughtOnce(node))
 }
@@ -334,7 +339,7 @@ export async function assertRestoredSaleCovered(userId: string, row: Transaction
   if (taken.length === 0) return
   // A lot taken from never leaves its investment (assertLotMovable), so every one is in the sale's source node.
   await lockHoldings(userId, row.fromNodeId, uow)
-  const node = await findNodeById(userId, row.fromNodeId)
+  const node = await findNodeById(userId, row.fromNodeId, uow)
   if (!node) throw new NotFoundError("node")
   const lots = new Map((await findLiveLots(userId, node.id, uow)).map((lot) => [lot.id, lot]))
   const saleDate = fromDbDate(row.occurredAt)

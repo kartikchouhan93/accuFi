@@ -157,9 +157,14 @@ export function findTransactionById(userId: string, id: string, uow?: UnitOfWork
 /**
  * The rows carrying any of these idempotency keys, in the order the keys are given, soft-deleted ones included (a
  * deleted row keeps its key reserved). Keys no row carries are skipped. This is how a replayed split finds its legs.
+ * `uow`, when given, reads inside the caller's open transaction.
  */
-export async function findTransactionsByIdempotencyKeys(userId: string, keys: readonly string[]): Promise<Transaction[]> {
-  const rows = await prisma.transaction.findMany({ where: { userId, idempotencyKey: { in: [...keys] } } })
+export async function findTransactionsByIdempotencyKeys(
+  userId: string,
+  keys: readonly string[],
+  uow?: UnitOfWork,
+): Promise<Transaction[]> {
+  const rows = await (uow ? clientOf(uow) : prisma).transaction.findMany({ where: { userId, idempotencyKey: { in: [...keys] } } })
   return keys.flatMap((key) => rows.filter((row) => row.idempotencyKey === key))
 }
 

@@ -230,8 +230,8 @@ export async function findConsumptionsByTransaction(
 
 /**
  * Hold the lots of investment `nodeId` still until the caller's transaction ends: every write that decides from what a
- * lot still holds (a sale, the restore of one) takes this first and reads the lots after it, so two of them cannot both
- * take the same units. A row lock on the caller's node (FOR NO KEY UPDATE, which does not block a transaction merely
+ * lot still holds (a sale, the restore of one, the edit or delete of a purchase) takes this first and reads the lots
+ * after it, so two of them cannot both take the same units, nor one cut or delete a lot the other is taking from. A row lock on the caller's node (FOR NO KEY UPDATE, which does not block a transaction merely
  * referring to the node). Throws NotFoundError if the node is not this user's.
  */
 export async function lockHoldings(userId: string, nodeId: string, uow: UnitOfWork): Promise<void> {

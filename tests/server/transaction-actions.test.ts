@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { calendarDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
+import { sellInvestment } from "@/server/services/investment-service"
 import { createRegistry } from "./repositories/fixtures"
 
 // Replace the session: what these tests care about is what each action does with the answer requireUserId gives
@@ -237,6 +239,48 @@ describe("removeTransactionAction and restoreTransactionAction", () => {
       ok: false,
       error: { code: "invalid_input" },
     })
+  })
+})
+
+describe("restoreTransactionAction for a sale", () => {
+  it("answers a refused restore as a failure stating what is left, not as a server error", async () => {
+    const { user, bank } = await signedInWorld(2_00_000_00n)
+    await registry.makeNode(user.id, "INCOME_SOURCE", "Realised Gain", { systemRole: "REALISED_GAIN" })
+    await registry.makeNode(user.id, "EXPENSE", "Realised Loss", { systemRole: "REALISED_LOSS" })
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const bought = await actions.recordTransactionAction({
+      fromNodeId: bank.id,
+      toNodeId: gold.id,
+      amount: "70,000",
+      quantity: "10",
+      occurredAt: "2026-01-01",
+      idempotencyKey: randomUUID(),
+    })
+    if (!bought.ok) throw new Error("setup failed")
+    const sale = (quantity: bigint) =>
+      sellInvestment(user.id, {
+        nodeId: gold.id,
+        toNodeId: bank.id,
+        quantity,
+        proceeds: 60_000_00n,
+        occurredAt: calendarDate("2026-03-01"),
+        idempotencyKey: randomUUID(),
+      })
+    const first = await sale(8_000_000n)
+    expect(await actions.removeTransactionAction({ id: first.legs[0].id })).toEqual({ ok: true, data: null })
+    await sale(5_000_000n) // takes 5 of the 10g the deleted sale had taken 8 of
+
+    revalidatePath.mockReset()
+    const result = await actions.restoreTransactionAction({ id: first.legs[0].id })
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "insufficient_quantity",
+        message: "This sale cannot be restored: it took 8 g of Gold from the purchase of 2026-01-01, which now has only 5 g left to sell.",
+      },
+    })
+    expect(revalidatePath).not.toHaveBeenCalled()
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: first.legs[0].id } })).deletedAt).not.toBeNull()
   })
 })
 

@@ -19,6 +19,7 @@ export type ActionErrorCode =
   | "version_conflict"
   | "overdraft_blocked"
   | "request_conflict"
+  | "insufficient_quantity"
 
 export interface ActionFailure {
   ok: false

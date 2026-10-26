@@ -287,7 +287,7 @@ export async function sellInvestment(userId: string, input: SellInput): Promise<
       await lockHoldings(userId, node.id, uow)
       // A submission of the same key that held the lock before this one has committed by now: its sale is the answer,
       // and allocating again against the lots it left would refuse a request that already succeeded.
-      if ((await findTransactionsByIdempotencyKeys(userId, keys)).length > 0) return null
+      if ((await findTransactionsByIdempotencyKeys(userId, keys, uow)).length > 0) return null
       const { preview, allocations } = await planSale(userId, node, to, input, uow)
       const legs = saleLegs(node, to, preview, system)
       // Never expected to refuse (the checks above cover every leg), but a leg is a transaction and is held to the rules.

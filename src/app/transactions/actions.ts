@@ -1,6 +1,7 @@
 "use server"
 
 import type { z } from "zod"
+import { InsufficientQuantityError } from "@/domain/lots"
 import {
   editTransactionSchema,
   listTransactionsSchema,
@@ -115,6 +116,9 @@ function toFailure(error: unknown): ActionFailure {
     const fieldErrors = violationFieldErrors(error.violations)
     return failed("invalid", error.message, Object.keys(fieldErrors).length > 0 ? fieldErrors : undefined)
   }
+  // Restoring a sale whose lots no longer hold what it took (the service words it, naming the quantity in units). It is
+  // about the request as a whole, not a field: the fix is elsewhere (delete the later sale, restore the purchase).
+  if (error instanceof InsufficientQuantityError) return failed("insufficient_quantity", error.message)
   if (error instanceof SplitTotalMismatchError) return failed("invalid", error.message, { total: [error.message] })
   if (error instanceof OverdraftBlockedError) return failed("overdraft_blocked", error.message)
   if (error instanceof NotFoundError) return failed("not_found", "That transaction or account was not found")

@@ -70,9 +70,9 @@ export function findNodes(
   })
 }
 
-/** Includes archived nodes: historical transactions still reference them. */
-export function findNodeById(userId: string, nodeId: string): Promise<LedgerNode | null> {
-  return prisma.ledgerNode.findFirst({ where: { id: nodeId, userId } })
+/** Includes archived nodes: historical transactions still reference them. `uow`, when given, reads inside it. */
+export function findNodeById(userId: string, nodeId: string, uow?: UnitOfWork): Promise<LedgerNode | null> {
+  return (uow ? clientOf(uow) : prisma).ledgerNode.findFirst({ where: { id: nodeId, userId } })
 }
 
 /**
