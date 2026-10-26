@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
 import { InsufficientQuantityError } from "@/domain/lots"
 import { openLots } from "@/domain/valuation"
@@ -20,6 +20,24 @@ import {
   ungroupTransaction,
 } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
+
+// Passes straight through to the real repository. A test can set `restoreGate.afterFindRestorable` to pause a restore
+// just after it has read what it will restore: the only deterministic way to commit a delete between that read and the
+// undelete, which each read their own snapshot.
+const restoreGate = vi.hoisted(() => ({ afterFindRestorable: null as null | (() => Promise<void>) }))
+vi.mock("@/server/repositories/transaction-repository", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/server/repositories/transaction-repository")>()
+  return {
+    ...original,
+    findRestorable: async (...args: Parameters<typeof original.findRestorable>) => {
+      const rows = await original.findRestorable(...args)
+      const pause = restoreGate.afterFindRestorable
+      restoreGate.afterFindRestorable = null
+      if (pause) await pause()
+      return rows
+    },
+  }
+})
 
 const registry = createRegistry()
 afterAll(registry.cleanup)
@@ -720,6 +738,64 @@ describe("deleting and restoring a sale", () => {
     const error = await expectRestoreRefused(world, legs.map((l) => l.id), legs[0].id)
     expect(error).toBeInstanceOf(InsufficientQuantityError)
     expect((error as InsufficientQuantityError).available).toBe(g(6n))
+  })
+
+  it("is not found for a sale that is not deleted, or an id that does not exist, changing nothing", async () => {
+    const world = await setup()
+    const { legs } = await sell(world, g(8n), 68_000_00n)
+    const before = await prisma.transaction.findMany({ where: { userId: world.user.id }, orderBy: { id: "asc" } })
+    for (const id of [legs[0].id, legs[1].id, "no-such-transaction"]) {
+      expect(await rejection(restoreTransaction(world.user.id, id))).toBeInstanceOf(NotFoundError)
+    }
+    expect(await prisma.transaction.findMany({ where: { userId: world.user.id }, orderBy: { id: "asc" } })).toEqual(before)
+  })
+
+  /** The outcome of a promise, as a value: so a test can hold it without an unhandled rejection. */
+  const settle = (promise: Promise<unknown>): Promise<PromiseSettledResult<unknown>> =>
+    promise.then(
+      (value): PromiseSettledResult<unknown> => ({ status: "fulfilled", value }),
+      (reason: unknown): PromiseSettledResult<unknown> => ({ status: "rejected", reason }),
+    )
+
+  it("is refused when the sale's delete commits between the restore's read and its undelete", async () => {
+    // The restore reads the sale as live (the delete has not committed), so it locks nothing. If it went on once the
+    // delete committed, its undelete would revive the sale and judge its lots with no lock held.
+    const world = await setup()
+    const { legs } = await sell(world, g(8n), 68_000_00n)
+    let reached!: () => void
+    const atGate = new Promise<void>((resolve) => (reached = resolve))
+    let release!: () => void
+    const released = new Promise<void>((resolve) => (release = resolve))
+    restoreGate.afterFindRestorable = async () => {
+      reached()
+      await released
+    }
+    let restoring: Promise<PromiseSettledResult<unknown>> | undefined
+    await prisma.$transaction(async (tx) => {
+      await tx.transaction.updateMany({ where: { userId: world.user.id, groupId: legs[0].groupId }, data: { deletedAt: new Date() } })
+      restoring = settle(restoreTransaction(world.user.id, legs[0].id))
+      await atGate // the restore has read the sale, still live; now the delete commits
+    })
+    release()
+    const result = await restoring
+    expect(result?.status).toBe("rejected")
+    expect((result as PromiseRejectedResult).reason).toBeInstanceOf(NotFoundError)
+    const rows = await prisma.transaction.findMany({ where: { id: { in: legs.map((leg) => leg.id) } } })
+    expect(rows.every((row) => row.deletedAt !== null)).toBe(true) // the delete stands; nothing was revived
+  })
+
+  it("is refused, whole, when the undelete revives a row the restore did not see deleted", async () => {
+    // A state no service writes (one leg of a sale deleted alone) so that the restore sees one deleted row, and the
+    // other leg is deleted while it is paused: the group's undelete then revives a row whose ends were not locked.
+    const world = await setup()
+    const { legs } = await sell(world, g(8n), 68_000_00n)
+    await prisma.transaction.update({ where: { id: legs[1].id }, data: { deletedAt: new Date() } })
+    restoreGate.afterFindRestorable = async () => {
+      await prisma.transaction.update({ where: { id: legs[0].id }, data: { deletedAt: new Date() } })
+    }
+    expect(await rejection(restoreTransaction(world.user.id, legs[1].id))).toBeInstanceOf(NotFoundError)
+    const rows = await prisma.transaction.findMany({ where: { id: { in: legs.map((leg) => leg.id) } } })
+    expect(rows.every((row) => row.deletedAt !== null)).toBe(true) // rolled back whole
   })
 
   it("is allowed again once the conflict is undone", async () => {

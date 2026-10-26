@@ -415,12 +415,21 @@ export async function restoreTransaction(userId: string, id: string): Promise<Tr
     // The investments the restored rows touch, locked before any row is written (lockLotHoldings): a restored sale's
     // lots are judged below, and a restored purchase's lot counts again.
     const restorable = await findRestorable(userId, id, uow)
+    // Not this user's, or not deleted, as this statement saw it. A delete still in flight is not waited for: it reads as
+    // live here, and restoring what was not seen deleted would revive rows whose investments were never locked.
+    if (restorable.length === 0) throw new NotFoundError("transaction")
     const ends = [...new Set(restorable.flatMap((each) => [each.fromNodeId, each.toNodeId]))]
     const nodes: LedgerNode[] = []
     for (const nodeId of ends) nodes.push(await requireNode(userId, nodeId, uow))
     await lockLotHoldings(userId, nodes, uow)
     const restored = await undeleteTransaction(userId, id, uow)
     const siblings = restored.groupId === null ? [] : await undeleteGroup(userId, restored.groupId, uow)
+    // Each statement reads its own snapshot, so a delete that committed after findRestorable may have added rows to
+    // what the undelete revived. Every revived row must be one whose ends were locked above; if not, the restore is
+    // refused whole (it rolls back) rather than judged without the lock. Deleted rows are never edited, so the ends of
+    // a row that was seen are the ends that were locked.
+    const locked = new Set(restorable.map((each) => each.id))
+    if (![restored, ...siblings].every((each) => locked.has(each.id))) throw new NotFoundError("transaction")
     for (const each of [restored, ...siblings]) {
       await assertRestoredLotAllowed(userId, each, uow)
       await assertRestoredSaleCovered(userId, each, uow)
