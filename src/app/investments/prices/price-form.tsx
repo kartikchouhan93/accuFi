@@ -134,6 +134,14 @@ export function PriceForm({ targets, selected, onSelect, today, known, revision,
     setOutcome(null)
   }
 
+  // A price is the price of one investment: typed for gold, it must not be saved for silver without being typed again.
+  // The day stays, since prices are often entered for several investments on one day.
+  function choose(nodeId: string) {
+    onSelect(nodeId)
+    setPrice("")
+    setPreview(null)
+  }
+
   // A refusal about the day or the price is shown beside that field. One about the investment itself (not revalued, not
   // found) has no control of its own here, since the select only offers what can take a price: it is said once, above
   // the button, as is a refusal that names no field. "Choose an investment" is the form's own, beside the select.
@@ -215,7 +223,7 @@ export function PriceForm({ targets, selected, onSelect, today, known, revision,
               <select
                 {...props}
                 value={selected}
-                onChange={(event) => change(() => onSelect(event.target.value))}
+                onChange={(event) => change(() => choose(event.target.value))}
                 className={inputClass}
               >
                 <option value="">Choose an investment</option>

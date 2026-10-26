@@ -450,3 +450,33 @@ test("a slow preview answer about an earlier price never replaces the answer abo
   const seen = await page.evaluate(() => (window as unknown as { seen: string[] }).seen)
   expect(seen.some((text) => text.includes("₹80,000.00"))).toBe(false)
 })
+
+test("a price typed for one investment is not carried to another when the choice changes", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
+  await investment(userId, "Silver", { unit: "g" })
+  await buy(userId, "Bank", "Silver", "24,000", "250", "2026-02-10")
+
+  await openPrices(page)
+  const form = priceForm(page)
+  await form.getByLabel("Investment").selectOption({ label: "Gold" })
+  await form.getByLabel("Date").fill("2026-03-01")
+  await form.getByLabel("Price per g (₹)").fill("7,800")
+  await expect(form.getByText("Not valued yet → ₹78,000.00")).toBeVisible()
+
+  // Silver is counted in the same unit, so the field keeps its label: only clearing it stops a gold price being saved for silver.
+  await form.getByLabel("Investment").selectOption({ label: "Silver" })
+  await expect(form.getByLabel("Price per g (₹)")).toHaveValue("")
+  await expect(form.getByLabel("Date")).toHaveValue("2026-03-01")
+  await page.waitForTimeout(600) // past the preview's debounce: nothing is asked of the cleared field
+  await expect(form.getByText(/→/)).toHaveCount(0)
+  await expect(form.getByText("Enter a price to see what it does to the value today.")).toBeVisible()
+  await form.getByRole("button", { name: "Save price" }).click()
+  await expect(form.getByLabel("Price per g (₹)")).toHaveAttribute("aria-invalid", "true")
+  expect(await prisma.priceSnapshot.count({ where: { userId } })).toBe(0)
+
+  // Back on the gold, the price is not brought back either.
+  await form.getByLabel("Investment").selectOption({ label: "Gold" })
+  await expect(form.getByLabel("Price per g (₹)")).toHaveValue("")
+})
