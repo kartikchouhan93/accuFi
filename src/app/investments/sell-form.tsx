@@ -8,7 +8,7 @@ import { buttonClass, inputClass } from "@/components/ui/styles"
 import type { CalendarDate } from "@/domain/calendar-date"
 import { formatQuantity, parseQuantity, QuantityParseError } from "@/domain/quantity"
 import type { HoldingView, SalePreviewView } from "@/lib/investment-view"
-import { describeSaleFigures, quantityText } from "@/lib/investment-text"
+import { describeSaleFigures, quantityText, saleOrderText } from "@/lib/investment-text"
 import { formatPaiseText } from "@/lib/node-money"
 import { newRequestKey } from "@/lib/request-key"
 import type { PickerNode } from "@/lib/transaction-list-view"
@@ -206,7 +206,7 @@ export function SellForm({ holding, destinations, today, onSold, onCancel }: Pro
         <p className="mt-1 text-sm text-fg-soft">Sells the whole of {holding.name}: a lump sum is sold in one piece.</p>
       ) : (
         <p className="mt-1 text-sm text-fg-soft">
-          Taken from the oldest purchases first. You hold <span className="figures font-medium text-fg">{quantityText(holding.quantityHeld, unit)}</span>.
+          {saleOrderText(holding.lotMethod)} You hold <span className="figures font-medium text-fg">{quantityText(holding.quantityHeld, unit)}</span>.
         </p>
       )}
 

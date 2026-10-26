@@ -7,10 +7,12 @@ import type { DashboardView } from "@/lib/dashboard-view"
 import { NOT_VALUED_COPY } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
+import { describeArchivedLine, describeUnvalued } from "@/lib/node-overview"
 
 // Every live account, investment and liability with what it holds or owes, grouped by kind, each as a tile. The figure at
 // the head of a group is the server's total for the kind, which counts archived nodes; the tiles are only the ones still
-// in use, so a group says how many are not listed rather than letting the tiles and the total quietly disagree.
+// in use, so a group says how many are not listed rather than letting the tiles and the total quietly disagree. An
+// investment that cannot be valued counts as nothing in its kind's total, so the total says how many it leaves out.
 
 interface Props {
   accounts: DashboardView["accounts"]
@@ -20,7 +22,7 @@ interface Props {
 export function AccountSummary({ accounts, kindTotals }: Props) {
   return (
     <div className="space-y-10">
-      {kindTotals.map(({ kind, total, archivedCount }) => {
+      {kindTotals.map(({ kind, total, archivedCount, unvaluedCount, archivedUnvaluedCount }) => {
         const rows = accounts.filter((account) => account.kind === kind)
         if (rows.length === 0 && archivedCount === 0) return null
         const copy = KIND_COPY[kind]
@@ -31,9 +33,13 @@ export function AccountSummary({ accounts, kindTotals }: Props) {
               <h2 id={headingId} className="font-display text-lg font-semibold tracking-tight">
                 {copy.plural}
               </h2>
+              {/* What the total leaves out, beside it and in an element of its own: an investment not valued counts as nothing. */}
+              {unvaluedCount > 0 && (
+                <span className="ml-auto text-sm text-notice-fg">{describeUnvalued({ unvaluedCount })}</span>
+              )}
               <Amount text={describeBalance(kind, total)} className="text-lg font-medium" />
             </div>
-            {archivedCount > 0 && <p className="mt-1 text-sm text-fg-soft">Includes {archivedCount} archived, not listed.</p>}
+            {archivedCount > 0 && <p className="mt-1 text-sm text-fg-soft">{describeArchivedLine(archivedCount, archivedUnvaluedCount)}</p>}
             {rows.length > 0 && (
               <ul className="mt-4 grid gap-3 sm:grid-cols-2">
                 {rows.map((account, index) => (

@@ -47,6 +47,7 @@ function targetsOf(portfolio: Portfolio): PriceTarget[] {
       lump: holding.valuationMode === "LUMP",
       quantityHeld: holding.quantityHeld,
       needsQuantity: holding.notValued === "NEEDS_QUANTITY",
+      quantityGaps: holding.quantityGaps,
     }))
     .sort((a, b) => a.name.localeCompare(b.name))
 }

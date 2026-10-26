@@ -228,7 +228,7 @@ describe("updateLot and deleteLotOf", () => {
 describe("findLotGaps", () => {
   it("counts a legacy inflow with no lot and an outflow with no consumption, live rows only", async () => {
     const { user, gold, buy, sale, lotFor } = await setup()
-    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 0, outflowsWithoutConsumption: 0 })
+    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 0, splitLegsWithoutLot: 0, outflowsWithoutConsumption: 0 })
     const covered = await buy()
     const lot = await lotFor(covered.id, 10n * UNIT)
     await buy() // legacy: no lot
@@ -239,7 +239,16 @@ describe("findLotGaps", () => {
       insertConsumptions(user.id, [{ lotId: lot.id, transactionId: coveredSale.id, quantity: UNIT, costBasisPaise: 700_000n }], uow),
     )
     await sale() // legacy: no consumption
-    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 1, outflowsWithoutConsumption: 1 })
+    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 1, splitLegsWithoutLot: 0, outflowsWithoutConsumption: 1 })
+  })
+
+  it("counts a legacy purchase inside a split apart from one on its own: it is fixed differently (taken out of the split first)", async () => {
+    const { user, gold, buy } = await setup()
+    await buy() // on its own, no lot
+    const split = await prisma.transactionGroup.create({ data: { userId: user.id, kind: "MANUAL_SPLIT" } })
+    const legs = [await buy(1_000n), await buy(2_000n)]
+    await prisma.transaction.updateMany({ where: { id: { in: legs.map((leg) => leg.id) } }, data: { groupId: split.id } })
+    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 1, splitLegsWithoutLot: 2, outflowsWithoutConsumption: 0 })
   })
 
   it("does not count the second leg of a disposal, which carries no consumption by design", async () => {
@@ -254,7 +263,7 @@ describe("findLotGaps", () => {
     await inTransaction((uow) =>
       insertConsumptions(user.id, [{ lotId: lot.id, transactionId: basisLeg.id, quantity: UNIT, costBasisPaise: 700_000n }], uow),
     )
-    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 0, outflowsWithoutConsumption: 0 })
+    expect(await findLotGaps(user.id, gold.id)).toEqual({ inflowsWithoutLot: 0, splitLegsWithoutLot: 0, outflowsWithoutConsumption: 0 })
   })
 })
 

@@ -17,6 +17,14 @@ export const NOT_VALUED_COPY: Record<NotValuedReason, string> = {
   NEEDS_QUANTITY: "Some entries need a quantity",
 }
 
+/**
+ * The kinds of entry, made before lots existed, that keep an investment from being valued ("NEEDS_QUANTITY"), each put
+ * right in its own way: a purchase on its own is edited to add its quantity (a lump's is saved as its single holding); a
+ * purchase inside a split is taken out of the split first, since a leg carries no quantity; a withdrawal is deleted and
+ * entered again with Sell, since only a sale records what it took from the lots. In this order.
+ */
+export type QuantityGap = "PURCHASE" | "SPLIT_LEG" | "WITHDRAWAL"
+
 /** The day of the price behind a value, and whether it is older than the investment's window (EC-24). */
 export interface PriceState {
   asOf: CalendarDate
@@ -44,6 +52,10 @@ export interface HoldingView {
   /** The price that values the holding: the latest on or before the day. `stale` once older than the node's window. */
   price: { asOf: CalendarDate; pricePerUnitPaise: string; stale: boolean } | null
   notValued: NotValuedReason | null
+  /** With "NEEDS_QUANTITY": which kinds of entry are missing what lots need, so the screen says how to put each right. */
+  quantityGaps: QuantityGap[]
+  /** Which lots a sale takes first; an investment that says nothing is first in, first out. Null when valued by what was put in. */
+  lotMethod: LedgerNode["lotMethod"]
   /** Live lots acquired by the day, sold out or not: the rows of `HoldingDetail.lots`. */
   lotCount: number
 }

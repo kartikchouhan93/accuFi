@@ -13,7 +13,7 @@ export function NetWorth({ overview }: { overview: NodeOverview }) {
   const staleNames = nodes.filter((node) => netWorth.staleNodeIds.includes(node.id)).map((node) => node.name)
   const archivedCount = (Object.keys(kinds) as (keyof typeof kinds)[])
     .filter((kind) => HOLDING_KINDS.has(kind))
-    .reduce((sum, kind) => sum + kinds[kind].archivedCount, 0)
+    .reduce((sum, kind) => sum + kinds[kind].archivedCount - kinds[kind].archivedUnvaluedCount, 0) // an unvalued one is in no figure
 
   return <NetWorthCard netWorth={{ ...netWorth, unvaluedNames, staleNames, archivedCount }} projected={null} />
 }

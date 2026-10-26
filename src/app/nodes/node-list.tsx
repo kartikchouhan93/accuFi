@@ -15,7 +15,7 @@ import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
 import { NOT_VALUED_COPY, type NotValuedReason, type PriceState } from "@/lib/investment-view"
 import { HOLDING_KINDS, KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import { describeBalance, describeResidual, formatPaiseText } from "@/lib/node-money"
-import type { NodeOverview } from "@/lib/node-overview"
+import { describeArchivedLine, describeUnvalued, type NodeOverview } from "@/lib/node-overview"
 import type { NodeView } from "@/lib/node-view"
 import { cn } from "@/lib/utils"
 import type { ActionResult } from "@/server/action-support"
@@ -88,6 +88,9 @@ function KindSection({ kind, index, overview, showArchived, announce, onAdd }: S
   const visible = showArchived ? ofKind : ofKind.filter((node) => node.archivedAt === null)
   const hiddenCount = ofKind.length - visible.length
   const total = HOLDING_KINDS.has(kind) ? describeBalance(kind, summary.total) : null
+  // An investment that cannot be valued counts as nothing in the total: said beside it, and never called "included".
+  const leftOut = total ? describeUnvalued(summary) : null
+  const hiddenUnvalued = showArchived ? 0 : summary.archivedUnvaluedCount
 
   return (
     <SpotlightCard
@@ -105,13 +108,13 @@ function KindSection({ kind, index, overview, showArchived, announce, onAdd }: S
         <h2 id={headingId} className="font-display text-lg font-semibold tracking-tight">
           {copy.plural}
         </h2>
-        {total && <Amount text={total} className="ml-auto text-lg font-medium" />}
+        {leftOut && <span className="ml-auto text-sm text-notice-fg">{leftOut}</span>}
+        {total && <Amount text={total} className={cn("text-lg font-medium", !leftOut && "ml-auto")} />}
       </div>
       {/* The figure above counts archived nodes whether or not their rows are drawn; say so when they are not. */}
       {hiddenCount > 0 && (
         <p className="mt-2 text-sm text-fg-soft">
-          {total ? "Includes " : ""}
-          {hiddenCount} archived{total ? ", not listed" : " not listed"}.
+          {total ? describeArchivedLine(hiddenCount, hiddenUnvalued) : `${hiddenCount} archived not listed.`}
         </p>
       )}
       {visible.length === 0 ? (

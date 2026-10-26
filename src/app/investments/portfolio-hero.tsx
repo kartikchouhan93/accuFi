@@ -30,7 +30,10 @@ function leftOut(holding: HoldingView): string {
 export function PortfolioHero({ portfolio }: { portfolio: Portfolio }) {
   const { holdings, totals } = portfolio
   const unvalued = holdings.filter((holding) => holding.notValued !== null)
-  const stale = holdings.filter((holding) => holding.notValued === null && holding.price?.stale).map((holding) => holding.name)
+  // As net worth judges it (valuationStatesFrom): a price is behind a value only while something is held at it.
+  const stale = holdings
+    .filter((holding) => holding.notValued === null && holding.quantityHeld !== "0" && holding.price?.stale)
+    .map((holding) => holding.name)
   const contributions = holdings.filter((holding) => holding.valuationMode === "CONTRIBUTION_ONLY").map((holding) => holding.name)
   const none = totals.valuePaise === null
 

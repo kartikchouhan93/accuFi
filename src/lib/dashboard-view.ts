@@ -30,9 +30,13 @@ export interface DashboardAccount {
 
 export interface DashboardKindTotal {
   kind: LedgerKind
-  /** The sum of every node of the kind, archived included. */
+  /** The sum of every node of the kind, archived included; an investment not valued counts as nothing (`unvaluedCount`). */
   total: string
   archivedCount: number
+  /** How many investments of the kind are left out of `total`, not valued (archived included). */
+  unvaluedCount: number
+  /** How many of those are archived. */
+  archivedUnvaluedCount: number
 }
 
 export interface DashboardTransaction {
@@ -58,7 +62,7 @@ export interface DashboardView {
     unvaluedNames: string[]
     /** The investments counted at a price older than their window, by name: the figure says so (EC-24). */
     staleNames: string[]
-    /** How many accounts, investments and liabilities are archived: counted in the figures, not listed. */
+    /** How many accounts, investments and liabilities are archived and counted in the figures (not listed). */
     archivedCount: number
   }
   /** The live (not archived) accounts, investments and liabilities of the user, in the order the ledger shows them. */
@@ -128,7 +132,11 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       priced: overview.priced[node.id] ?? null,
     }))
 
-  const archivedCount = KIND_ORDER.filter((kind) => HOLDING_KINDS.has(kind)).reduce((sum, kind) => sum + overview.kinds[kind].archivedCount, 0)
+  // Archived nodes that are in the figures: an archived investment that cannot be valued is not, and is named as left out.
+  const archivedCount = KIND_ORDER.filter((kind) => HOLDING_KINDS.has(kind)).reduce(
+    (sum, kind) => sum + overview.kinds[kind].archivedCount - overview.kinds[kind].archivedUnvaluedCount,
+    0,
+  )
 
   const projectsMore = differ(current, all)
   const projection = projectsMore && latestDate !== null ? buildNodeOverview(nodes, all, input.projectedValuations ?? valuations).netWorth : null
@@ -149,6 +157,8 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       kind,
       total: overview.kinds[kind].total,
       archivedCount: overview.kinds[kind].archivedCount,
+      unvaluedCount: overview.kinds[kind].unvaluedCount,
+      archivedUnvaluedCount: overview.kinds[kind].archivedUnvaluedCount,
     })),
     projected: projection && latestDate !== null ? { total: projection.total, asOf: latestDate, isPartial: projection.isPartial } : null,
     recent: recent.map((row) => ({

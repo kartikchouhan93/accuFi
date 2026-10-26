@@ -14,7 +14,7 @@ import { Switch } from "@/components/ui/switch"
 import { Tag } from "@/components/ui/tag"
 import type { CalendarDate } from "@/domain/calendar-date"
 import type { HoldingDetail, HoldingView } from "@/lib/investment-view"
-import { quantityText } from "@/lib/investment-text"
+import { quantityGapCopy, quantityText } from "@/lib/investment-text"
 import { describeBalance, formatPaiseText } from "@/lib/node-money"
 import type { PickerNode } from "@/lib/transaction-list-view"
 import { cn } from "@/lib/utils"
@@ -82,7 +82,10 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
   const lump = holding.valuationMode === "LUMP"
   const unit = holding.unitLabel || null
   const held = holding.quantityHeld !== "0"
-  const canSell = lotMode && held && !holding.archived
+  // Not while some entries are missing what lots need: the lots alone may overstate what is held (a withdrawal made
+  // before lots existed took units no lot records), so a sale from them could sell what is gone. The card says how to fix it.
+  const unknown = holding.notValued === "NEEDS_QUANTITY"
+  const canSell = lotMode && held && !holding.archived && !unknown
   const Icon = MODE_ICON[holding.valuationMode ?? "CONTRIBUTION_ONLY"]
 
   // What the server said the holding is now. When it changes (a sale, a refresh), the lots are read again.
@@ -165,9 +168,11 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
           <div className="pt-4 text-sm">
             <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 rounded-xl border border-line bg-canvas/60 p-3">
               <dt className="text-fg-soft">Held</dt>
-              <dd className="figures">{lump ? (held ? "The whole of it" : "Nothing") : quantityText(holding.quantityHeld, unit)}</dd>
+              <dd className="figures">
+                {unknown ? "Not known" : lump ? (held ? "The whole of it" : "Nothing") : quantityText(holding.quantityHeld, unit)}
+              </dd>
               <dt className="text-fg-soft">Cost basis</dt>
-              <dd className="figures">{holding.notValued === "NEEDS_QUANTITY" ? "Not known" : formatPaiseText(holding.costBasisPaise)}</dd>
+              <dd className="figures">{unknown ? "Not known" : formatPaiseText(holding.costBasisPaise)}</dd>
               <dt className="text-fg-soft">Value</dt>
               <dd className="figures">{holding.valuePaise === null ? "Not valued" : formatPaiseText(holding.valuePaise)}</dd>
               <dt className="text-fg-soft">Purchases</dt>
@@ -251,14 +256,7 @@ function Figures({ holding, unit }: { holding: HoldingView; unit: string | null 
             </Link>
           </p>
         ) : (
-          <p className="mt-1 max-w-prose text-sm text-fg-soft">
-            Some purchases have no quantity, so how much is held is not known. Edit those transactions on the{" "}
-            {/* Every month, not only the current one: the purchases without a quantity are usually older than this month. */}
-            <Link href="/transactions?from=&to=" className={linkClass}>
-              Transactions
-            </Link>{" "}
-            screen to add one.
-          </p>
+          <NeedsQuantity holding={holding} />
         )}
       </div>
     )
@@ -296,6 +294,35 @@ function Figures({ holding, unit }: { holding: HoldingView; unit: string | null 
           <PriceLine priced={holding.price} className="sm:justify-end" />
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Why the holding is not known, one line per kind of entry that is missing what lots need, each saying how to put it
+ * right (they are put right differently), and where those entries are.
+ */
+function NeedsQuantity({ holding }: { holding: HoldingView }) {
+  const lump = holding.valuationMode === "LUMP"
+  // Every month, not only the current one: entries from before lots existed are usually older than this month.
+  const transactions = (
+    <Link href="/transactions?from=&to=" className={linkClass}>
+      Transactions
+    </Link>
+  )
+  const gaps = holding.quantityGaps.length > 0 ? holding.quantityGaps : (["PURCHASE"] as const)
+  return (
+    <div className="mt-1 max-w-prose space-y-1 text-sm text-fg-soft">
+      {gaps.map((gap) =>
+        gap === "PURCHASE" && !lump ? (
+          <p key={gap}>
+            {quantityGapCopy(gap, lump)} Edit those transactions on the {transactions} screen to add one.
+          </p>
+        ) : (
+          <p key={gap}>{quantityGapCopy(gap, lump)}</p>
+        ),
+      )}
+      {!(gaps.includes("PURCHASE") && !lump) && <p>Those entries are on the {transactions} screen.</p>}
     </div>
   )
 }

@@ -128,6 +128,44 @@ describe("loadValuations", () => {
     })
   })
 
+  it("names each kind of entry that keeps it from being valued, since each is put right differently", async () => {
+    const world = await setup()
+    const legacy = (from: Node, to: Node, amountPaise: bigint) =>
+      insertTransactions(world.user.id, [{ fromNodeId: from.id, toNodeId: to.id, amountPaise, occurredAt: calendarDate("2025-12-15") }])
+    const gapsOf = async () => (await loadHolding(world.user.id, world.gold.id)).quantityGaps
+    expect(await gapsOf()).toEqual([])
+
+    // A withdrawal from before lots existed: only Sell writes what it took, so it is deleted and entered again.
+    await legacy(world.gold, world.bank, 1_000_00n)
+    expect(await gapsOf()).toEqual(["WITHDRAWAL"])
+
+    // A purchase inside a split: a leg carries no quantity, so it is taken out of the split first.
+    const [legA] = await legacy(world.bank, world.gold, 2_000_00n)
+    const [legB] = await legacy(world.bank, world.rent, 500_00n)
+    const split = await prisma.transactionGroup.create({ data: { userId: world.user.id, kind: "MANUAL_SPLIT" } })
+    await prisma.transaction.updateMany({ where: { id: { in: [legA.id, legB.id] } }, data: { groupId: split.id } })
+    expect(await gapsOf()).toEqual(["SPLIT_LEG", "WITHDRAWAL"])
+
+    // A purchase on its own with no quantity: edited to add one.
+    await legacy(world.bank, world.gold, 3_000_00n)
+    expect(await gapsOf()).toEqual(["PURCHASE", "SPLIT_LEG", "WITHDRAWAL"])
+    const portfolio = await loadPortfolio(world.user.id)
+    expect(portfolio.holdings.find((h) => h.nodeId === world.gold.id)).toMatchObject({
+      notValued: "NEEDS_QUANTITY",
+      quantityGaps: ["PURCHASE", "SPLIT_LEG", "WITHDRAWAL"],
+    })
+    expect(portfolio.holdings.find((h) => h.nodeId === world.fund.id)?.quantityGaps).toEqual([])
+  })
+
+  it("says how an investment's lots are sold, first in first out when the node says nothing", async () => {
+    const world = await setup()
+    const dearest = await registry.makeNode(world.user.id, "INVESTMENT", "Fund", { valuationMode: "QUANTITY", lotMethod: "HIGHEST_COST_FIRST" })
+    const unset = await registry.makeNode(world.user.id, "INVESTMENT", "Coins", { valuationMode: "QUANTITY", lotMethod: null })
+    expect((await loadHolding(world.user.id, world.gold.id)).lotMethod).toBe("FIFO")
+    expect((await loadHolding(world.user.id, dearest.id)).lotMethod).toBe("HIGHEST_COST_FIRST")
+    expect((await loadHolding(world.user.id, unset.id)).lotMethod).toBe("FIFO")
+  })
+
   it("values as of a day: a lot bought after it is not held yet", async () => {
     const world = await setup()
     await priceGold(world, RS_7800, calendarDate("2026-01-15"))
@@ -507,6 +545,23 @@ describe("net worth with valuations", () => {
       unvaluedNames: ["Gold"],
     })
     expect(view.accounts.find((a) => a.name === "Gold")).toMatchObject({ balance: "0", notValued: "NO_PRICE" })
+    // The kind's total leaves it out too, and says so: it is not quietly a total of the valued ones.
+    expect(view.kindTotals.find((k) => k.kind === "INVESTMENT")).toEqual({
+      kind: "INVESTMENT",
+      total: "0",
+      archivedCount: 0,
+      unvaluedCount: 1,
+      archivedUnvaluedCount: 0,
+    })
+    await prisma.ledgerNode.update({ where: { id: world.gold.id }, data: { archivedAt: new Date() } })
+    const archived = await getDashboard(world.user.id)
+    expect(archived.kindTotals.find((k) => k.kind === "INVESTMENT")).toMatchObject({
+      archivedCount: 1,
+      unvaluedCount: 1,
+      archivedUnvaluedCount: 1,
+    })
+    // Net worth's "Includes N archived" counts only archived nodes that are in it: the unvalued gold is named as left out.
+    expect(archived.netWorth).toMatchObject({ archivedCount: 0, unvaluedNames: ["Gold"] })
   })
 
   it("on the dashboard: a priced investment counts at its value, today and in the projection (call 6)", async () => {

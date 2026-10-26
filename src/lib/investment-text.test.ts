@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { describeGain, describeRevaluation, describeSaleFigures, formatBasisPoints, priceText, quantityText } from "./investment-text"
+import {
+  describeGain,
+  describeRevaluation,
+  describeSaleFigures,
+  formatBasisPoints,
+  priceText,
+  quantityGapCopy,
+  quantityText,
+  saleOrderText,
+} from "./investment-text"
 
 describe("formatBasisPoints", () => {
   it("prints basis points as a percentage to two places, in integer arithmetic", () => {
@@ -76,5 +85,29 @@ describe("describeRevaluation", () => {
 
   it("has nothing to print when no price can value the investment", () => {
     expect(describeRevaluation({ beforePaise: null, afterPaise: null, changePaise: null })).toBeNull()
+  })
+})
+
+describe("quantityGapCopy", () => {
+  it("says how to put right each kind of entry that keeps an investment from being valued", () => {
+    expect(quantityGapCopy("PURCHASE", false)).toBe("Some purchases have no quantity, so how much is held is not known.")
+    expect(quantityGapCopy("SPLIT_LEG", false)).toBe("A purchase sits inside a split. Take it out of the split first, then add its quantity.")
+    expect(quantityGapCopy("WITHDRAWAL", false)).toBe("A withdrawal was recorded before lots existed. Delete it and record it again with Sell.")
+  })
+
+  it("tells a lump bought before lots existed to save its purchase, which has no quantity to add", () => {
+    expect(quantityGapCopy("PURCHASE", true)).toBe(
+      "Its purchase was recorded before lots existed. Open it on the Transactions screen and save it, and it is recorded as the single holding.",
+    )
+    expect(quantityGapCopy("SPLIT_LEG", true)).toBe("A purchase sits inside a split. Take it out of the split first, then save it.")
+  })
+})
+
+describe("saleOrderText", () => {
+  it("says which purchases a sale takes first, by the investment's method", () => {
+    expect(saleOrderText("FIFO")).toBe("Taken from the oldest purchases first.")
+    expect(saleOrderText("LIFO")).toBe("Taken from the newest purchases first.")
+    expect(saleOrderText("HIGHEST_COST_FIRST")).toBe("Taken from the dearest purchases first.")
+    expect(saleOrderText(null)).toBe("Taken from the oldest purchases first.")
   })
 })

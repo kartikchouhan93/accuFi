@@ -100,9 +100,9 @@ describe("AccountSummary", () => {
     { id: "c", name: "Axis card", kind: "LIABILITY", balance: "-124975", notValued: null, priced: null },
   ]
   const kindTotals: DashboardView["kindTotals"] = [
-    { kind: "ASSET", total: "9599950", archivedCount: 0 },
-    { kind: "INVESTMENT", total: "11700000", archivedCount: 0 },
-    { kind: "LIABILITY", total: "-124975", archivedCount: 1 },
+    { kind: "ASSET", total: "9599950", archivedCount: 0, unvaluedCount: 0, archivedUnvaluedCount: 0 },
+    { kind: "INVESTMENT", total: "461700000", archivedCount: 0, unvaluedCount: 1, archivedUnvaluedCount: 0 },
+    { kind: "LIABILITY", total: "-124975", archivedCount: 1, unvaluedCount: 0, archivedUnvaluedCount: 0 },
   ]
   const html = renderToStaticMarkup(createElement(AccountSummary, { accounts, kindTotals }))
   const tileOf = (name: string) => visibleText(new RegExp(`<li[^>]*>(?:(?!</li>)[\\s\\S])*?${name}[\\s\\S]*?</li>`).exec(html)?.[0] ?? "")
@@ -133,5 +133,28 @@ describe("AccountSummary", () => {
 
   it("says that the total of a kind includes archived accounts that are not listed", () => {
     expect(html).toContain("Includes 1 archived, not listed")
+  })
+
+  // The section of a kind, from its heading to the end of the section.
+  const sectionOf = (markup: string, kind: string) => /<section[^>]*>[\s\S]*?<\/section>/g.exec(markup.slice(markup.indexOf(`id="summary-${kind}"`) - 200))?.[0] ?? ""
+
+  it("says beside the Investments total how many investments it leaves out, not valued, in an element of its own", () => {
+    const investments = sectionOf(html, "INVESTMENT")
+    expect(investments).toMatch(/<span[^>]*>excludes 1 not valued<\/span>/)
+    expect(visibleText(investments)).toContain("₹46,17,000.00") // the figure keeps its own element and text
+    expect(sectionOf(html, "ASSET")).not.toContain("not valued")
+  })
+
+  it("never says an archived investment that is not valued is included in the total", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AccountSummary, {
+        accounts: accounts.filter((account) => account.kind === "INVESTMENT"),
+        kindTotals: [{ kind: "INVESTMENT", total: "461700000", archivedCount: 2, unvaluedCount: 2, archivedUnvaluedCount: 1 }],
+      }),
+    )
+    const text = visibleText(markup)
+    expect(text).toContain("excludes 2 not valued")
+    expect(text).toContain("2 archived, not listed; 1 of them is not valued and not counted.")
+    expect(text).not.toContain("Includes 2 archived")
   })
 })

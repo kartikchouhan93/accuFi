@@ -178,7 +178,7 @@ describe("getDashboard", () => {
     expect(after.accounts.map((a) => a.name)).toEqual(["Bank"]) // hidden from the list ...
     expect(after.netWorth).toEqual({ ...before.netWorth, archivedCount: 1 }) // ... but the debt is still owed
     expect(after.netWorth.total).toBe("3800000")
-    expect(after.kindTotals.find((k) => k.kind === "LIABILITY")).toEqual({ kind: "LIABILITY", total: "-1200000", archivedCount: 1 })
+    expect(after.kindTotals.find((k) => k.kind === "LIABILITY")).toEqual({ kind: "LIABILITY", total: "-1200000", archivedCount: 1, unvaluedCount: 0, archivedUnvaluedCount: 0 })
     expect(after.isEmpty).toBe(false)
   })
 

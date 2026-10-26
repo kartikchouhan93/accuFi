@@ -1,5 +1,5 @@
 import { formatPaise } from "../domain/money"
-import type { RevaluationPreviewView, SalePreviewView } from "./investment-view"
+import type { HoldingView, QuantityGap, RevaluationPreviewView, SalePreviewView } from "./investment-view"
 import type { BalanceText } from "./node-money"
 import { deserialisePaise } from "./serialise"
 
@@ -62,5 +62,34 @@ export function describeRevaluation(preview: RevaluationPreviewView): { lead: st
       change === 0n
         ? { amount: "no change", qualifier: null, tone: "muted" }
         : { amount: `${change > 0n ? "+" : ""}${formatPaise(change)}`, qualifier: null, tone: change > 0n ? "positive" : "negative" },
+  }
+}
+
+/**
+ * How to put right one kind of entry that keeps an investment from being valued (`QuantityGap`), in a sentence. A lump has
+ * no quantity to add: its purchase is saved as it is, which records it as the single holding.
+ */
+export function quantityGapCopy(gap: QuantityGap, lump: boolean): string {
+  switch (gap) {
+    case "PURCHASE":
+      return lump
+        ? "Its purchase was recorded before lots existed. Open it on the Transactions screen and save it, and it is recorded as the single holding."
+        : "Some purchases have no quantity, so how much is held is not known."
+    case "SPLIT_LEG":
+      return `A purchase sits inside a split. Take it out of the split first, then ${lump ? "save it" : "add its quantity"}.`
+    case "WITHDRAWAL":
+      return "A withdrawal was recorded before lots existed. Delete it and record it again with Sell."
+  }
+}
+
+/** Which purchases a sale takes first, by the investment's lot method (first in, first out when it says nothing). */
+export function saleOrderText(method: HoldingView["lotMethod"]): string {
+  switch (method) {
+    case "LIFO":
+      return "Taken from the newest purchases first."
+    case "HIGHEST_COST_FIRST":
+      return "Taken from the dearest purchases first."
+    default:
+      return "Taken from the oldest purchases first."
   }
 }

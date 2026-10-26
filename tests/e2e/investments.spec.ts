@@ -107,6 +107,18 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   await expect(portfolio(page)).toContainText("Silver (₹24,000.00 put in) is not valued and is left out of these figures.")
   await expect(portfolio(page)).toContainText("Gold is valued at a price more than its stale window old.")
 
+  // The Transactions screen's balances say the same as the ledger: the gold at its value with the price's day, not at
+  // what it cost, and the silver as not valued, never as a figure (EC-23, EC-24).
+  await openTransactions(page)
+  await expect(balanceOf(page, "Gold")).toContainText("₹1,17,000.00")
+  await expect(balanceOf(page, "Gold")).not.toContainText("₹1,07,000.00")
+  await expect(balanceOf(page, "Gold")).toContainText("as of 1 Mar 2026")
+  await expect(balanceOf(page, "Gold").getByText("Stale", { exact: true })).toBeVisible()
+  await expect(balanceOf(page, "Silver")).toContainText("Not valued")
+  await expect(balanceOf(page, "Silver")).toContainText("No price yet")
+  await expect(balanceOf(page, "Silver")).not.toContainText("₹")
+  await openInvestments(page)
+
   // The holding as a whole, and its lots on demand.
   await openHolding(page, "Gold")
   await expect(gold).toContainText("15 g")
@@ -241,9 +253,16 @@ test("a lump is sold whole, a contribution-only investment has nothing to sell, 
   await expect(page.getByRole("status")).toContainText("Cost basis ₹50,00,000.00 · loss ₹5,00,000.00")
   await expect(flat).toContainText("Nothing held")
   await expect(flat.getByRole("button", { name: "Sell / redeem" })).toHaveCount(0)
+  // Nothing is held at the Flat's old price now, so the portfolio no longer calls it valued at a stale one.
+  await expect(portfolio(page)).not.toContainText("Flat is valued at a price")
 
   // The old fund's purchase gains its quantity through the transaction's edit form, and a price then values the fund.
   await openTransactions(page, "?from=&to=")
+  // Meanwhile the Transactions screen agrees with the ledger: the old fund is not valued, the PPF holds what was put in.
+  await expect(balanceOf(page, "Old fund")).toContainText("Not valued")
+  await expect(balanceOf(page, "Old fund")).toContainText("Some entries need a quantity")
+  await expect(balanceOf(page, "Old fund")).not.toContainText("₹")
+  await expect(balanceOf(page, "PPF")).toContainText("₹1,50,000.00")
   const purchase = entries(page).getByRole("listitem").filter({ hasText: "Bank → Old fund" })
   await purchase.getByRole("button", { expanded: false }).first().click()
   await purchase.getByRole("button", { name: "Edit" }).click()
@@ -484,4 +503,104 @@ test("a price typed for one investment is not carried to another when the choice
   // Back on the gold, the price is not brought back either.
   await form.getByLabel("Investment").selectOption({ label: "Gold" })
   await expect(form.getByLabel("Price per g (₹)")).toHaveValue("")
+})
+
+test("kind totals say how many investments they leave out, not valued, and never call an archived one included", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
+  await price(userId, "Gold", "8,000", await today(userId))
+  // Needs a quantity: bought before it was valued by quantity.
+  await investment(userId, "Nifty", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await post(userId, "Bank", "Nifty", "20,000", { date: "2026-01-05" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Nifty") }, data: { valuationMode: "QUANTITY", lotMethod: "FIFO" } })
+  // Archived, and never priced.
+  await investment(userId, "Old silver", { unit: "kg" })
+  await buy(userId, "Bank", "Old silver", "24,000", "0.25", "2026-02-10")
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Old silver") }, data: { archivedAt: new Date() } })
+
+  // The dashboard: the Investments total is the gold's ₹80,000 alone, and says it leaves two out.
+  await page.goto("/")
+  const tiles = page.getByRole("region", { name: "Investments", exact: true })
+  await expect(tiles).toContainText("₹80,000.00")
+  await expect(tiles.getByText("excludes 2 not valued", { exact: true })).toBeVisible()
+  await expect(tiles).toContainText("1 archived, not listed; it is not valued, so not counted.")
+  await expect(tiles).not.toContainText("Includes 1 archived")
+
+  // The ledger says the same, beside the same figure.
+  await page.goto("/nodes")
+  const ledger = page.getByRole("region", { name: "Investments", exact: true })
+  await expect(ledger).toContainText("₹80,000.00")
+  await expect(ledger.getByText("excludes 2 not valued", { exact: true })).toBeVisible()
+  await expect(ledger).toContainText("1 archived, not listed; it is not valued, so not counted.")
+  await expect(page.getByRole("region", { name: "Accounts", exact: true })).not.toContainText("not valued")
+
+  // And the investments screen, whose totals leave the archived silver out too.
+  await openInvestments(page)
+  await expect(page.getByText("1 archived, not listed; it is not valued, so not counted.")).toBeVisible()
+  await expect(page.getByText("The totals include 1 archived")).toHaveCount(0)
+})
+
+test("says how to put right each entry that keeps an investment from being valued, and a lump bought before lots is valued once saved", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "60,00,000")
+  // A plot bought before it was valued as a lump: its purchase has no lot.
+  await investment(userId, "Plot", { valuation: "CONTRIBUTION_ONLY", unit: "plot" })
+  await post(userId, "Bank", "Plot", "50,00,000", { date: "2026-01-15", note: "Plot purchase" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Plot") }, data: { valuationMode: "LUMP" } })
+  await price(userId, "Plot", "52,00,000", await today(userId))
+  // Gold held by lots, with a withdrawal from before lots existed: the lots overstate what is held.
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
+  await prisma.transaction.create({
+    data: { userId, fromNodeId: await nodeId(userId, "Gold"), toNodeId: await nodeId(userId, "Bank"), amountPaise: 14_000_00n, occurredAt: new Date("2026-02-01T00:00:00Z") },
+  })
+  await price(userId, "Gold", "7,800", await today(userId))
+
+  await openInvestments(page)
+  const gold = card(page, "Gold")
+  await expect(gold).toContainText("Not valued")
+  await expect(gold).toContainText("A withdrawal was recorded before lots existed. Delete it and record it again with Sell.")
+  await expect(gold.getByRole("link", { name: "Transactions" })).toHaveAttribute("href", "/transactions?from=&to=")
+  // Not offered for sale while what is held is not known, and the holding says so rather than the lots' 10 g.
+  await expect(gold.getByRole("button", { name: "Sell / redeem" })).toHaveCount(0)
+  await openHolding(page, "Gold")
+  const held = gold.locator("dt", { hasText: "Held" }).locator("xpath=following-sibling::dd[1]")
+  await expect(held).toHaveText("Not known")
+
+  const plot = card(page, "Plot")
+  await expect(plot).toContainText("Not valued")
+  await expect(plot).toContainText("Its purchase was recorded before lots existed. Open it on the Transactions screen and save it")
+  await expect(plot.getByRole("button", { name: "Sell / redeem" })).toHaveCount(0)
+
+  // Saved through the edit form, the plot's purchase becomes its single holding, and its price values it.
+  await openTransactions(page, "?from=&to=")
+  const purchase = entries(page).getByRole("listitem").filter({ hasText: "Plot purchase" })
+  await purchase.getByRole("button", { expanded: false }).first().click()
+  await purchase.getByRole("button", { name: "Edit" }).click()
+  await expect(editForm(page)).toContainText("Saving this records it as a single holding, which lets it be valued.")
+  await expect(editForm(page).getByLabel(/^Quantity/)).toHaveCount(0)
+  await editForm(page).getByRole("button", { name: "Save changes" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved changes to Bank → Plot, ₹50,00,000.00")
+  expect((await prisma.investmentLot.findFirstOrThrow({ where: { userId, nodeId: await nodeId(userId, "Plot") } })).quantity.toString()).toBe("1")
+  await openInvestments(page)
+  await expect(plot).not.toContainText("Not valued")
+  await expect(plot).toContainText("₹52,00,000.00")
+  await expect(plot.getByRole("button", { name: "Sell / redeem" })).toBeVisible()
+})
+
+test("says, on request, what the investments screen does not do", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "1,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
+  await openInvestments(page)
+  const toggle = page.getByRole("button", { name: "What this screen does not do" })
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(page.getByText("Switching funds and paying fees out of an investment are not supported yet: sell, then buy.")).toBeVisible()
+  await expect(page.getByText("A sale cannot be edited: delete it and enter it again.")).toBeVisible()
 })

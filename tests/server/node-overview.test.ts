@@ -31,7 +31,7 @@ describe("loadNodeOverview", () => {
 
     // Archived, but not gone: the debt is still owed.
     expect(after.netWorth).toEqual(before.netWorth)
-    expect(after.kinds.LIABILITY).toEqual({ total: "-1200000", archivedCount: 1 })
+    expect(after.kinds.LIABILITY).toEqual({ total: "-1200000", archivedCount: 1, unvaluedCount: 0, archivedUnvaluedCount: 0 })
     expect(after.balances[card.id]).toBe("-1200000")
     expect(after.nodes.find((n) => n.id === card.id)?.archivedAt).not.toBeNull()
     expect(after.balances[bank.id]).toBe("5000000")

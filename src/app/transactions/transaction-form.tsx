@@ -161,6 +161,11 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   // A purchase entered before lots existed, being edited: its quantity may be left out, and adding it is what values the
   // investment (plan call 7).
   const addingQuantity = byQuantity && editing !== null && editing.toNodeId === values.to && (editing.quantity ?? null) === null
+  // The same for a lump: a purchase of one from before lots existed has no lot, and the form never asks a lump's quantity,
+  // so saving it says the one there is (1): that records it as the single holding, which lets it be valued. One that
+  // already has its lot sends nothing, as a new purchase of a lump does. A leg of a split never carries a quantity.
+  const savingAsHolding =
+    holding === "LUMP" && editing !== null && !editing.groupId && editing.toNodeId === values.to && (editing.quantity ?? null) === null
 
   // Every problem is shown beside the field it belongs to. What cannot be placed (a refusal about the whole request) is
   // said once, above the button.
@@ -252,8 +257,12 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
     })
   }
 
-  /** The quantity to send: only for a destination valued by quantity, and only when one is typed (the server asks for it). */
+  /**
+   * The quantity to send: for a destination valued by quantity, only when one is typed (the server asks for it); for a
+   * lump's purchase from before lots existed, its one unit.
+   */
   function quantityToSend(): { quantity: string } | Record<string, never> {
+    if (savingAsHolding) return { quantity: "1" }
     const quantity = values.quantity.trim()
     return byQuantity && quantity !== "" ? { quantity } : {}
   }
@@ -530,7 +539,9 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
 
         {holding === "LUMP" && (
           <p className="rounded-xl bg-canvas/60 px-3.5 py-2.5 text-sm text-fg-soft">
-            A single holding: {destination?.name} is bought once, whole, so there is no quantity to enter.
+            {savingAsHolding
+              ? "Saving this records it as a single holding, which lets it be valued."
+              : `A single holding: ${destination?.name} is bought once, whole, so there is no quantity to enter.`}
           </p>
         )}
 

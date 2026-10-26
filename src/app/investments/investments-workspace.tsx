@@ -1,13 +1,16 @@
 "use client"
 
-import { LineChart, Plus } from "lucide-react"
+import { ChevronDown, LineChart, Plus } from "lucide-react"
 import Link from "next/link"
-import { useRef, useState } from "react"
+import { useId, useRef, useState } from "react"
+import { Collapse } from "@/components/ui/collapse"
 import { NoticeToast, type ToastNotice } from "@/components/ui/notice-toast"
 import { buttonClass } from "@/components/ui/styles"
 import { Switch } from "@/components/ui/switch"
+import { cn } from "@/lib/utils"
 import type { CalendarDate } from "@/domain/calendar-date"
 import type { Portfolio } from "@/lib/investment-view"
+import { describeArchivedLine } from "@/lib/node-overview"
 import type { PickerNode } from "@/lib/transaction-list-view"
 import { HoldingCard } from "./holding-card"
 import { PortfolioHero } from "./portfolio-hero"
@@ -28,6 +31,8 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
   const [showArchived, setShowArchived] = useState(false)
   const statusRef = useRef<HTMLDivElement>(null)
   const archivedCount = portfolio.holdings.filter((holding) => holding.archived).length
+  // An archived investment that cannot be valued is in no total, so it is never said to be included.
+  const archivedUnvalued = portfolio.holdings.filter((holding) => holding.archived && holding.notValued !== null).length
   const visible = showArchived ? portfolio.holdings : portfolio.holdings.filter((holding) => !holding.archived)
 
   // A sale closes the form that had the keyboard's focus; the message is where focus lands, as on the other screens.
@@ -66,13 +71,20 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
         <>
           <div className="mt-8">
             <PortfolioHero portfolio={portfolio} />
+            <Limits />
           </div>
           {archivedCount > 0 && (
             <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2">
               <Switch checked={showArchived} onChange={setShowArchived}>
                 Show archived
               </Switch>
-              {!showArchived && <p className="text-sm text-fg-soft">The totals include {archivedCount} archived, not listed.</p>}
+              {!showArchived && (
+                <p className="text-sm text-fg-soft">
+                  {archivedUnvalued === 0
+                    ? `The totals include ${archivedCount} archived, not listed.`
+                    : describeArchivedLine(archivedCount, archivedUnvalued)}
+                </p>
+              )}
             </div>
           )}
           <div className="mt-8 grid grid-cols-1 gap-5 lg:grid-cols-2 lg:items-start">
@@ -92,5 +104,31 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
 
       <NoticeToast notice={notice} onDismiss={() => setNotice(null)} statusRef={statusRef} />
     </main>
+  )
+}
+
+/** What M2 leaves out, said where a user would look for it, quietly and on request. */
+function Limits() {
+  const panelId = useId()
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-3 text-sm">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
+        onClick={() => setOpen((current) => !current)}
+        className="inline-flex items-center gap-1 rounded-md font-medium text-fg-soft underline-offset-4 hover:underline"
+      >
+        What this screen does not do
+        <ChevronDown aria-hidden className={cn("size-4 transition-transform duration-200", open && "rotate-180")} />
+      </button>
+      <Collapse open={open} id={panelId}>
+        <p className="max-w-xl pt-2 text-fg-soft">
+          Switching funds and paying fees out of an investment are not supported yet: sell, then buy. A sale cannot be edited:
+          delete it and enter it again.
+        </p>
+      </Collapse>
+    </div>
   )
 }

@@ -273,19 +273,28 @@ export async function lockHoldings(userId: string, nodeId: string, uow: UnitOfWo
   if (rows.length === 0) throw new NotFoundError("node")
 }
 
+/** The live movements of a lot-mode node that its lots do not account for, by how each is put right. */
+export interface LotGaps {
+  /** Purchases on their own with no lot: editing each to add its quantity (or saving a lump's) fixes it. */
+  inflowsWithoutLot: number
+  /** Purchases inside a split with no lot: a leg carries no quantity, so each is taken out of its split first. */
+  splitLegsWithoutLot: number
+  /** Withdrawals with no consumption: only a sale writes one, so each is deleted and entered again with Sell. */
+  outflowsWithoutConsumption: number
+}
+
 /**
  * Live movements of a lot-mode node that its lots do not account for (call 7: such a node is not valued): transactions
- * into it with no lot, and transactions out of it with no consumption. The second leg of a disposal (proceeds or a
- * realised loss beside the cost-basis leg) carries no consumption by design, so a leg in a DISPOSAL group is not a gap.
+ * into it with no lot, on their own or as a leg of a split, and transactions out of it with no consumption. The second
+ * leg of a disposal (proceeds or a realised loss beside the cost-basis leg) carries no consumption by design, so a leg in
+ * a DISPOSAL group is not a gap.
  */
-export async function findLotGaps(
-  userId: string,
-  nodeId: string,
-  uow?: UnitOfWork,
-): Promise<{ inflowsWithoutLot: number; outflowsWithoutConsumption: number }> {
+export async function findLotGaps(userId: string, nodeId: string, uow?: UnitOfWork): Promise<LotGaps> {
   const db = dbOf(uow)
-  // One after the other: inside a unit of work the two would queue on one connection anyway.
-  const inflowsWithoutLot = await db.transaction.count({ where: { userId, toNodeId: nodeId, deletedAt: null, lot: { is: null } } })
+  // One after the other: inside a unit of work they would queue on one connection anyway.
+  const inflows = { userId, toNodeId: nodeId, deletedAt: null, lot: { is: null } }
+  const inflowsWithoutLot = await db.transaction.count({ where: { ...inflows, groupId: null } })
+  const splitLegsWithoutLot = await db.transaction.count({ where: { ...inflows, groupId: { not: null } } })
   const outflowsWithoutConsumption = await db.transaction.count({
     where: {
       userId,
@@ -295,5 +304,5 @@ export async function findLotGaps(
       OR: [{ groupId: null }, { group: { is: { kind: { not: "DISPOSAL" } } } }],
     },
   })
-  return { inflowsWithoutLot, outflowsWithoutConsumption }
+  return { inflowsWithoutLot, splitLegsWithoutLot, outflowsWithoutConsumption }
 }

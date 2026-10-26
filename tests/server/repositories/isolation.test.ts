@@ -491,10 +491,10 @@ describe("lot repository", () => {
   })
 
   isolation("findLotGaps", "counts nothing for another user's node", async () => {
-    const none = { inflowsWithoutLot: 0, outflowsWithoutConsumption: 0 }
+    const none = { inflowsWithoutLot: 0, splitLegsWithoutLot: 0, outflowsWithoutConsumption: 0 }
     expect(await lotRepo.findLotGaps(mine.userId, theirs.gold.id)).toEqual(none)
     expect(await inTransaction((uow) => lotRepo.findLotGaps(mine.userId, theirs.gold.id, uow))).toEqual(none)
-    expect(await lotRepo.findLotGaps(theirs.userId, theirs.gold.id)).toEqual({ inflowsWithoutLot: 1, outflowsWithoutConsumption: 0 })
+    expect(await lotRepo.findLotGaps(theirs.userId, theirs.gold.id)).toEqual({ inflowsWithoutLot: 1, splitLegsWithoutLot: 0, outflowsWithoutConsumption: 0 })
   })
 })
 

@@ -6,7 +6,7 @@ import type { Paise } from "@/domain/money"
 import { formatQuantity, type Quantity } from "@/domain/quantity"
 import { validateTransaction } from "@/domain/transaction-rules"
 import { basisPoints, openLots, valueHolding, type HoldingLot, type PricePoint } from "@/domain/valuation"
-import type { HoldingDetail, HoldingView, LotView, NotValuedReason, Portfolio, PriceState } from "@/lib/investment-view"
+import type { HoldingDetail, HoldingView, LotView, NotValuedReason, Portfolio, PriceState, QuantityGap } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { serialisePaise } from "@/lib/serialise"
 import type { TransactionView } from "@/lib/transaction-view"
@@ -365,6 +365,8 @@ export interface HoldingInputs {
   points: PricePoint[]
   /** Some live entry is not accounted for by a lot (call 7): the holding is not known, so it is not valued. */
   needsQuantity: boolean
+  /** Which kinds of entry those are (empty unless `needsQuantity`), in the order QuantityGap lists them. */
+  gaps: QuantityGap[]
 }
 
 /** Read the lots, the prices and the entries lots do not account for, of one of the user's investments held by lots. */
@@ -374,7 +376,12 @@ export async function readHoldingInputs(userId: string, nodeId: string): Promise
     findLiveLots(userId, nodeId),
     snapshotPriceResolver.pricesFor(userId, nodeId),
   ])
-  return { lots, points, needsQuantity: gaps.inflowsWithoutLot + gaps.outflowsWithoutConsumption > 0 }
+  const kinds: QuantityGap[] = [
+    ...(gaps.inflowsWithoutLot > 0 ? (["PURCHASE"] as const) : []),
+    ...(gaps.splitLegsWithoutLot > 0 ? (["SPLIT_LEG"] as const) : []),
+    ...(gaps.outflowsWithoutConsumption > 0 ? (["WITHDRAWAL"] as const) : []),
+  ]
+  return { lots, points, needsQuantity: kinds.length > 0, gaps: kinds }
 }
 
 // The staleness window only labels the price; it never changes a value. valueAt reports no price, so it passes any.
@@ -416,6 +423,8 @@ function lotHoldingView(node: LedgerNode, inputs: HoldingInputs, asOf: CalendarD
       stale: holding.price.stale,
     },
     notValued,
+    quantityGaps: inputs.gaps,
+    lotMethod: node.lotMethod ?? "FIFO",
     lotCount: lotsBy(inputs.lots, asOf).length,
   }
 }
@@ -435,6 +444,8 @@ function contributionHoldingView(node: LedgerNode, balance: Paise): HoldingView 
     gainBasisPoints: balance > 0n ? 0 : null,
     price: null,
     notValued: null,
+    quantityGaps: [],
+    lotMethod: null,
     lotCount: 0,
   }
 }

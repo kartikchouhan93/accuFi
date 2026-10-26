@@ -7,8 +7,8 @@ import { TONE_CLASS } from "@/app/amount"
 import { Field } from "@/app/transactions/transaction-form"
 import { buttonClass, inputClass } from "@/components/ui/styles"
 import { compareDates, type CalendarDate } from "@/domain/calendar-date"
-import { describeRevaluation, priceText, quantityText } from "@/lib/investment-text"
-import type { RevaluationPreviewView } from "@/lib/investment-view"
+import { describeRevaluation, priceText, quantityGapCopy, quantityText } from "@/lib/investment-text"
+import type { QuantityGap, RevaluationPreviewView } from "@/lib/investment-view"
 import { priceSchema } from "@/lib/schemas/investment"
 import { serialisePaise } from "@/lib/serialise"
 import { formatDay } from "@/lib/transaction-text"
@@ -35,8 +35,10 @@ export interface PriceTarget {
   lump: boolean
   /** Units held today, as decimal text. */
   quantityHeld: string
-  /** Some purchases have no quantity, so no price can value it until they do (plan call 7). */
+  /** Some entries are missing what lots need, so no price can value it until they are put right (plan call 7). */
   needsQuantity: boolean
+  /** Which kinds of entry those are, so the form says how to put each right. */
+  quantityGaps: QuantityGap[]
 }
 
 /** A price the investment already has. */
@@ -280,14 +282,7 @@ export function PriceForm({ targets, selected, onSelect, today, known, revision,
       {/* What the price would make it worth today, from the server, for exactly what is typed now. */}
       <div aria-live="polite" className="mt-5 min-h-[3.25rem] rounded-2xl border border-dashed border-line px-4 py-3 text-sm">
         {cannotValue ? (
-          <p className="text-fg-soft">
-            Some purchases of this investment have no quantity, so a price cannot value it yet. Add the quantity to{" "}
-            {/* Every month, not only this one: the purchases without a quantity are usually older. */}
-            <Link href="/transactions?from=&to=" className={linkClass}>
-              those transactions
-            </Link>
-            .
-          </p>
+          <CannotValue target={target} />
         ) : figures ? (
           <>
             <p className="figures font-medium">
@@ -340,4 +335,35 @@ export function PriceForm({ targets, selected, onSelect, today, known, revision,
 function holdingHint(target: PriceTarget): string {
   if (target.quantityHeld === "0") return "Nothing of it is held now."
   return target.lump ? "You hold the whole of it." : `You hold ${quantityText(target.quantityHeld, target.unit)}.`
+}
+
+/**
+ * Why no price can value the investment yet, and how to put it right: a purchase with no quantity is given one; anything
+ * else that keeps it from being valued is said in its own words (quantityGapCopy), since it is put right differently.
+ */
+function CannotValue({ target }: { target: PriceTarget | undefined }) {
+  const lump = target?.lump === true
+  const gaps = target && target.quantityGaps.length > 0 ? target.quantityGaps : (["PURCHASE"] as const)
+  // Every month, not only this one: the entries from before lots existed are usually older.
+  const transactions = (label: string) => (
+    <Link href="/transactions?from=&to=" className={linkClass}>
+      {label}
+    </Link>
+  )
+  if (gaps.length === 1 && gaps[0] === "PURCHASE" && !lump) {
+    return (
+      <p className="text-fg-soft">
+        Some purchases of this investment have no quantity, so a price cannot value it yet. Add the quantity to {transactions("those transactions")}.
+      </p>
+    )
+  }
+  return (
+    <div className="space-y-1 text-fg-soft">
+      <p>A price cannot value this investment yet.</p>
+      {gaps.map((gap) => (
+        <p key={gap}>{quantityGapCopy(gap, lump)}</p>
+      ))}
+      <p>Those entries are on the {transactions("Transactions")} screen.</p>
+    </div>
+  )
 }

@@ -2,7 +2,7 @@ import type { LedgerNode } from "@prisma/client"
 import { describe, expect, it } from "vitest"
 import type { NodeBalance } from "../domain/balance"
 import { calendarDate } from "../domain/calendar-date"
-import { buildNodeOverview } from "./node-overview"
+import { buildNodeOverview, describeArchivedLine, describeUnvalued } from "./node-overview"
 
 let sequence = 0
 function node(kind: LedgerNode["kind"], name: string, over: Partial<LedgerNode> = {}): LedgerNode {
@@ -50,8 +50,8 @@ describe("buildNodeOverview", () => {
 
   it("counts archived nodes in every total, because hiding a row is the screen's business and not the arithmetic's", () => {
     const overview = buildNodeOverview(nodes, balances)
-    expect(overview.kinds.ASSET).toEqual({ total: "1500000", archivedCount: 1 })
-    expect(overview.kinds.LIABILITY).toEqual({ total: "-500000", archivedCount: 1 })
+    expect(overview.kinds.ASSET).toEqual({ total: "1500000", archivedCount: 1, unvaluedCount: 0, archivedUnvaluedCount: 0 })
+    expect(overview.kinds.LIABILITY).toEqual({ total: "-500000", archivedCount: 1, unvaluedCount: 0, archivedUnvaluedCount: 0 })
     expect(overview.netWorth).toEqual({
       total: "1250000",
       assets: "1500000",
@@ -100,6 +100,25 @@ describe("buildNodeOverview", () => {
     expect(overview.netWorth).toMatchObject({ investments: "1030000", total: "2030000", isPartial: true, unvaluedNodeIds: [plot.id, old.id] })
   })
 
+  it("counts the investments a kind's total leaves out, and which of them are archived, so a screen can say so", () => {
+    const gold = node("INVESTMENT", "Gold", { valuationMode: "QUANTITY" })
+    const nifty = node("INVESTMENT", "Nifty", { valuationMode: "QUANTITY" })
+    const oldPlot = node("INVESTMENT", "Old plot", { valuationMode: "LUMP", archivedAt: new Date("2026-05-01T00:00:00Z") })
+    const oldGold = node("INVESTMENT", "Old gold", { valuationMode: "QUANTITY", archivedAt: new Date("2026-05-01T00:00:00Z") })
+    const overview = buildNodeOverview(
+      [bank, gold, nifty, oldPlot, oldGold],
+      [balanceOf(bank, 1_000_000n), balanceOf(gold, 700_000n), balanceOf(nifty, 50_000n), balanceOf(oldPlot, 4_000_000n), balanceOf(oldGold, 10_000n)],
+      new Map([
+        [gold.id, 1_00_000_00n],
+        [nifty.id, null],
+        [oldPlot.id, null],
+        [oldGold.id, 20_000n],
+      ]),
+    )
+    expect(overview.kinds.INVESTMENT).toEqual({ total: "10020000", archivedCount: 2, unvaluedCount: 2, archivedUnvaluedCount: 1 })
+    expect(overview.kinds.ASSET).toMatchObject({ unvaluedCount: 0, archivedUnvaluedCount: 0 })
+  })
+
   it("calls an investment with no valuation and no reason given unpriced, and has no reasons without valuations", () => {
     expect(buildNodeOverview(nodes, balances, new Map([[mf.id, null]])).unvalued).toEqual({ [mf.id]: "NO_PRICE" })
     expect(buildNodeOverview(nodes, balances).unvalued).toEqual({})
@@ -130,7 +149,7 @@ describe("buildNodeOverview", () => {
     const fresh = node("EXPENSE", "Fresh")
     const overview = buildNodeOverview([fresh], [])
     expect(overview.balances).toEqual({ [fresh.id]: "0" })
-    expect(overview.kinds.EXPENSE).toEqual({ total: "0", archivedCount: 0 })
+    expect(overview.kinds.EXPENSE).toEqual({ total: "0", archivedCount: 0, unvaluedCount: 0, archivedUnvaluedCount: 0 })
   })
 
   it("is plain data: it can be serialised to the browser", () => {
@@ -144,5 +163,20 @@ describe("buildNodeOverview", () => {
     expect(Object.keys(buildNodeOverview([], []).kinds).sort()).toEqual(
       ["ASSET", "EXPENSE", "INCOME_SOURCE", "INVESTMENT", "LIABILITY"],
     )
+  })
+})
+
+describe("describeUnvalued and describeArchivedLine", () => {
+  it("says what a kind's total leaves out, and nothing when it leaves out nothing", () => {
+    expect(describeUnvalued({ unvaluedCount: 0 })).toBeNull()
+    expect(describeUnvalued({ unvaluedCount: 2 })).toBe("excludes 2 not valued")
+  })
+
+  it("never says an archived investment that is not valued is in the total", () => {
+    expect(describeArchivedLine(2, 0)).toBe("Includes 2 archived, not listed.")
+    expect(describeArchivedLine(3, 1)).toBe("3 archived, not listed; 1 of them is not valued and not counted.")
+    expect(describeArchivedLine(3, 2)).toBe("3 archived, not listed; 2 of them are not valued and not counted.")
+    expect(describeArchivedLine(1, 1)).toBe("1 archived, not listed; it is not valued, so not counted.")
+    expect(describeArchivedLine(2, 2)).toBe("2 archived, not listed; none of them is valued, so none is counted.")
   })
 })
