@@ -69,15 +69,25 @@ describe("NetWorthCard", () => {
 
 describe("AccountSummary", () => {
   const accounts: DashboardView["accounts"] = [
-    { id: "a", name: "HDFC Savings", kind: "ASSET", balance: "9599950" },
-    { id: "c", name: "Axis card", kind: "LIABILITY", balance: "-124975" },
+    { id: "a", name: "HDFC Savings", kind: "ASSET", balance: "9599950", notValued: null },
+    { id: "g", name: "Gold", kind: "INVESTMENT", balance: "11700000", notValued: null },
+    { id: "s", name: "Silver", kind: "INVESTMENT", balance: "0", notValued: "NO_PRICE" },
+    { id: "c", name: "Axis card", kind: "LIABILITY", balance: "-124975", notValued: null },
   ]
   const kindTotals: DashboardView["kindTotals"] = [
     { kind: "ASSET", total: "9599950", archivedCount: 0 },
-    { kind: "INVESTMENT", total: "0", archivedCount: 0 },
+    { kind: "INVESTMENT", total: "11700000", archivedCount: 0 },
     { kind: "LIABILITY", total: "-124975", archivedCount: 1 },
   ]
   const html = renderToStaticMarkup(createElement(AccountSummary, { accounts, kindTotals }))
+  const tileOf = (name: string) => visibleText(new RegExp(`<li[^>]*>(?:(?!</li>)[\\s\\S])*?${name}[\\s\\S]*?</li>`).exec(html)?.[0] ?? "")
+
+  it("prints an investment that cannot be valued as not valued, never as a figure (EC-23)", () => {
+    expect(tileOf("Silver")).toContain("Not valued")
+    expect(tileOf("Silver")).not.toContain("₹")
+    expect(tileOf("Gold")).toContain("₹1,17,000.00")
+    expect(tileOf("Gold")).not.toContain("Not valued")
+  })
 
   it("groups the accounts by kind and prints a card you owe on as a positive amount owed, once", () => {
     expect(html).toContain("HDFC Savings")

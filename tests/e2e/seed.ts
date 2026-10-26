@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto"
 import { calendarDate, todayIn } from "@/domain/calendar-date"
 import { parseRupees } from "@/domain/money"
+import { parseQuantity } from "@/domain/quantity"
 import { prisma } from "@/server/db"
 import { createLedgerNode, type CreateNodeInput } from "@/server/services/node-service"
+import { recordPrice } from "@/server/services/price-service"
 import { recordTransaction } from "@/server/services/transaction-service"
 
 // Puts a user's ledger into a known state through the same services the application uses, so a test can start from
@@ -38,6 +40,30 @@ export const loan = (userId: string, name: string, owed?: string) =>
     liabilitySubtype: "LOAN",
     ...(owed === undefined ? {} : { openingBalance: -parseRupees(owed) }),
   })
+
+/** An investment: by default one valued by quantity, in grams, sold first in first out. */
+export const investment = (
+  userId: string,
+  name: string,
+  over: { valuation?: "QUANTITY" | "LUMP" | "CONTRIBUTION_ONLY"; unit?: string } = {},
+) => addNode(userId, { kind: "INVESTMENT", name, valuationMode: over.valuation ?? "QUANTITY", unitLabel: over.unit ?? "gram", lotMethod: "FIFO" })
+
+/** Buy `quantity` (unit text, as typed) of an investment valued by quantity for `rupees` from an account, named as on screen. */
+export async function buy(userId: string, from: string, to: string, rupees: string, quantity: string, date: string) {
+  return recordTransaction(userId, {
+    fromNodeId: await nodeId(userId, from),
+    toNodeId: await nodeId(userId, to),
+    amount: parseRupees(rupees),
+    quantity: parseQuantity(quantity),
+    occurredAt: calendarDate(date),
+    idempotencyKey: randomUUID(),
+  })
+}
+
+/** Record the price of one unit of an investment, named as on screen, on a day. */
+export async function price(userId: string, name: string, rupees: string, date: string) {
+  await recordPrice(userId, { nodeId: await nodeId(userId, name), asOf: calendarDate(date), pricePerUnit: parseRupees(rupees) })
+}
 
 /** The id of a node of this user by name (the starter expense ledgers included). */
 export async function nodeId(userId: string, name: string): Promise<string> {

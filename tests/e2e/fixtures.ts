@@ -12,6 +12,10 @@ const PASSWORD = "correct horse battery"
 
 /** Deletes a user and everything it owns. Exported for tests that create their own users (through the signup form). */
 export async function deleteUser(userId: string) {
+  // The investment tables first: their foreign keys to transactions and nodes are RESTRICT.
+  await prisma.lotConsumption.deleteMany({ where: { userId } })
+  await prisma.investmentLot.deleteMany({ where: { userId } })
+  await prisma.priceSnapshot.deleteMany({ where: { userId } })
   await prisma.transaction.deleteMany({ where: { userId } })
   await prisma.transactionGroup.deleteMany({ where: { userId } })
   await prisma.ledgerNode.deleteMany({ where: { userId, parentId: { not: null } } })

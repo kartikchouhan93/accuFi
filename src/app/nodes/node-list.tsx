@@ -10,6 +10,7 @@ import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { buttonClass, inputClass } from "@/components/ui/styles"
 import { Switch } from "@/components/ui/switch"
 import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
+import { NOT_VALUED_COPY, type NotValuedReason } from "@/lib/investment-view"
 import { HOLDING_KINDS, KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import { describeBalance, describeResidual, formatPaiseText } from "@/lib/node-money"
 import type { NodeOverview } from "@/lib/node-overview"
@@ -123,7 +124,13 @@ function KindSection({ kind, index, overview, showArchived, announce, onAdd }: S
       ) : (
         <ul className="-mx-2 mt-3 space-y-0.5">
           {visible.map((node) => (
-            <NodeRow key={node.id} node={node} balance={overview.balances[node.id] ?? "0"} announce={announce} />
+            <NodeRow
+              key={node.id}
+              node={node}
+              balance={overview.balances[node.id] ?? "0"}
+              notValued={overview.unvalued[node.id] ?? null}
+              announce={announce}
+            />
           ))}
         </ul>
       )}
@@ -160,13 +167,15 @@ function details(node: NodeView): [string, string][] {
 interface RowProps {
   node: NodeView
   balance: string
+  /** Set for an investment that could not be valued: its `balance` is then "0", and is not shown (EC-23). */
+  notValued: NotValuedReason | null
   announce: Props["announce"]
 }
 
 // What replaces the action buttons when a choice needs confirming: it slides in so the change of state is seen.
 const swap = { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.2 } }
 
-function NodeRow({ node, balance, announce }: RowProps) {
+function NodeRow({ node, balance, notValued, announce }: RowProps) {
   const router = useRouter()
   const panelId = useId()
   const [open, setOpen] = useState(false)
@@ -273,7 +282,14 @@ function NodeRow({ node, balance, announce }: RowProps) {
           </span>
           {sub && <span className="mt-0.5 block text-sm text-fg-soft">{sub}</span>}
         </span>
-        {shownBalance && <Amount text={shownBalance} className="shrink-0 font-medium" />}
+        {notValued ? (
+          <span className="shrink-0 text-right">
+            <span className="block font-medium text-fg-soft">Not valued</span>
+            <span className="block text-xs text-fg-soft">{NOT_VALUED_COPY[notValued]}</span>
+          </span>
+        ) : (
+          shownBalance && <Amount text={shownBalance} className="shrink-0 font-medium" />
+        )}
         <ChevronDown aria-hidden className={cn("size-4 shrink-0 text-fg-soft transition-transform duration-200", open && "rotate-180")} />
       </button>
 

@@ -5,21 +5,32 @@ import { allocateLots, InsufficientQuantityError, type LotAllocation } from "@/d
 import type { Paise } from "@/domain/money"
 import { formatQuantity, type Quantity } from "@/domain/quantity"
 import { validateTransaction } from "@/domain/transaction-rules"
-import { openLots } from "@/domain/valuation"
+import { openLots, valueHolding, type HoldingLot, type PricePoint } from "@/domain/valuation"
+import type { HoldingDetail, HoldingView, LotView, NotValuedReason, Portfolio } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
+import { serialisePaise } from "@/lib/serialise"
 import type { TransactionView } from "@/lib/transaction-view"
-import { DuplicateIdempotencyKeyError } from "@/server/repositories/errors"
-import { findConsumptionsByTransaction, findLiveLots, insertConsumptions, lockHoldings } from "@/server/repositories/lot-repository"
+import { DuplicateIdempotencyKeyError, NotFoundError } from "@/server/repositories/errors"
+import {
+  findConsumptionsByTransaction,
+  findLiveLots,
+  findLotGaps,
+  insertConsumptions,
+  lockHoldings,
+} from "@/server/repositories/lot-repository"
 import { findNodes } from "@/server/repositories/node-repository"
 import {
   createTransactionGroup,
   findGroupById,
   findTransactionsByIdempotencyKeys,
   insertTransactions,
+  sumBalances,
 } from "@/server/repositories/transaction-repository"
 import { inTransaction, type UnitOfWork } from "@/server/repositories/unit-of-work"
+import { findStalePriceDays } from "@/server/repositories/user-repository"
 import { todayFor } from "@/server/services/clock"
 import { lotModeOf, ONE_UNIT, QUANTITY_LIMIT, unitOf } from "@/server/services/lot-rules"
+import { snapshotPriceResolver } from "@/server/services/price-resolver"
 import { InvalidTransactionError, type TransactionViolation } from "@/server/services/transaction-errors"
 import { cleanNote, legKey, RequestKeyConflictError, requireNode, viewOf } from "@/server/services/transaction-service"
 
@@ -332,4 +343,198 @@ export async function sellInvestment(userId: string, input: SellInput): Promise<
   const legs: TransactionView[] = []
   for (const row of written.rows) legs.push(await viewOf(userId, row, [node], today))
   return { legs, preview: written.preview }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The read half: holdings, the portfolio, and the valuations net worth counts (spec §7.3, plan calls 5-7, 9).
+//
+// An investment valued by quantity or as a lump is worth its open quantity at the latest price on or before the day,
+// rounded once (valueHolding). It is NOT valued, which is never zero and never cost (EC-23), when it holds units with no
+// such price ("NO_PRICE"), or when some of its live entries are not accounted for by lots, a purchase with no lot or a
+// withdrawal with no consumption, made before lots existed ("NEEDS_QUANTITY", call 7): its quantity is then unknown,
+// whatever its price. Nothing held is worth exactly nothing, priced or not. An investment valued by what was put into
+// it is worth that contribution: it has no lots and no price, is never "not valued", and net worth reads its balance.
+//
+// Every figure is "as of a day" (call 6), today in the user's own timezone unless a day is given. Prices are read through
+// the PriceResolver seam (spec §7.4). Everything returned to a screen is plain data (investment-view.ts).
+
+/** What the value of one investment held by lots rests on, read together. */
+export interface HoldingInputs {
+  /** The live lots, each with its live consumptions, oldest entry first. */
+  lots: HoldingLot[]
+  points: PricePoint[]
+  /** Some live entry is not accounted for by a lot (call 7): the holding is not known, so it is not valued. */
+  needsQuantity: boolean
+}
+
+/** Read the lots, the prices and the entries lots do not account for, of one of the user's investments held by lots. */
+export async function readHoldingInputs(userId: string, nodeId: string): Promise<HoldingInputs> {
+  const [gaps, lots, points] = await Promise.all([
+    findLotGaps(userId, nodeId),
+    findLiveLots(userId, nodeId),
+    snapshotPriceResolver.pricesFor(userId, nodeId),
+  ])
+  return { lots, points, needsQuantity: gaps.inflowsWithoutLot + gaps.outflowsWithoutConsumption > 0 }
+}
+
+// The staleness window only labels the price; it never changes a value. What valueAt passes for it is never read back.
+const ANY_WINDOW = 0
+
+/** The holding's value on `asOf`: null when not valued (no price for a held quantity, or call 7); 0 when nothing is held. */
+export function valueAt(inputs: HoldingInputs, asOf: CalendarDate): Paise | null {
+  if (inputs.needsQuantity) return null
+  return valueHolding({ lots: inputs.lots, points: inputs.points, asOf, stalePriceDays: ANY_WINDOW }).valuePaise
+}
+
+/** The live lots bought by `asOf`: the ones a holding on that day is made of, sold out or not. */
+const lotsBy = (lots: readonly HoldingLot[], asOf: CalendarDate): HoldingLot[] =>
+  lots.filter((lot) => compareDates(lot.acquiredAt, asOf) <= 0)
+
+const investments = (userId: string) => findNodes(userId, { kinds: ["INVESTMENT"], includeArchived: true })
+
+/** The view of an investment held by lots, valued on `asOf` with the node's staleness window or else the user's (call 9). */
+function lotHoldingView(node: LedgerNode, inputs: HoldingInputs, asOf: CalendarDate, userWindow: number): HoldingView {
+  const holding = valueHolding({ lots: inputs.lots, points: inputs.points, asOf, stalePriceDays: node.stalePriceDays ?? userWindow })
+  const valuePaise = inputs.needsQuantity ? null : holding.valuePaise
+  const notValued: NotValuedReason | null = inputs.needsQuantity ? "NEEDS_QUANTITY" : valuePaise === null ? "NO_PRICE" : null
+  const valued = valuePaise !== null
+  return {
+    nodeId: node.id,
+    name: node.name,
+    unitLabel: node.unitLabel,
+    valuationMode: node.valuationMode,
+    archived: node.archivedAt !== null,
+    quantityHeld: formatQuantity(holding.quantityHeld),
+    costBasisPaise: serialisePaise(holding.costBasisPaise),
+    valuePaise: valued ? serialisePaise(valuePaise) : null,
+    unrealisedGainPaise: valued && holding.unrealisedGainPaise !== null ? serialisePaise(holding.unrealisedGainPaise) : null,
+    // A handful of digits (a 100x gain is 1,000,000 basis points): far inside what a number holds exactly.
+    gainBasisPoints: valued && holding.gainBasisPoints !== null ? Number(holding.gainBasisPoints) : null,
+    price: holding.price && {
+      asOf: holding.price.asOf,
+      pricePerUnitPaise: serialisePaise(holding.price.pricePerUnitPaise),
+      stale: holding.price.stale,
+    },
+    notValued,
+    lotCount: lotsBy(inputs.lots, asOf).length,
+  }
+}
+
+/** The view of an investment valued by what was put into it: worth exactly its balance, with no gain to speak of. */
+function contributionHoldingView(node: LedgerNode, balance: Paise): HoldingView {
+  return {
+    nodeId: node.id,
+    name: node.name,
+    unitLabel: node.unitLabel,
+    valuationMode: node.valuationMode,
+    archived: node.archivedAt !== null,
+    quantityHeld: "0",
+    costBasisPaise: serialisePaise(balance),
+    valuePaise: serialisePaise(balance),
+    unrealisedGainPaise: "0",
+    gainBasisPoints: balance > 0n ? 0 : null,
+    price: null,
+    notValued: null,
+    lotCount: 0,
+  }
+}
+
+function lotView(lot: HoldingLot, asOf: CalendarDate): LotView {
+  const [open] = openLots([lot], asOf) // none when the lot is sold out by `asOf`
+  return {
+    id: lot.id,
+    acquiredAt: lot.acquiredAt,
+    quantity: formatQuantity(lot.quantity),
+    quantityRemaining: formatQuantity(open?.quantityRemaining ?? 0n),
+    costBasisPaise: serialisePaise(lot.costBasisPaise),
+    costBasisRemainingPaise: serialisePaise(open?.costBasisRemainingPaise ?? 0n),
+  }
+}
+
+async function balanceOn(userId: string, nodeId: string, asOf: CalendarDate): Promise<Paise> {
+  return (await sumBalances(userId, asOf)).find((row) => row.nodeId === nodeId)?.balance ?? 0n
+}
+
+/**
+ * One investment of the user on `asOf` (today by default): its holding and value, its lots (oldest first) with what each
+ * still holds on that day, and every price it has (newest first). NotFoundError for another user's node (EC-8) or a node
+ * that is not an investment. Plain data, safe to hand to a client component.
+ */
+export async function loadHolding(userId: string, nodeId: string, asOf?: CalendarDate): Promise<HoldingDetail> {
+  const node = await requireNode(userId, nodeId)
+  if (node.kind !== "INVESTMENT") throw new NotFoundError("node")
+  const day = asOf ?? (await todayFor(userId))
+  if (lotModeOf(node) === null) {
+    return { ...contributionHoldingView(node, await balanceOn(userId, node.id, day)), lots: [], prices: [] }
+  }
+  const [inputs, userWindow] = await Promise.all([readHoldingInputs(userId, node.id), findStalePriceDays(userId)])
+  return {
+    ...lotHoldingView(node, inputs, day, userWindow),
+    lots: lotsBy(inputs.lots, day).map((lot) => lotView(lot, day)),
+    prices: [...inputs.points]
+      .sort((a, b) => compareDates(b.asOf, a.asOf))
+      .map((point) => ({ asOf: point.asOf, pricePerUnitPaise: serialisePaise(point.pricePerUnitPaise) })),
+  }
+}
+
+/**
+ * Every investment of the user, archived ones included, on `asOf` (today by default), and the totals across them: what
+ * was put in (every holding's cost), and the value and gain of the ones that can be valued, with a count of those that
+ * cannot. Plain data, safe to hand to a client component.
+ */
+export async function loadPortfolio(userId: string, asOf?: CalendarDate): Promise<Portfolio> {
+  const day = asOf ?? (await todayFor(userId))
+  const [nodes, userWindow, balances] = await Promise.all([investments(userId), findStalePriceDays(userId), sumBalances(userId, day)])
+  const balanceOf = new Map(balances.map((row) => [row.nodeId, row.balance]))
+  const holdings = await Promise.all(
+    nodes.map(async (node) =>
+      lotModeOf(node) === null
+        ? contributionHoldingView(node, balanceOf.get(node.id) ?? 0n)
+        : lotHoldingView(node, await readHoldingInputs(userId, node.id), day, userWindow),
+    ),
+  )
+  const sum = (pick: (holding: HoldingView) => string | null): string =>
+    serialisePaise(holdings.reduce((total, holding) => total + BigInt(pick(holding) ?? "0"), 0n))
+  return {
+    holdings,
+    totals: {
+      contributedPaise: sum((h) => h.costBasisPaise),
+      valuePaise: sum((h) => h.valuePaise),
+      unrealisedGainPaise: sum((h) => h.unrealisedGainPaise),
+      notValuedCount: holdings.filter((h) => h.notValued !== null).length,
+    },
+  }
+}
+
+/**
+ * The valuation of every investment the user holds by lots (archived ones included), on `asOf`, in the shape net worth
+ * takes (`netWorth`, `buildNodeOverview`, `buildDashboard`): a value, or null when not valued, with the reason for each
+ * null in `unvalued`. An investment valued by what was put into it is absent from both, so it counts at its balance.
+ */
+export async function loadValuationStates(
+  userId: string,
+  asOf: CalendarDate,
+): Promise<{ valuations: Map<string, Paise | null>; unvalued: Map<string, NotValuedReason> }> {
+  const held = (await investments(userId)).filter((node) => lotModeOf(node) !== null)
+  const valued = await Promise.all(
+    held.map(async (node) => {
+      const inputs = await readHoldingInputs(userId, node.id)
+      return { node, inputs, value: valueAt(inputs, asOf) }
+    }),
+  )
+  const valuations = new Map<string, Paise | null>()
+  const unvalued = new Map<string, NotValuedReason>()
+  for (const { node, inputs, value } of valued) {
+    valuations.set(node.id, value)
+    if (value === null) unvalued.set(node.id, inputs.needsQuantity ? "NEEDS_QUANTITY" : "NO_PRICE")
+  }
+  return { valuations, unvalued }
+}
+
+/**
+ * The value on `asOf` of every investment held by lots: only those appear; one that needs a quantity (call 7) or holds
+ * units with no price maps to null; one sold out maps to 0. What `netWorth` takes as its `valuations`.
+ */
+export async function loadValuations(userId: string, asOf: CalendarDate): Promise<Map<string, Paise | null>> {
+  return (await loadValuationStates(userId, asOf)).valuations
 }

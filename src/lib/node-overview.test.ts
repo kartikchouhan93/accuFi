@@ -67,6 +67,37 @@ describe("buildNodeOverview", () => {
     expect(overview.netWorth).toMatchObject({ total: "1000000", investments: "0", isPartial: true, unvaluedNodeIds: [mf.id] })
   })
 
+  it("gives an investment valued by its lots its value as its balance and in its kind's total, or 0 and a reason when not valued", () => {
+    const gold = node("INVESTMENT", "Gold", { valuationMode: "QUANTITY" })
+    const plot = node("INVESTMENT", "Plot", { valuationMode: "LUMP" })
+    const old = node("INVESTMENT", "Old fund", { valuationMode: "QUANTITY" })
+    const all = [bank, mf, gold, plot, old]
+    const sums = [balanceOf(bank, 1_000_000n), balanceOf(mf, 250_000n), balanceOf(gold, 700_000n), balanceOf(plot, 4_000_000n), balanceOf(old, 50_000n)]
+    const overview = buildNodeOverview(
+      all,
+      sums,
+      new Map([
+        [gold.id, 780_000n],
+        [plot.id, null],
+        [old.id, null],
+      ]),
+      new Map([
+        [plot.id, "NO_PRICE"],
+        [old.id, "NEEDS_QUANTITY"],
+      ]),
+    )
+    expect(overview.balances).toMatchObject({ [mf.id]: "250000", [gold.id]: "780000", [plot.id]: "0", [old.id]: "0" })
+    // The fund at what was put in, the gold at its value, the other two at nothing: 2,500 + 7,800.
+    expect(overview.kinds.INVESTMENT.total).toBe("1030000")
+    expect(overview.unvalued).toEqual({ [plot.id]: "NO_PRICE", [old.id]: "NEEDS_QUANTITY" })
+    expect(overview.netWorth).toMatchObject({ investments: "1030000", total: "2030000", isPartial: true, unvaluedNodeIds: [plot.id, old.id] })
+  })
+
+  it("calls an investment with no valuation and no reason given unpriced, and has no reasons without valuations", () => {
+    expect(buildNodeOverview(nodes, balances, new Map([[mf.id, null]])).unvalued).toEqual({ [mf.id]: "NO_PRICE" })
+    expect(buildNodeOverview(nodes, balances).unvalued).toEqual({})
+  })
+
   it("does not let an archived card you still owe on raise net worth", () => {
     const before = buildNodeOverview(
       [bank, card, oldCard],

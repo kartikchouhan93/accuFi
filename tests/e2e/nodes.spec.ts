@@ -1,5 +1,5 @@
 import { addNode, expect, openRow, row, section, test } from "./fixtures"
-import { account, incomeSource, post } from "./seed"
+import { account, buy, incomeSource, investment, post, price } from "./seed"
 
 // The node management screen, driven through a real browser against a real server and database. Money is checked as
 // the text the user reads (Indian grouping, a rupee sign, red "owed" wording) because that is the contract of this
@@ -21,6 +21,27 @@ test("creates a bank account with an opening balance and shows it", async ({ led
   await expect(created).toContainText("HDFC Bank")
   await expect(created).toContainText("₹1,25,000.50")
   await expect(page.getByRole("region", { name: "Net worth" })).toContainText("₹1,25,000.50")
+})
+
+test("shows an investment valued by quantity at its value, and one with no price as not valued", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "1,00,000")
+  await investment(userId, "Gold")
+  await investment(userId, "Silver")
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-01")
+  await buy(userId, "Bank", "Silver", "2,000", "20", "2026-01-01")
+  await price(userId, "Gold", "7,800", "2026-03-01")
+
+  await page.goto("/nodes")
+  const investments = section(page, "Investments")
+  // 10 g of gold at 7,800 a gram; the silver has no price, so the kind's total counts only the gold.
+  await expect(row(page, "Gold")).toContainText("₹78,000.00")
+  await expect(row(page, "Silver")).toContainText("Not valued")
+  await expect(row(page, "Silver")).not.toContainText("₹")
+  await expect(investments.getByRole("heading", { level: 2 }).locator("..")).toContainText("₹78,000.00")
+  // The bank's 1,00,000 - 70,000 - 2,000 = 28,000, and the gold's 78,000: the silver is named, not counted.
+  const worth = page.getByRole("region", { name: "Net worth", exact: true })
+  await expect(worth.locator("p").first()).toHaveText("₹1,06,000.00")
+  await expect(worth.getByRole("note")).toContainText("Silver could not be valued")
 })
 
 test("groups the list by kind", async ({ ledger: page }) => {

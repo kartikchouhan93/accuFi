@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test"
 import { addNode, expect, openRow, test } from "./fixtures"
-import { account, card } from "./seed"
+import { account, buy, card, investment, price } from "./seed"
 
 // The dashboard, driven through a real browser against a real server and database. The first test is the exit criterion
 // of milestone 1: a month of ordinary activity, entered through the forms a user would use, and a net worth that matches
@@ -129,6 +129,31 @@ test("still counts an account once it is archived, though the dashboard stops li
   await expect(worth.locator("p").first()).toHaveText("₹6,000.00") // the debt is still owed
   await expect(worth).toContainText("Includes 1 archived")
   await expect(page.getByRole("region", { name: "Liabilities", exact: true })).toContainText("Includes 1 archived, not listed")
+})
+
+test("names an investment with no price instead of counting it, then counts it at its value once priced", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold")
+  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-01")
+  await buy(userId, "Bank", "Gold", "37,000", "5", "2026-02-01")
+
+  await page.goto("/")
+  const worth = page.getByRole("region", { name: "Net worth", exact: true })
+  const gold = page.getByRole("region", { name: "Investments", exact: true }).getByRole("listitem").filter({ hasText: "Gold" })
+  // 2,00,000 - 70,000 - 37,000 in the bank; the gold has no price, so it is named and left out, never shown as ₹0.
+  await expect(worth.locator("p").first()).toHaveText("₹93,000.00")
+  await expect(worth.getByRole("note")).toContainText("Partial figure: Gold could not be valued")
+  await expect(gold).toContainText("Not valued")
+  await expect(gold).toContainText("No price yet")
+  await expect(gold).not.toContainText("₹")
+
+  // 15 g at 7,800 a gram is 1,17,000; with the bank's 93,000 that is 2,10,000.
+  await price(userId, "Gold", "7,800", "2026-03-01")
+  await page.reload()
+  await expect(worth.locator("p").first()).toHaveText("₹2,10,000.00")
+  await expect(worth).toContainText("₹93,000.00 in accounts, ₹1,17,000.00 invested, ₹0.00 owed.")
+  await expect(worth).not.toContainText(/partial/i)
+  await expect(gold).toContainText("₹1,17,000.00")
 })
 
 test("sign-in and sign-up use the app's own look, not a default one", async ({ page }) => {

@@ -3,6 +3,7 @@ import { fromDbDate, type CalendarDate } from "../domain/calendar-date"
 import type { NodeBalance } from "../domain/balance"
 import type { LedgerKind } from "../domain/ledger-kind"
 import type { Paise } from "../domain/money"
+import type { NotValuedReason } from "./investment-view"
 import { HOLDING_KINDS, KIND_ORDER } from "./node-kinds"
 import { buildNodeOverview } from "./node-overview"
 import { serialisePaise } from "./serialise"
@@ -16,8 +17,13 @@ export interface DashboardAccount {
   id: string
   name: string
   kind: LedgerKind
-  /** Signed paise: a card you owe on is negative. Describe it with `describeBalance`, which negates it once. */
+  /**
+   * Signed paise: a card you owe on is negative. Describe it with `describeBalance`, which negates it once. For an
+   * investment held by lots, its value today; "0" when it is not valued, and then `notValued` says why and the figure is
+   * not shown (EC-23).
+   */
   balance: string
+  notValued: NotValuedReason | null
 }
 
 export interface DashboardKindTotal {
@@ -73,8 +79,13 @@ export interface DashboardInput {
   recent: readonly Transaction[]
   /** The date of the furthest transaction, when any is dated after today. */
   latestDate: CalendarDate | null
-  /** An investment mapped to `null` cannot be valued. Nothing supplies these in M1; the dashboard must not hide it when something does. */
+  /**
+   * Today's value of each investment held by lots (`loadValuationStates`); `null` when it cannot be valued, which the
+   * dashboard must not hide. The projection reuses today's values (call 6): a price is not projected.
+   */
   valuations?: ReadonlyMap<string, Paise | null>
+  /** Why each null valuation is null. */
+  unvalued?: ReadonlyMap<string, NotValuedReason>
 }
 
 function differ(current: readonly NodeBalance[], all: readonly NodeBalance[]): boolean {
@@ -82,8 +93,8 @@ function differ(current: readonly NodeBalance[], all: readonly NodeBalance[]): b
   return all.some((row) => (before.get(row.nodeId) ?? 0n) !== row.balance)
 }
 
-export function buildDashboard({ nodes, current, all, recent, latestDate, valuations }: DashboardInput): DashboardView {
-  const overview = buildNodeOverview(nodes, current, valuations)
+export function buildDashboard({ nodes, current, all, recent, latestDate, valuations, unvalued }: DashboardInput): DashboardView {
+  const overview = buildNodeOverview(nodes, current, valuations, unvalued)
   const byId = new Map(nodes.map((node) => [node.id, node]))
   const holdings = nodes.filter((node) => HOLDING_KINDS.has(node.kind) && node.systemRole === null)
   const nameOf = (id: string) => byId.get(id)?.name ?? "an unknown account"
@@ -93,7 +104,13 @@ export function buildDashboard({ nodes, current, all, recent, latestDate, valuat
   const accounts = holdings
     .filter((node) => node.archivedAt === null)
     .sort((a, b) => kindOrder(a.kind) - kindOrder(b.kind) || a.name.localeCompare(b.name))
-    .map((node) => ({ id: node.id, name: node.name, kind: node.kind, balance: overview.balances[node.id] ?? "0" }))
+    .map((node) => ({
+      id: node.id,
+      name: node.name,
+      kind: node.kind,
+      balance: overview.balances[node.id] ?? "0",
+      notValued: overview.unvalued[node.id] ?? null,
+    }))
 
   const archivedCount = KIND_ORDER.filter((kind) => HOLDING_KINDS.has(kind)).reduce((sum, kind) => sum + overview.kinds[kind].archivedCount, 0)
 

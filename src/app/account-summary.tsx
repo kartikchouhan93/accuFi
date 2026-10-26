@@ -3,6 +3,7 @@ import { Amount } from "@/app/amount"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import type { DashboardView } from "@/lib/dashboard-view"
+import { NOT_VALUED_COPY } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { describeBalance } from "@/lib/node-money"
 
@@ -45,7 +46,15 @@ export function AccountSummary({ accounts, kindTotals }: Props) {
                       >
                         {account.name}
                       </Link>
-                      <Amount text={describeBalance(account.kind, account.balance)} className="mt-4 block text-2xl font-medium tracking-tight" />
+                      {/* An investment with no value shows none: a ₹0.00 here would be a figure the user believes (EC-23). */}
+                      {account.notValued ? (
+                        <p className="mt-4">
+                          <span className="block text-2xl font-medium tracking-tight text-fg-soft">Not valued</span>
+                          <span className="block text-sm text-fg-soft">{NOT_VALUED_COPY[account.notValued]}</span>
+                        </p>
+                      ) : (
+                        <Amount text={describeBalance(account.kind, account.balance)} className="mt-4 block text-2xl font-medium tracking-tight" />
+                      )}
                     </SpotlightCard>
                   </li>
                 ))}

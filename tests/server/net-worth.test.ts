@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it } from "vitest"
 import { netWorth } from "@/domain/balance"
+import { calendarDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { sumBalances } from "@/server/repositories/transaction-repository"
 import { seedAccountNodes } from "@/server/services/account-seed"
+import { todayFor } from "@/server/services/clock"
+import { loadValuations } from "@/server/services/investment-service"
 import { archiveLedgerNode, createLedgerNode } from "@/server/services/node-service"
+import { recordPrice } from "@/server/services/price-service"
+import { recordTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
 
 // netWorth is pure and its unit tests hand it balances; sumBalances is SQL and its tests read balances back. Each side
@@ -99,6 +105,34 @@ describe("sumBalances feeding netWorth", () => {
     expect(archived.total).toBe(owing.total)
     expect(archived.liabilities).toBe(50_000n)
     expect(archived).toEqual(owing)
+  })
+
+  it("counts an investment valued by its lots at its value, from real lots and a real price, and reports one with no price", async () => {
+    const { user, bank, salary, worth } = await world()
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const silver = await registry.makeNode(user.id, "INVESTMENT", "Silver", { valuationMode: "QUANTITY", unitLabel: "g" })
+    await registry.makeTransaction(user.id, salary.id, bank.id, { amountPaise: 1_00_000_00n })
+    const buy = (to: string, amount: bigint, grams: bigint) =>
+      recordTransaction(user.id, {
+        fromNodeId: bank.id,
+        toNodeId: to,
+        amount,
+        quantity: grams * 1_000_000n,
+        occurredAt: calendarDate("2026-04-01"),
+        idempotencyKey: randomUUID(),
+      })
+    await buy(gold.id, 70_000_00n, 10n)
+    await buy(silver.id, 1_000_00n, 1n)
+    await recordPrice(user.id, { nodeId: gold.id, asOf: calendarDate("2026-04-02"), pricePerUnit: 7_800_00n })
+    const today = await todayFor(user.id)
+
+    const valued = netWorth(await sumBalances(user.id, today), await loadValuations(user.id, today))
+
+    // The bank: 1,000 + 1,00,000 - 70,000 - 1,000 = 30,000. The gold: 10 g at 7,800 = 78,000. The silver: not valued.
+    expect(valued).toMatchObject({ assets: 30_000_00n, investments: 78_000_00n, isPartial: true, unvaluedNodeIds: [silver.id] })
+    expect(valued.total).toBe(1_08_000_00n)
+    // Without valuations the same rows would count both at cost: the map is what changes the figure.
+    expect((await worth()).investments).toBe(71_000_00n)
   })
 
   it("is unchanged by archiving an account that still holds money", async () => {
