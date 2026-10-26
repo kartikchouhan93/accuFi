@@ -163,6 +163,7 @@ function details(node: NodeView): [string, string][] {
     ["Valued", choiceLabel("valuationMode", node.valuationMode)],
     ["Unit", node.unitLabel],
     ["Sells", choiceLabel("lotMethod", node.lotMethod)],
+    ["Prices go stale after", node.stalePriceDays === null ? null : `${node.stalePriceDays} ${node.stalePriceDays === 1 ? "day" : "days"}`],
   ]
   return lines.filter((line): line is [string, string] => line[1] !== null)
 }

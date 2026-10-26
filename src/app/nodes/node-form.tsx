@@ -277,6 +277,20 @@ function Field({ field, idBase, kind, value, onChange, errors, isFirst, directio
         />
       )
       break
+    case "count":
+      input = (
+        <input
+          {...common}
+          type="text"
+          inputMode="numeric"
+          maxLength={String(control.max).length}
+          autoComplete="off"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className={`${inputClass} figures`}
+        />
+      )
+      break
     case "rupees":
       input = (
         <input

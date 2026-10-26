@@ -39,6 +39,18 @@ export function destinationChoices(nodes: readonly PickerNode[], sourceId: strin
   })
 }
 
+/** An investment valued by quantity or as a lump: what it holds is its lots, so each purchase of it carries a quantity. */
+export const heldByLots = (node: PickerNode): boolean =>
+  node.kind === "INVESTMENT" && (node.valuationMode === "QUANTITY" || node.valuationMode === "LUMP")
+
+/**
+ * The destinations a leg of a split may have: those of a single entry, less the investments held by lots. A split carries
+ * no quantity, so the server refuses a leg into one (a purchase of it is entered on its own). A node the leg being edited
+ * already names stays on offer, as everywhere.
+ */
+export const legDestinationChoices = (nodes: readonly PickerNode[], sourceId: string, keep: readonly string[] = []): PickerNode[] =>
+  destinationChoices(nodes, sourceId, keep).filter((node) => keep.includes(node.id) || !heldByLots(node))
+
 export interface KindGroup {
   /** The kind, or "SETUP" for the opening-balance nodes. */
   kind: LedgerKind | "SETUP"

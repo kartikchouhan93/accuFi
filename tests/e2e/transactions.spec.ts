@@ -6,7 +6,7 @@ import { sumBalances } from "@/server/repositories/transaction-repository"
 import { archiveLedgerNode } from "@/server/services/node-service"
 import { editTransaction, recordSplit } from "@/server/services/transaction-service"
 import { expect, test } from "./fixtures"
-import { account, addExpense, card, incomeSource, nodeId, post, today } from "./seed"
+import { account, addExpense, card, incomeSource, investment, nodeId, post, today } from "./seed"
 
 // The transaction screen, driven through a real browser against a real server and database. Money is checked as the
 // text the user reads, and the rules (what is legal, what warns, what blocks) are checked where the user meets them.
@@ -698,4 +698,154 @@ test("flags the source field, not the destination, when the source was archived 
   await expect(form(page).getByLabel("From", { exact: true })).toHaveAttribute("aria-invalid", "true")
   await expect(form(page).getByLabel("To", { exact: true })).not.toHaveAttribute("aria-invalid", "true")
   await expect(form(page).getByLabel("From", { exact: true })).toBeFocused()
+})
+
+// Purchases into an investment (spec §8.2): one valued by quantity asks how much was bought, and any two of the amount,
+// the quantity and the price per unit work out the third; one valued as a lump is bought whole; a split never buys either.
+
+test("buys by quantity: the price per unit is worked out, or the amount, and only an investment valued by quantity asks", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await investment(userId, "Flat", { valuation: "LUMP", unit: "flat" })
+  await investment(userId, "PPF", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await page.goto("/transactions")
+  const entry = form(page)
+  const quantity = entry.getByLabel("Quantity (g)")
+  const unitPrice = entry.getByLabel("Price per g (₹)")
+
+  await entry.getByLabel("From", { exact: true }).selectOption({ label: "Bank" })
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await expect(quantity).toBeVisible()
+  await expect(unitPrice).toBeVisible()
+  await expect(quantity).toHaveAttribute("inputmode", "decimal")
+  await entry.getByLabel("Amount (₹)").fill("70000")
+  await quantity.fill("10")
+  await expect(unitPrice).toHaveValue("7000.00")
+
+  // Another destination: the quantity goes with it, the amount stays.
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Groceries" })
+  await expect(quantity).toHaveCount(0)
+  await expect(unitPrice).toHaveCount(0)
+  await expect(entry.getByLabel("Amount (₹)")).toHaveValue("70000")
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Flat" })
+  await expect(entry.getByLabel(/^Quantity/)).toHaveCount(0)
+  await expect(entry.getByText("A single holding")).toBeVisible()
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "PPF" })
+  await expect(entry.getByLabel(/^Quantity/)).toHaveCount(0)
+  await expect(entry.getByText("A single holding")).toHaveCount(0)
+
+  // Back on the gold, empty again: a quantity and a price give the amount.
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await expect(quantity).toHaveValue("")
+  await quantity.fill("5")
+  await unitPrice.fill("7,400")
+  await expect(entry.getByLabel("Amount (₹)")).toHaveValue("37000.00")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(page.getByRole("status")).toContainText("Recorded Bank → Gold, ₹37,000.00.")
+  await expect(entry.getByLabel("Amount (₹)")).toHaveValue("")
+  const lot = await prisma.investmentLot.findFirstOrThrow({ where: { userId } })
+  expect(lot.quantity.toString()).toBe("5")
+  expect(lot.costBasisPaise).toBe(37_000_00n)
+
+  // The lump is bought with no quantity at all; the server makes it the one holding.
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Flat" })
+  await entry.getByLabel("Amount (₹)").fill("50,000")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(page.getByRole("status")).toContainText("Recorded Bank → Flat, ₹50,000.00.")
+  expect(await prisma.investmentLot.count({ where: { userId } })).toBe(2)
+})
+
+test("asks for a missing quantity beside the Quantity field and keeps what was typed", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await page.goto("/transactions")
+  const entry = form(page)
+  await entry.getByLabel("From", { exact: true }).selectOption({ label: "Bank" })
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await entry.getByLabel("Amount (₹)").fill("70,000")
+  await entry.getByLabel("Note").fill("Coins")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+
+  const quantity = entry.getByLabel("Quantity (g)")
+  await expect(quantity).toHaveAttribute("aria-invalid", "true")
+  await expect(quantity).toBeFocused()
+  await expect(entry.getByText("Enter the quantity bought.")).toHaveCount(1)
+  await expect(entry.getByRole("alert")).toHaveCount(0)
+  await expect(entry.getByLabel("Amount (₹)")).toHaveValue("70,000")
+  await expect(entry.getByLabel("Note")).toHaveValue("Coins")
+  expect(await prisma.transaction.count({ where: { userId, note: "Coins" } })).toBe(0)
+
+  // The complaint goes with the field: choosing a destination with no quantity does not leave it said above the button.
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Groceries" })
+  await expect(entry.getByText("Enter the quantity bought.")).toHaveCount(0)
+  await expect(entry.getByRole("alert")).toHaveCount(0)
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+
+  // A quantity that cannot be one is refused there too, in the schema's words.
+  await quantity.fill("1.1234567")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(entry.getByText("Enter a quantity greater than zero, with up to 6 decimal places")).toBeVisible()
+  await expect(quantity).toHaveValue("1.1234567")
+
+  await quantity.fill("10")
+  await expect(entry.getByLabel("Price per g (₹)")).toHaveValue("7000.00")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(page.getByRole("status")).toContainText("Recorded Bank → Gold, ₹70,000.00.")
+})
+
+test("a split does not offer an investment held by lots, and says why", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await investment(userId, "Flat", { valuation: "LUMP", unit: "flat" })
+  await investment(userId, "PPF", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await page.goto("/transactions")
+  const entry = form(page)
+  await entry.getByLabel("From", { exact: true }).selectOption({ label: "Bank" })
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await entry.getByRole("button", { name: "Add split" }).click()
+  await expect(entry.getByText("Investments valued by quantity or as a lump are bought on their own, so a split does not offer them.")).toBeVisible()
+  const leg = entry.getByRole("group", { name: "Leg 1" }).getByLabel("To", { exact: true })
+  await expect(leg).toHaveValue("") // the gold chosen above is not carried into a leg
+  const offered = await optionsOf(leg)
+  expect(offered).toContain("PPF")
+  expect(offered).not.toContain("Gold")
+  expect(offered).not.toContain("Flat")
+  await expect(entry.getByLabel(/^Quantity/)).toHaveCount(0)
+})
+
+test("edits a purchase's quantity, and gives one made before quantities existed its first", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "2,00,000")
+  // Entered without a quantity, as before lots existed (the investment was valued by what was put in then): it has no lot.
+  await investment(userId, "Gold", { valuation: "CONTRIBUTION_ONLY", unit: "g" })
+  await post(userId, "Bank", "Gold", "20,000", { note: "Old coins" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Gold") }, data: { valuationMode: "QUANTITY", lotMethod: "FIFO" } })
+  await page.goto("/transactions")
+  const row = entries(page).getByRole("listitem").filter({ hasText: "Old coins" })
+  await row.getByRole("button", { expanded: false }).first().click()
+  await row.getByRole("button", { name: "Edit" }).click()
+
+  const edit = editForm(page)
+  const quantity = edit.getByLabel("Quantity (g)")
+  await expect(quantity).toHaveValue("")
+  await expect(edit.getByText("This purchase has no quantity yet. Add it: Gold is valued only once every purchase has one.")).toBeVisible()
+  await expect(edit.getByText("optional")).toHaveCount(3) // the quantity, the note and the tags
+  await quantity.fill("2.5")
+  await expect(edit.getByLabel("Price per g (₹)")).toHaveValue("8000.00")
+  await edit.getByRole("button", { name: "Save changes" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved changes to Bank → Gold, ₹20,000.00")
+  const lot = await prisma.investmentLot.findFirstOrThrow({ where: { userId } })
+  expect(lot.quantity.toString()).toBe("2.5")
+
+  // Opened again (the row is still open), the edit starts from the quantity the purchase now holds; changing it changes the lot.
+  await row.getByRole("button", { name: "Edit" }).click()
+  await expect(quantity).toHaveValue("2.5")
+  await expect(edit.getByLabel("Price per g (₹)")).toHaveValue("8000.00")
+  await expect(edit.getByText("Enter any two of amount, quantity and price, and the third is worked out.")).toBeVisible()
+  await quantity.fill("2")
+  await expect(edit.getByLabel("Price per g (₹)")).toHaveValue("10000.00") // the amount stays: it is what was paid
+  await edit.getByRole("button", { name: "Save changes" }).click()
+  await expect(edit).toHaveCount(0) // saved: the form is back to a new entry
+  expect((await prisma.investmentLot.findFirstOrThrow({ where: { userId } })).quantity.toString()).toBe("2")
 })

@@ -94,6 +94,14 @@ describe("createLedgerNode", () => {
     })
   })
 
+  it("stores an investment's own stale-price window, and none when it is not given", async () => {
+    const user = await registry.makeUser()
+    const plot = await createLedgerNode(user.id, { kind: "INVESTMENT", name: "Plot", valuationMode: "LUMP", unitLabel: "plot", stalePriceDays: 365 })
+    expect(plot).toMatchObject({ valuationMode: "LUMP", stalePriceDays: 365 })
+    const gold = await createLedgerNode(user.id, { kind: "INVESTMENT", name: "Gold", valuationMode: "QUANTITY", unitLabel: "g" })
+    expect(gold.stalePriceDays).toBeNull() // the user's window applies
+  })
+
   it("creates an opening-balance transaction when an opening balance is given", async () => {
     // EC-36
     const { user, systemNode } = await makeSeededUser()

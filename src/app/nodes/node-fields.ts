@@ -5,6 +5,8 @@ import {
   LIABILITY_SUBTYPES,
   LOT_METHODS,
   NODE_NAME_MAX_LENGTH,
+  STALE_PRICE_DAYS_MAX,
+  STALE_PRICE_DAYS_MIN,
   VALUATION_MODES,
 } from "@/lib/schemas/node"
 
@@ -36,6 +38,8 @@ export type Control = Common &
     | { type: "text"; maxLength: number; placeholder?: string; inputMode?: "numeric" }
     | { type: "choice"; choices: Choice[]; emptyLabel?: string }
     | { type: "day" }
+    // A whole number in a range, typed as text and sent as a number.
+    | { type: "count"; min: number; max: number; unit: string }
     | { type: "rupees"; placeholder?: string }
     // An on/off switch. Its value is "true" when ticked and empty otherwise, like every other value on the form.
     | { type: "checkbox" }
@@ -102,6 +106,16 @@ export const CONTROLS: Record<FieldName, Control> = {
     emptyLabel: "First in, first out (default)",
     // Lots exist only when an investment is tracked by quantity.
     showWhen: (values) => values.valuationMode === "QUANTITY",
+  },
+  stalePriceDays: {
+    type: "count",
+    label: "Price goes stale after (days)",
+    min: STALE_PRICE_DAYS_MIN,
+    max: STALE_PRICE_DAYS_MAX,
+    unit: "days",
+    hint: "Leave empty to use your default of 30 days. A plot of land might use 365.",
+    // Only a price values an investment by quantity or as a lump; one valued by what was put in never has a price.
+    showWhen: (values) => values.valuationMode === "QUANTITY" || values.valuationMode === "LUMP",
   },
 }
 

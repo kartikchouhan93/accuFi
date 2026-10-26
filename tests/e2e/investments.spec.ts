@@ -3,11 +3,12 @@ import { formatDay } from "@/lib/transaction-text"
 import { prisma } from "@/server/db"
 import { expect, test } from "./fixtures"
 import { account, buy, investment, nodeId, post, price, today } from "./seed"
-import { balanceOf, entries, optionsOf } from "./screens"
+import { balanceOf, editForm, entries, form, optionsOf } from "./screens"
 
 // The investments screen (spec §8.2): the portfolio, one card per investment, its lots on demand, and selling through
 // the Sell / redeem form. Prices are put in with the seed helper; entering them on screen is the price screen's spec.
-// The figures are the spec's M2 acceptance row: 10 g for ₹70,000 and 5 g for ₹37,000, priced at ₹7,800 a gram.
+// The figures are the spec's M2 acceptance row: 10 g for ₹70,000 and 5 g for ₹37,000, priced at ₹7,800 a gram; the two
+// purchases are entered on the transaction form, by quantity.
 
 const card = (page: Page, name: string) => page.getByRole("region", { name, exact: true })
 const portfolio = (page: Page) => page.getByRole("region", { name: "Portfolio", exact: true })
@@ -45,10 +46,29 @@ async function openSell(page: Page, name: string) {
 test("values gold, sells part of it at a gain, refuses what cannot be done, and unwinds the sale", async ({ session: { page, userId } }) => {
   await account(userId, "Bank", "2,00,000")
   await investment(userId, "Gold", { unit: "g" })
-  await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-10")
-  await buy(userId, "Bank", "Gold", "37,000", "5", "2026-02-01")
   await investment(userId, "Silver", { unit: "kg" })
   await buy(userId, "Bank", "Silver", "24,000", "0.25", "2026-02-10") // never priced in this test
+
+  // The two purchases of gold, on the transaction form: the first by its amount and quantity (the price per gram is worked
+  // out), the second by its quantity and price per gram (the amount is).
+  await openTransactions(page)
+  const entry = form(page)
+  await entry.getByLabel("From", { exact: true }).selectOption({ label: "Bank" })
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await entry.getByLabel("Amount (₹)").fill("70,000")
+  await entry.getByLabel("Quantity (g)").fill("10")
+  await expect(entry.getByLabel("Price per g (₹)")).toHaveValue("7000.00")
+  await entry.getByLabel("Date").fill("2026-01-10")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(page.getByRole("status")).toContainText("Recorded Bank → Gold, ₹70,000.00.")
+  await expect(entry.getByLabel("Amount (₹)")).toHaveValue("")
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await entry.getByLabel("Quantity (g)").fill("5")
+  await entry.getByLabel("Price per g (₹)").fill("7,400")
+  await expect(entry.getByLabel("Amount (₹)")).toHaveValue("37000.00")
+  await entry.getByLabel("Date").fill("2026-02-01")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(page.getByRole("status")).toContainText("Recorded Bank → Gold, ₹37,000.00.")
 
   // No price yet: the card says so, and never shows a figure for the value.
   await openInvestments(page)
@@ -216,6 +236,23 @@ test("a lump is sold whole, a contribution-only investment has nothing to sell, 
   await expect(page.getByRole("status")).toContainText("Cost basis ₹50,00,000.00 · loss ₹5,00,000.00")
   await expect(flat).toContainText("Nothing held")
   await expect(flat.getByRole("button", { name: "Sell / redeem" })).toHaveCount(0)
+
+  // The old fund's purchase gains its quantity through the transaction's edit form, and a price then values the fund.
+  await openTransactions(page, "?from=&to=")
+  const purchase = entries(page).getByRole("listitem").filter({ hasText: "Bank → Old fund" })
+  await purchase.getByRole("button", { expanded: false }).first().click()
+  await purchase.getByRole("button", { name: "Edit" }).click()
+  const edit = editForm(page)
+  await expect(edit.getByLabel("Quantity (unit)")).toHaveValue("")
+  await expect(edit).toContainText("This purchase has no quantity yet.")
+  await edit.getByLabel("Quantity (unit)").fill("200")
+  await expect(edit.getByLabel("Price per unit (₹)")).toHaveValue("100.00")
+  await edit.getByRole("button", { name: "Save changes" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved changes to Bank → Old fund, ₹20,000.00")
+  await price(userId, "Old fund", "110", "2026-03-01")
+  await openInvestments(page)
+  await expect(old).not.toContainText("Not valued")
+  await expect(old).toContainText("₹22,000.00") // 200 units at ₹110
 })
 
 // The price screen (/investments/prices): pick an investment, a day and a price; the form says what the price would do to

@@ -7,6 +7,7 @@ import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { buttonClass as makeButtonClass, inputClass } from "@/components/ui/styles"
 import type { CalendarDate } from "@/domain/calendar-date"
 import { formatPaiseText } from "@/lib/node-money"
+import { completeTriple, type TripleField } from "@/lib/quantity-fields"
 import { newRequestKey } from "@/lib/request-key"
 import { SPLIT_LEGS_MAX, SPLIT_LEGS_MIN } from "@/lib/schemas/transaction"
 import type { PickerNode } from "@/lib/transaction-list-view"
@@ -16,13 +17,27 @@ import type { FailureText } from "@/app/nodes/node-failure"
 import type { ActionFailure } from "@/server/action-support"
 import { editTransactionAction, recordSplitAction, recordTransactionAction } from "./actions"
 import type { Announce } from "./notice"
-import { destinationChoices, groupWithSetup, nodeLabel, sourceChoices, type KindGroup } from "./pickers"
+import {
+  destinationChoices,
+  groupWithSetup,
+  heldByLots,
+  legDestinationChoices,
+  nodeLabel,
+  sourceChoices,
+  type KindGroup,
+} from "./pickers"
 import { describeTransactionFailure } from "./transaction-failure"
 
 // One form for every flow: salary into a bank, groceries on a card, paying the card, moving money between accounts. They
 // are all one movement from one node to another, so the form is a source, a destination, an amount and a day. Choosing
 // the source narrows the destinations to what the flow rules allow. "Add split" turns the one destination into a list of
 // legs whose amounts must reach the total.
+//
+// A purchase into an investment valued by quantity also says how much was bought: the form then shows a Quantity and a
+// Price per unit beside the amount, and any two of the three work out the third (completeTriple). What is sent is the
+// amount and the quantity; the price is only a way of entering them. An investment valued as a lump is bought once and
+// whole, so it has no quantity to enter (the server makes it 1). A split carries no quantity, so its legs are never
+// offered an investment held by lots.
 //
 // The request key is chosen once, when the form opens, and kept across every attempt to submit it: a double click or a
 // retry is then the same request to the server, which records it once. It is replaced only after a success, because the
@@ -56,6 +71,9 @@ interface Draft {
   note: string
   tags: string
   legs: Leg[] | null
+  /** With a destination valued by quantity: what was bought, and the price of one unit (worked out, or typed). */
+  quantity: string
+  unitPrice: string
 }
 
 interface Outcome {
@@ -65,17 +83,38 @@ interface Outcome {
   conflict?: TransactionView
 }
 
-const blankDraft = (today: CalendarDate): Draft => ({ from: "", to: "", amount: "", date: today, note: "", tags: "", legs: null })
-
-const draftOf = (transaction: TransactionView): Draft => ({
-  from: transaction.fromNodeId,
-  to: transaction.toNodeId,
-  amount: paiseTextToRupees(transaction.amountPaise),
-  date: transaction.occurredAt,
-  note: transaction.note ?? "",
-  tags: transaction.tags.join(", "),
+const blankDraft = (today: CalendarDate): Draft => ({
+  from: "",
+  to: "",
+  amount: "",
+  date: today,
+  note: "",
+  tags: "",
   legs: null,
+  quantity: "",
+  unitPrice: "",
 })
+
+function draftOf(transaction: TransactionView): Draft {
+  const amount = paiseTextToRupees(transaction.amountPaise)
+  const quantity = transaction.quantity ?? ""
+  return {
+    from: transaction.fromNodeId,
+    to: transaction.toNodeId,
+    amount,
+    date: transaction.occurredAt,
+    note: transaction.note ?? "",
+    tags: transaction.tags.join(", "),
+    legs: null,
+    quantity,
+    // What it cost a unit, shown beside the quantity it was bought in (blank for a purchase with none).
+    unitPrice: completeTriple("quantity", { amount, quantity, unitPrice: "" }, "amount").unitPrice,
+  }
+}
+
+/** The linked fields a draft starts with, most recently "edited" first: an edit opens with its amount (and quantity) set. */
+const startingOrder = (draft: Draft): TripleField[] =>
+  draft.quantity !== "" ? ["quantity", "amount"] : draft.amount !== "" ? ["amount"] : []
 
 const buttonClass = makeButtonClass({ variant: "secondary", size: "sm" })
 const linkButtonClass = "rounded-md text-sm font-medium text-link underline underline-offset-4 disabled:opacity-60"
@@ -87,6 +126,8 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   const formRef = useRef<HTMLFormElement>(null)
   const inFlight = useRef(false)
   const [values, setValues] = useState<Draft>(() => (editing ? draftOf(editing) : blankDraft(today)))
+  // Which of amount, quantity and price were edited last, most recent first: the third is the one worked out.
+  const edited = useRef<TripleField[]>(startingOrder(values))
   const [requestKey, setRequestKey] = useState(newRequestKey)
   const [version, setVersion] = useState(editing?.version ?? 0)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
@@ -95,15 +136,39 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   // The nodes the row being edited already names stay choosable, however they are classed (EC-14).
   const keep = editing ? [editing.fromNodeId, editing.toNodeId] : []
   const sources = sourceChoices(nodes, keep)
-  const destinations = destinationChoices(nodes, values.from, keep)
-  const nameOf = (id: string) => nodes.find((node) => node.id === id)?.name ?? "an unknown account"
+  // A leg of a split, being edited, is held to what a leg may be: it carries no quantity.
+  const destinationsFrom = (from: string) =>
+    editing?.groupId ? legDestinationChoices(nodes, from, keep) : destinationChoices(nodes, from, keep)
+  const destinations = destinationsFrom(values.from)
+  const legDestinations = legDestinationChoices(nodes, values.from)
+  const leftOutOfLegs = destinationChoices(nodes, values.from).some(heldByLots)
+  const nodeOf = (id: string) => nodes.find((node) => node.id === id)
+  const nameOf = (id: string) => nodeOf(id)?.name ?? "an unknown account"
   const isSplit = values.legs !== null
   const legs = values.legs ?? []
   const errorsAt = (key: string) => outcome?.fieldErrors[key]
 
+  // How the single destination is held: by quantity (the purchase says how much), as a lump (bought once, whole), or not
+  // by lots at all.
+  const destination = isSplit ? undefined : nodeOf(values.to)
+  const holding = destination && heldByLots(destination) ? destination.valuationMode : null
+  const byQuantity = holding === "QUANTITY"
+  const unit = destination?.unitLabel ?? "unit"
+  // A purchase entered before lots existed, being edited: its quantity may be left out, and adding it is what values the
+  // investment (plan call 7).
+  const addingQuantity = byQuantity && editing !== null && editing.toNodeId === values.to && (editing.quantity ?? null) === null
+
   // Every problem is shown beside the field it belongs to. What cannot be placed (a refusal about the whole request) is
   // said once, above the button.
-  const placedKeys = new Set(["fromNodeId", "occurredAt", "note", "tags", isSplit ? "total" : "amount", ...(isSplit ? [] : ["toNodeId"])])
+  const placedKeys = new Set([
+    "fromNodeId",
+    "occurredAt",
+    "note",
+    "tags",
+    isSplit ? "total" : "amount",
+    ...(isSplit ? [] : ["toNodeId"]),
+    ...(byQuantity ? ["quantity"] : []),
+  ])
   const isPlaced = (key: string) =>
     placedKeys.has(key) || (isSplit && legs.some((_, index) => key === `legs.${index}.toNodeId` || key === `legs.${index}.amount` || key === `legs.${index}.note`))
   const unplaced = outcome ? Object.entries(outcome.fieldErrors).filter(([key]) => !isPlaced(key)) : []
@@ -125,15 +190,64 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
     setValues((current) => ({ ...current, ...change }))
   }
 
+  /**
+   * A new single destination. The quantity and price stay only while it is valued by quantity in the same unit: a
+   * quantity of grams means nothing to an investment counted in units, and nothing at all to an expense. The amount stays.
+   */
+  function withDestination(current: Draft, to: string): Draft {
+    if (to === current.to) return current
+    const before = nodeOf(current.to)
+    const after = nodeOf(to)
+    const sameUnits =
+      before?.kind === "INVESTMENT" && before.valuationMode === "QUANTITY" &&
+      after?.kind === "INVESTMENT" && after.valuationMode === "QUANTITY" &&
+      before.unitLabel === after.unitLabel
+    if (sameUnits) return { ...current, to }
+    edited.current = edited.current.filter((field) => field === "amount")
+    // A complaint about the quantity went with the field: left behind, it would be said above the button about nothing.
+    setOutcome((shown) => {
+      if (!shown?.fieldErrors.quantity) return shown
+      return { ...shown, fieldErrors: Object.fromEntries(Object.entries(shown.fieldErrors).filter(([key]) => key !== "quantity")) }
+    })
+    return { ...current, to, quantity: "", unitPrice: "" }
+  }
+
   // Changing the source drops every destination the new source cannot pay, rather than leaving an impossible pair.
   function chooseSource(from: string) {
-    const legal = new Set(destinationChoices(nodes, from, keep).map((node) => node.id))
-    setValues((current) => ({
-      ...current,
+    const legal = new Set(destinationsFrom(from).map((node) => node.id))
+    const legalForLegs = new Set(legDestinationChoices(nodes, from).map((node) => node.id))
+    const next = withDestination(values, legal.has(values.to) ? values.to : "")
+    setValues({
+      ...next,
       from,
-      to: legal.has(current.to) ? current.to : "",
-      legs: current.legs && current.legs.map((leg) => ({ ...leg, to: legal.has(leg.to) ? leg.to : "" })),
-    }))
+      legs: next.legs && next.legs.map((leg) => ({ ...leg, to: legalForLegs.has(leg.to) ? leg.to : "" })),
+    })
+  }
+
+  function chooseDestination(to: string) {
+    setValues(withDestination(values, to))
+  }
+
+  /**
+   * One of amount, quantity and price was typed in. With a destination valued by quantity the field not edited most
+   * recently is worked out from the other two; the amount's place in that order is kept whatever the destination, so an
+   * amount typed before the destination was chosen still counts as one of the two.
+   */
+  function editTriple(field: TripleField, text: string) {
+    const [last, beforeLast] = edited.current
+    const previous = last === field ? beforeLast : last
+    edited.current = previous === undefined ? [field] : [field, previous]
+    setValues((current) => {
+      const next = { ...current, [field]: text }
+      if (!byQuantity) return next
+      return { ...next, ...completeTriple(field, { amount: next.amount, quantity: next.quantity, unitPrice: next.unitPrice }, previous) }
+    })
+  }
+
+  /** The quantity to send: only for a destination valued by quantity, and only when one is typed (the server asks for it). */
+  function quantityToSend(): { quantity: string } | Record<string, never> {
+    const quantity = values.quantity.trim()
+    return byQuantity && quantity !== "" ? { quantity } : {}
   }
 
   function setLeg(index: number, change: Partial<Leg>) {
@@ -186,6 +300,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
     setOutcome(null)
     // The next entry is a new request, so it gets a new key. The source and the day stay: a run of entries usually shares both.
     setRequestKey(newRequestKey())
+    edited.current = []
     setValues((current) => ({ ...blankDraft(today), from: current.from, date: current.date }))
     formRef.current?.querySelector<HTMLElement>("[data-first-field]")?.focus()
   }
@@ -217,6 +332,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
               occurredAt: values.date,
               note: note === "" ? null : note,
               tags,
+              ...quantityToSend(),
             },
           })
           if (!result.ok) return reportFailure(result)
@@ -251,6 +367,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
             toNodeId: values.to,
             amount: values.amount,
             occurredAt: values.date,
+            ...quantityToSend(),
             ...(note === "" ? {} : { note }),
             tags,
             idempotencyKey: requestKey,
@@ -272,6 +389,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   }
 
   function clear() {
+    edited.current = []
     setValues(blankDraft(today))
     setRequestKey(newRequestKey())
     setOutcome(null)
@@ -316,7 +434,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
               <NodePicker
                 {...props}
                 value={values.to}
-                onChange={(to) => patch({ to })}
+                onChange={chooseDestination}
                 groups={groupWithSetup(destinations)}
                 placeholder={values.from === "" ? "Choose a source first" : "Choose a destination"}
                 disabled={values.from === ""}
@@ -338,15 +456,68 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
               autoComplete="off"
               placeholder="0.00"
               value={values.amount}
-              onChange={(event) => patch({ amount: event.target.value })}
+              onChange={(event) => editTriple("amount", event.target.value)}
               className={`${inputClass} figures`}
             />
           )}
         </Field>
 
+        {byQuantity && (
+          <div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field idBase={`${formId}-quantity`} label={`Quantity (${unit})`} optional={addingQuantity} errors={errorsAt("quantity")}>
+                {(props) => (
+                  <input
+                    {...props}
+                    aria-describedby={joinIds(props["aria-describedby"], `${formId}-quantity-note`)}
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="0"
+                    value={values.quantity}
+                    onChange={(event) => editTriple("quantity", event.target.value)}
+                    className={`${inputClass} figures`}
+                  />
+                )}
+              </Field>
+              <Field idBase={`${formId}-unit-price`} label={`Price per ${unit} (₹)`} errors={undefined}>
+                {(props) => (
+                  <input
+                    {...props}
+                    aria-describedby={joinIds(props["aria-describedby"], `${formId}-quantity-note`)}
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="0.00"
+                    value={values.unitPrice}
+                    onChange={(event) => editTriple("unitPrice", event.target.value)}
+                    className={`${inputClass} figures`}
+                  />
+                )}
+              </Field>
+            </div>
+            <p id={`${formId}-quantity-note`} className="mt-1.5 text-xs text-fg-soft">
+              {addingQuantity
+                ? `This purchase has no quantity yet. Add it: ${destination?.name ?? "the investment"} is valued only once every purchase has one.`
+                : "Enter any two of amount, quantity and price, and the third is worked out."}
+            </p>
+          </div>
+        )}
+
+        {holding === "LUMP" && (
+          <p className="rounded-xl bg-canvas/60 px-3.5 py-2.5 text-sm text-fg-soft">
+            A single holding: {destination?.name} is bought once, whole, so there is no quantity to enter.
+          </p>
+        )}
+
         {isSplit && (
           <fieldset className="space-y-3">
             <legend className="text-sm font-medium">Split across</legend>
+            {leftOutOfLegs && (
+              <p className="text-xs text-fg-soft">
+                Investments valued by quantity or as a lump are bought on their own, so a split does not offer them.
+              </p>
+            )}
             {legs.map((leg, index) => (
               <div key={index} role="group" aria-label={`Leg ${index + 1}`} className="space-y-3 rounded-2xl border border-line bg-canvas/50 p-3">
                 <Field idBase={`${formId}-leg-${index}-to`} label="To" errors={errorsAt(`legs.${index}.toNodeId`)}>
@@ -355,7 +526,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
                       {...props}
                       value={leg.to}
                       onChange={(to) => setLeg(index, { to })}
-                      groups={groupWithSetup(destinations)}
+                      groups={groupWithSetup(legDestinations)}
                       placeholder={values.from === "" ? "Choose a source first" : "Choose a destination"}
                       disabled={values.from === ""}
                     />
@@ -456,7 +627,10 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
           <button
             type="button"
             className={cn(linkButtonClass, "inline-flex items-center gap-1")}
-            onClick={() => patch({ legs: [{ to: values.to, amount: "" }, { to: "", amount: "" }] })}
+            onClick={() => {
+              const first = legDestinations.some((node) => node.id === values.to) ? values.to : ""
+              patch({ legs: [{ to: first, amount: "" }, { to: "", amount: "" }] })
+            }}
           >
             <Plus aria-hidden className="size-3.5" />
             Add split
@@ -474,6 +648,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
           <p className="figures mt-1">
             Stored now: {nameOf(outcome.conflict.fromNodeId)} → {nameOf(outcome.conflict.toNodeId)},{" "}
             {formatPaiseText(outcome.conflict.amountPaise)}, {outcome.conflict.occurredAt}
+            {outcome.conflict.quantity ? `, ${outcome.conflict.quantity} ${nodeOf(outcome.conflict.toNodeId)?.unitLabel ?? ""}`.trimEnd() : ""}
             {outcome.conflict.note ? `, "${outcome.conflict.note}"` : ""}.
           </p>
           <p className="mt-1">What you typed is still in the form.</p>
@@ -484,7 +659,9 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
               onClick={() => {
                 const stored = outcome.conflict
                 if (!stored) return
-                setValues(draftOf(stored))
+                const draft = draftOf(stored)
+                edited.current = startingOrder(draft)
+                setValues(draft)
                 setVersion(stored.version)
                 setOutcome(null)
               }}
@@ -534,6 +711,8 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
     </SpotlightCard>
   )
 }
+
+const joinIds = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined
 
 export interface FieldProps {
   idBase: string

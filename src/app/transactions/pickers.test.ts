@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
 import type { PickerNode } from "@/lib/transaction-list-view"
-import { destinationChoices, groupByKind, groupWithSetup, nodeLabel, sourceChoices } from "./pickers"
+import { destinationChoices, groupByKind, groupWithSetup, heldByLots, legDestinationChoices, nodeLabel, sourceChoices } from "./pickers"
 
 const node = (id: string, kind: LedgerKind, over: Partial<PickerNode> = {}): PickerNode => ({
   id,
@@ -150,5 +150,28 @@ describe("nodeLabel", () => {
   it("says when a node is archived", () => {
     expect(nodeLabel(node("bank", "ASSET"))).toBe("bank")
     expect(nodeLabel(node("old", "ASSET", { archived: true }))).toBe("old (archived)")
+  })
+})
+
+describe("legDestinationChoices", () => {
+  const investments = [
+    node("bank", "ASSET"),
+    node("food", "EXPENSE"),
+    node("gold", "INVESTMENT", { valuationMode: "QUANTITY", unitLabel: "g" }),
+    node("flat", "INVESTMENT", { valuationMode: "LUMP", unitLabel: "flat" }),
+    node("ppf", "INVESTMENT", { valuationMode: "CONTRIBUTION_ONLY", unitLabel: "unit" }),
+  ]
+
+  it("leaves out the investments held by lots, which a split leg cannot buy (it carries no quantity)", () => {
+    expect(ids(destinationChoices(investments, "bank"))).toEqual(["food", "gold", "flat", "ppf"])
+    expect(ids(legDestinationChoices(investments, "bank"))).toEqual(["food", "ppf"])
+  })
+
+  it("still offers one the leg being edited already names", () => {
+    expect(ids(legDestinationChoices(investments, "bank", ["gold"]))).toEqual(["food", "gold", "ppf"])
+  })
+
+  it("knows which nodes are held by lots: an investment valued by quantity or as a lump", () => {
+    expect(investments.filter(heldByLots).map((n) => n.id)).toEqual(["gold", "flat"])
   })
 })

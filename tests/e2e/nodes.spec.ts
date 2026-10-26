@@ -269,6 +269,40 @@ test("changes the fields with the kind", async ({ ledger: page }) => {
   await expect(page.getByLabel("Institution")).toHaveCount(0)
 })
 
+test("offers an investment valued by a price its own stale window, and shows it in the row's details", async ({ ledger: page }) => {
+  await page.getByRole("radio", { name: "Investment", exact: true }).check()
+  const days = page.getByLabel("Price goes stale after (days)")
+  // Valued by quantity or as a lump, a price values it, so the window is offered (optional); by what was put in, never.
+  await page.getByLabel("Valuation").selectOption({ label: "By quantity and unit price" })
+  await expect(days).toBeVisible()
+  await expect(page.getByText("Leave empty to use your default of 30 days. A plot of land might use 365.")).toBeVisible()
+  await page.getByLabel("Valuation").selectOption({ label: "By what you put in" })
+  await expect(days).toHaveCount(0)
+  await page.getByLabel("Valuation").selectOption({ label: "As one lump sum" })
+  await expect(days).toBeVisible()
+
+  // A window of no days is refused beside the field, keeping what was typed.
+  await addNode(page, "Investment", { Name: "Plot", Unit: "plot", "Price goes stale after (days)": "0" })
+  await page.getByRole("button", { name: "Add investment" }).click()
+  await expect(days).toHaveAttribute("aria-invalid", "true")
+  await expect(page.getByText("Enter a whole number of days from 1 to 3650")).toBeVisible()
+  await expect(days).toHaveValue("0")
+
+  await days.fill("365")
+  await page.getByRole("button", { name: "Add investment" }).click()
+  await expect(page.getByRole("status")).toContainText("Added Plot")
+  const plot = await openRow(page, "Plot")
+  await expect(plot.locator("dt", { hasText: "Prices go stale after" }).locator("xpath=following-sibling::dd[1]")).toHaveText("365 days")
+
+  // Left empty, the user's own window applies and the details say nothing about it.
+  await addNode(page, "Investment", { Name: "Gold", Unit: "g", Valuation: "By quantity and unit price" })
+  await page.getByRole("button", { name: "Add investment" }).click()
+  await expect(page.getByRole("status")).toContainText("Added Gold")
+  const gold = await openRow(page, "Gold")
+  await expect(gold).toContainText("By quantity and unit price")
+  await expect(gold).not.toContainText("Prices go stale after")
+})
+
 test("warns about a duplicate name but keeps both", async ({ ledger: page }) => {
   for (let count = 0; count < 2; count++) {
     await addNode(page, "Account", { Name: "Cash in hand", "Account type": "Cash" })

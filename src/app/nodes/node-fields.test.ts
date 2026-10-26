@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { LEDGER_KINDS } from "@/domain/ledger-kind"
 import { createNodeSchema } from "@/lib/schemas/node"
-import { buildInput } from "./node-form-input"
+import { buildInput, isVisible, validateBeforeSending } from "./node-form-input"
 import { CONTROLS, FIELDS_BY_KIND, INITIAL_VALUES } from "./node-fields"
 
 const names = (kind: keyof typeof FIELDS_BY_KIND) => FIELDS_BY_KIND[kind].map((field) => field.name)
@@ -24,7 +24,7 @@ describe("FIELDS_BY_KIND, read from the schema", () => {
       "dueDay",
       "openingBalance",
     ])
-    expect(names("INVESTMENT")).toEqual(["name", "valuationMode", "unitLabel", "lotMethod", "institution"])
+    expect(names("INVESTMENT")).toEqual(["name", "valuationMode", "unitLabel", "lotMethod", "stalePriceDays", "institution"])
     expect(names("INCOME_SOURCE")).toEqual(["name"])
     expect(names("EXPENSE")).toEqual(["name"])
     expect(Object.values(CONTROLS).filter((control) => control.type === "none")).toHaveLength(1) // parentId
@@ -33,7 +33,7 @@ describe("FIELDS_BY_KIND, read from the schema", () => {
   it("marks a field optional exactly when the schema does", () => {
     const optional = (kind: keyof typeof FIELDS_BY_KIND) => FIELDS_BY_KIND[kind].filter((f) => f.optional).map((f) => f.name)
     expect(optional("ASSET")).toEqual(["institution", "lastFour", "openingBalance", "blockNegative"])
-    expect(optional("INVESTMENT")).toEqual(["lotMethod", "institution"])
+    expect(optional("INVESTMENT")).toEqual(["lotMethod", "stalePriceDays", "institution"])
   })
 
   it("starts a required choice on its first option and everything else empty", () => {
@@ -74,6 +74,37 @@ describe("buildInput, what the form sends", () => {
     expect(send("INVESTMENT", { name: "Gold", unitLabel: "gram", lotMethod: "LIFO", valuationMode: "LUMP" })).not.toHaveProperty("lotMethod")
     expect(send("INVESTMENT", { name: "Gold", unitLabel: "gram", lotMethod: "LIFO", valuationMode: "QUANTITY" })).toMatchObject({ lotMethod: "LIFO" })
     expect(send("LIABILITY", { name: "Card", statementDay: "12", dueDay: "2" })).toMatchObject({ statementDay: 12, dueDay: 2 })
+  })
+})
+
+describe("the stale-price window", () => {
+  const send = (values: Record<string, string>) => buildInput("INVESTMENT", FIELDS_BY_KIND.INVESTMENT, { ...INITIAL_VALUES, name: "Plot", unitLabel: "plot", ...values }, "positive")
+  const field = FIELDS_BY_KIND.INVESTMENT.find((candidate) => candidate.name === "stalePriceDays")
+
+  it("is offered for an investment valued by a price, by quantity or as a lump, and not for one valued by what was put in", () => {
+    expect(field?.control.label).toBe("Price goes stale after (days)")
+    expect(field?.control.hint).toBe("Leave empty to use your default of 30 days. A plot of land might use 365.")
+    expect(field && isVisible(field, { ...INITIAL_VALUES, valuationMode: "QUANTITY" })).toBe(true)
+    expect(field && isVisible(field, { ...INITIAL_VALUES, valuationMode: "LUMP" })).toBe(true)
+    // No price ever values a contribution-only investment, so there is nothing to go stale.
+    expect(field && isVisible(field, { ...INITIAL_VALUES, valuationMode: "CONTRIBUTION_ONLY" })).toBe(false)
+  })
+
+  it("is sent as a whole number when given, left out when empty or hidden, and accepted by the server's schema", () => {
+    expect(send({ valuationMode: "LUMP", stalePriceDays: " 365 " })).toMatchObject({ stalePriceDays: 365 })
+    expect(createNodeSchema.safeParse(send({ valuationMode: "LUMP", stalePriceDays: "365" })).success).toBe(true)
+    expect(send({ valuationMode: "QUANTITY", stalePriceDays: "" })).not.toHaveProperty("stalePriceDays")
+    expect(send({ valuationMode: "CONTRIBUTION_ONLY", stalePriceDays: "365" })).not.toHaveProperty("stalePriceDays")
+  })
+
+  it("is checked before sending: a whole number of days from 1 to 3650", () => {
+    const fields = FIELDS_BY_KIND.INVESTMENT
+    const check = (stalePriceDays: string) =>
+      validateBeforeSending("INVESTMENT", fields, { ...INITIAL_VALUES, name: "Plot", unitLabel: "plot", valuationMode: "LUMP", stalePriceDays })
+    for (const good of ["", "1", "365", "3650"]) expect(check(good), good).toEqual({})
+    for (const bad of ["0", "3651", "1.5", "-5", "a year", "1e3"]) {
+      expect(check(bad), bad).toEqual({ stalePriceDays: ["Enter a whole number of days from 1 to 3650"] })
+    }
   })
 })
 

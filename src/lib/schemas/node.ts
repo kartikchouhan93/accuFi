@@ -22,6 +22,8 @@ const nodeId = z.string().min(1)
 const institution = z.string().trim().min(1).max(100)
 const lastFour = z.string().regex(/^\d{4}$/, "Enter the last four digits")
 const dayOfMonth = z.number().int().min(1).max(31)
+export const STALE_PRICE_DAYS_MIN = 1
+export const STALE_PRICE_DAYS_MAX = 3650
 
 // An opening position is signed: positive for money you hold, negative for money you owe or an overdrawn balance
 // (spec "Opening position"). Zero is not a position, so it is refused rather than posting a pointless transaction.
@@ -63,6 +65,9 @@ const investment = z.strictObject({
   valuationMode: z.enum(VALUATION_MODES),
   unitLabel: z.string().trim().min(1, "Enter a unit, for example gram").max(20),
   lotMethod: z.enum(LOT_METHODS).optional(),
+  // How old a price may be before it is called stale (plan call 9): the investment's own window, else the user's (30).
+  // A price that moves slowly, a plot of land, might use 365. Whole days, at most ten years.
+  stalePriceDays: z.number().int().min(STALE_PRICE_DAYS_MIN).max(STALE_PRICE_DAYS_MAX).optional(),
   institution: institution.optional(),
 })
 

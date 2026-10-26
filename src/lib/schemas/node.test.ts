@@ -47,6 +47,20 @@ describe("createNodeSchema", () => {
     expect(parse({ kind: "INVESTMENT", name: "Gold", valuationMode: "QUANTITY", unitLabel: "gram" }).success).toBe(true)
   })
 
+  it("takes an optional stale-price window for an INVESTMENT, a whole number of days from 1 to 3650", () => {
+    const base = { kind: "INVESTMENT", name: "Plot", valuationMode: "LUMP", unitLabel: "plot" }
+    expect(parse({ ...base, stalePriceDays: 365 })).toMatchObject({ success: true, data: { stalePriceDays: 365 } })
+    expect(parse({ ...base, stalePriceDays: 1 }).success).toBe(true)
+    expect(parse({ ...base, stalePriceDays: 3650 }).success).toBe(true)
+    const plain = parse(base)
+    expect(plain.success && "stalePriceDays" in plain.data).toBe(false)
+    for (const stalePriceDays of [0, 3651, 1.5, -30, "365"]) {
+      expect(fieldsWithIssues({ ...base, stalePriceDays }), String(stalePriceDays)).toEqual(["stalePriceDays"])
+    }
+    // A window is about prices, which only an investment has.
+    expect(parse({ kind: "ASSET", name: "Bank", assetSubtype: "CASH", stalePriceDays: 30 }).success).toBe(false)
+  })
+
   it("needs nothing beyond a name for an INCOME_SOURCE or EXPENSE, and accepts a parent", () => {
     expect(parse({ kind: "EXPENSE", name: "Food" }).success).toBe(true)
     expect(parse({ kind: "INCOME_SOURCE", name: "Salary", parentId: "abc" }).success).toBe(true)
