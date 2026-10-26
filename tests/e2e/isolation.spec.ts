@@ -60,13 +60,18 @@ async function secretsOfA(userId: string): Promise<string[]> {
 }
 
 /**
- * Whether `secret` is in `where`. A figure ("9.877", "7345678") counts only as a whole number: the development server writes
- * timings and counters into the HTML, and "5.556" is a piece of "12345.5567" that is nobody's quantity.
+ * Whether `secret` is in `where`: plain text and ids by substring, figures by exactly the number they are.
+ *  - Digits only ("98765432", paise): not part of a longer run of digits. A comma, quote or bracket beside it is fine, so
+ *    `[98765432,12345678]` and `{"a":98765432}` are found.
+ *  - A figure with a "." or "," in it ("9.877", "9,87,654.32"): additionally not part of a longer decimal number, which means
+ *    no "." before it and no "." plus a digit after it. The development server writes timings into the HTML, and "5.556" is a
+ *    piece of "12345.5567" that is nobody's quantity. A comma beside it is allowed (`a,9.877`), as is a full stop after it.
  */
 function found(where: string, secret: string): boolean {
   if (!/^[\d.,]+$/.test(secret)) return where.includes(secret)
   const escaped = secret.replace(/[.]/g, "\\.")
-  return new RegExp(`(?<![\\d.,])${escaped}(?![\\d]|[.,]\\d)`).test(where)
+  const pattern = /^\d+$/.test(secret) ? `(?<!\\d)${escaped}(?!\\d)` : `(?<![\\d.])${escaped}(?!\\d|\\.\\d)`
+  return new RegExp(pattern).test(where)
 }
 
 /**
@@ -78,6 +83,28 @@ async function leaksOn(page: Page, secrets: string[], typed: string[] = []): Pro
   const text = await page.locator("body").innerText()
   return secrets.filter((secret) => !typed.includes(secret) && (found(html, secret) || found(text, secret)))
 }
+
+test("the leak detector finds a figure wherever it is carried, and not inside a longer number", () => {
+  // Carried as data: next to commas, quotes and brackets.
+  expect(found("[98765432,12345678]", "98765432")).toBe(true)
+  expect(found("[98765432,12345678]", "12345678")).toBe(true)
+  expect(found("a,9.877", "9.877")).toBe(true)
+  expect(found("1,2,765432", "765432")).toBe(true)
+  expect(found('{"a":98765432}', "98765432")).toBe(true)
+  // Shown as text, and at the end of a sentence.
+  expect(found("x 5.556 g", "5.556")).toBe(true)
+  expect(found("It held 9.877.", "9.877")).toBe(true)
+  expect(found("9,87,654.32 in all", "9,87,654.32")).toBe(true)
+  // A piece of a longer number is nobody's figure.
+  expect(found("12.5.556", "5.556")).toBe(false)
+  expect(found("5.5567", "5.556")).toBe(false)
+  expect(found("123765432", "765432")).toBe(false)
+  expect(found("7654321", "765432")).toBe(false)
+  expect(found("19,87,654.32", "9,87,654.32")).toBe(false)
+  // Names and ids are looked for as text.
+  expect(found("a Zephyr b", "Zephyr")).toBe(true)
+  expect(found("nothing here", "Zephyr")).toBe(false)
+})
 
 const netWorth = (page: Page) => page.getByRole("region", { name: "Net worth", exact: true })
 const filters = (page: Page) => page.getByRole("form", { name: "Filter transactions" })
@@ -352,7 +379,6 @@ test.describe("a request B's browser sends, aimed at A's rows", () => {
   })
 })
 
-
 // Investments (M2). The same claim for the new surfaces: lots, a sale's consumptions and price history are one user's
 // alone. A owns a gold holding bought in two lots with a part sold and three prices; B holds a little silver of its own
 // (so B's screens are real ones that send real requests, and the request is then aimed at A's ids on the way out, as above).
@@ -504,7 +530,7 @@ test("lists none of A's gold in B's transactions, whatever B filters or names", 
   await a.page.goto("/transactions?from=&to=")
   await expect(rows(a.page).filter({ hasText: GOLD_BANK }).filter({ hasText: "₹73,456.78" })).toHaveCount(1)
 
-  // B's whole history is its own three entries: the wallet's opening balance, the silver bought, and nothing else.
+  // B's whole history is its own two entries: the wallet's opening balance and the silver bought, and nothing else.
   await b.page.goto("/transactions?from=&to=")
   await expect(rows(b.page)).toHaveCount(2)
   await expect(rows(b.page).filter({ hasText: "Silver Wallet → Plain Silver" })).toContainText("₹4,000.00")
@@ -675,7 +701,7 @@ test.describe("a request B's browser sends, aimed at A's gold", () => {
     expect(sellIntoA).toEqual(await sell(wallet, GHOST))
 
     // recordPriceAction: B saves ₹1,111 for today, the day A's gold has its latest price (a leak would replace it).
-    const record = async (target: string) => {
+    const savePrice = async (target: string) => {
       let message = ""
       await openSilverPrices(b.page)
       const bodies = await aimed(b.page, silver, target, priceOrPreview, 2, async () => {
@@ -688,9 +714,9 @@ test.describe("a request B's browser sends, aimed at A's gold", () => {
       })
       return { bodies, message }
     }
-    const recordToA = await record(gold)
+    const savedToA = await savePrice(gold)
     expect(await leaksOn(b.page, secrets)).toEqual([])
-    expect(recordToA).toEqual(await record(GHOST))
+    expect(savedToA).toEqual(await savePrice(GHOST))
 
     // deletePriceAction: B deletes the price it has for today; the request names A's gold, which has one for that day too.
     const remove = async (target: string) => {
