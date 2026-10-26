@@ -53,6 +53,23 @@ describe("sourceChoices", () => {
   })
 })
 
+describe("sourceChoices and investments", () => {
+  const held = [
+    node("bank", "ASSET"),
+    node("gold", "INVESTMENT", { valuationMode: "QUANTITY", unitLabel: "g" }),
+    node("flat", "INVESTMENT", { valuationMode: "LUMP", unitLabel: "flat" }),
+    node("ppf", "INVESTMENT", { valuationMode: "CONTRIBUTION_ONLY", unitLabel: "unit" }),
+  ]
+
+  it("leaves out the investments held by lots, which are sold rather than paid out of, and keeps a contribution-only one (EC-28)", () => {
+    expect(ids(sourceChoices(held))).toEqual(["bank", "ppf"])
+  })
+
+  it("still offers one the row being edited already names", () => {
+    expect(ids(sourceChoices(held, ["gold"]))).toEqual(["bank", "gold", "ppf"])
+  })
+})
+
 describe("destinationChoices", () => {
   it("offers nothing until a source is chosen", () => {
     expect(destinationChoices(nodes, "")).toEqual([])

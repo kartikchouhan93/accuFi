@@ -1,6 +1,7 @@
 "use client"
 
 import { CircleAlert, LoaderCircle, Plus, TriangleAlert } from "lucide-react"
+import Link from "next/link"
 import { useEffect, useId, useRef, useState, useTransition } from "react"
 import { cn } from "@/lib/utils"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
@@ -136,6 +137,8 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   // The nodes the row being edited already names stay choosable, however they are classed (EC-14).
   const keep = editing ? [editing.fromNodeId, editing.toNodeId] : []
   const sources = sourceChoices(nodes, keep)
+  // An investment held by lots is sold through its own form, so From does not offer it: say where to go instead.
+  const soldElsewhere = nodes.some((node) => heldByLots(node) && !node.archived && !sources.includes(node))
   // A leg of a split, being edited, is held to what a leg may be: it carries no quantity.
   const destinationsFrom = (from: string) =>
     editing?.groupId ? legDestinationChoices(nodes, from, keep) : destinationChoices(nodes, from, keep)
@@ -152,7 +155,8 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   // by lots at all.
   const destination = isSplit ? undefined : nodeOf(values.to)
   const holding = destination && heldByLots(destination) ? destination.valuationMode : null
-  const byQuantity = holding === "QUANTITY"
+  // A leg of a split never carries a quantity (the server refuses one), even into an investment valued by quantity since.
+  const byQuantity = holding === "QUANTITY" && !editing?.groupId
   const unit = destination?.unitLabel ?? "unit"
   // A purchase entered before lots existed, being edited: its quantity may be left out, and adding it is what values the
   // investment (plan call 7).
@@ -204,12 +208,16 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       before.unitLabel === after.unitLabel
     if (sameUnits) return { ...current, to }
     edited.current = edited.current.filter((field) => field === "amount")
-    // A complaint about the quantity went with the field: left behind, it would be said above the button about nothing.
+    dropQuantityErrors()
+    return { ...current, to, quantity: "", unitPrice: "" }
+  }
+
+  /** A complaint about the quantity goes with the field: left behind, it would be said above the button about nothing. */
+  function dropQuantityErrors() {
     setOutcome((shown) => {
       if (!shown?.fieldErrors.quantity) return shown
       return { ...shown, fieldErrors: Object.fromEntries(Object.entries(shown.fieldErrors).filter(([key]) => key !== "quantity")) }
     })
-    return { ...current, to, quantity: "", unitPrice: "" }
   }
 
   // Changing the source drops every destination the new source cannot pay, rather than leaving an impossible pair.
@@ -274,6 +282,10 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       })
     } else if (values.to === "") {
       problems.toNodeId = ["Choose where the money goes"]
+    } else if (editing && byQuantity && !addingQuantity && values.quantity.trim() === "") {
+      // Sent without one, the server would keep the quantity the purchase holds, and the screen would not show what is
+      // stored. Only a purchase from before quantities existed may be saved without one (plan call 7).
+      problems.quantity = ["Enter the quantity bought."]
     }
     return Object.keys(problems).length > 0 ? problems : null
   }
@@ -415,18 +427,30 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
       </h2>
 
       <div className="mt-5 space-y-4">
-        <Field idBase={`${formId}-from`} label="From" errors={errorsAt("fromNodeId")}>
-          {(props) => (
-            <NodePicker
-              {...props}
-              value={values.from}
-              onChange={chooseSource}
-              groups={groupWithSetup(sources)}
-              placeholder="Choose a source"
-              data-first-field=""
-            />
+        <div>
+          <Field idBase={`${formId}-from`} label="From" errors={errorsAt("fromNodeId")}>
+            {(props) => (
+              <NodePicker
+                {...props}
+                aria-describedby={joinIds(props["aria-describedby"], soldElsewhere ? `${formId}-from-note` : undefined)}
+                value={values.from}
+                onChange={chooseSource}
+                groups={groupWithSetup(sources)}
+                placeholder="Choose a source"
+                data-first-field=""
+              />
+            )}
+          </Field>
+          {soldElsewhere && (
+            <p id={`${formId}-from-note`} className="mt-1 text-xs text-fg-soft">
+              Selling an investment? Use Sell on the{" "}
+              <Link href="/investments" className="font-medium text-link underline underline-offset-4">
+                Investments screen
+              </Link>
+              .
+            </p>
           )}
-        </Field>
+        </div>
 
         {!isSplit && (
           <Field idBase={`${formId}-to`} label="To" errors={errorsAt("toNodeId")}>
@@ -629,7 +653,10 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
             className={cn(linkButtonClass, "inline-flex items-center gap-1")}
             onClick={() => {
               const first = legDestinations.some((node) => node.id === values.to) ? values.to : ""
-              patch({ legs: [{ to: first, amount: "" }, { to: "", amount: "" }] })
+              // A split carries no quantity, so the quantity, its price and any complaint about them go.
+              edited.current = edited.current.filter((field) => field === "amount")
+              dropQuantityErrors()
+              patch({ legs: [{ to: first, amount: "" }, { to: "", amount: "" }], quantity: "", unitPrice: "" })
             }}
           >
             <Plus aria-hidden className="size-3.5" />

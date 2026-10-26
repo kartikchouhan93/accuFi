@@ -6,7 +6,7 @@ import { sumBalances } from "@/server/repositories/transaction-repository"
 import { archiveLedgerNode } from "@/server/services/node-service"
 import { editTransaction, recordSplit } from "@/server/services/transaction-service"
 import { expect, test } from "./fixtures"
-import { account, addExpense, card, incomeSource, investment, nodeId, post, today } from "./seed"
+import { account, addExpense, buy, card, incomeSource, investment, nodeId, post, today } from "./seed"
 
 // The transaction screen, driven through a real browser against a real server and database. Money is checked as the
 // text the user reads, and the rules (what is legal, what warns, what blocks) are checked where the user meets them.
@@ -848,4 +848,130 @@ test("edits a purchase's quantity, and gives one made before quantities existed 
   await edit.getByRole("button", { name: "Save changes" }).click()
   await expect(edit).toHaveCount(0) // saved: the form is back to a new entry
   expect((await prisma.investmentLot.findFirstOrThrow({ where: { userId } })).quantity.toString()).toBe("2")
+})
+
+test("drops the complaint about a missing quantity when the entry becomes a split, rather than saying it about nothing", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await page.goto("/transactions")
+  const entry = form(page)
+  await entry.getByLabel("From", { exact: true }).selectOption({ label: "Bank" })
+  await entry.getByLabel("To", { exact: true }).selectOption({ label: "Gold" })
+  await entry.getByLabel("Amount (₹)").fill("70,000")
+  await entry.getByRole("button", { name: "Record transaction" }).click()
+  await expect(entry.getByLabel("Quantity (g)")).toHaveAttribute("aria-invalid", "true")
+  await expect(entry.getByText("Enter the quantity bought.")).toHaveCount(1)
+
+  // A split has no quantity, so the complaint about one goes with the field.
+  await entry.getByRole("button", { name: "Add split" }).click()
+  await expect(entry.getByRole("group", { name: "Leg 1" })).toBeVisible()
+  await expect(entry.getByLabel(/^Quantity/)).toHaveCount(0)
+  await expect(entry.getByText("Enter the quantity bought.")).toHaveCount(0)
+  await expect(entry.getByRole("alert")).toHaveCount(0)
+})
+
+test("will not save a purchase whose quantity was cleared, and saves one from before quantities existed without one", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "2,00,000")
+  await investment(userId, "Gold", { unit: "g" })
+  await buy(userId, "Bank", "Gold", "70,000", "10", await today(userId))
+  await investment(userId, "Silver", { valuation: "CONTRIBUTION_ONLY", unit: "g" })
+  await post(userId, "Bank", "Silver", "20,000", { note: "Old bars" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Silver") }, data: { valuationMode: "QUANTITY", lotMethod: "FIFO" } })
+  const stored = await prisma.transaction.findFirstOrThrow({ where: { userId, toNodeId: await nodeId(userId, "Gold") } })
+  await page.goto("/transactions")
+
+  // A purchase that holds a quantity: clearing it is refused beside the field, and nothing is sent.
+  const purchase = entries(page).getByRole("listitem").filter({ hasText: "Bank → Gold" })
+  await purchase.getByRole("button", { expanded: false }).first().click()
+  await purchase.getByRole("button", { name: "Edit" }).click()
+  const edit = editForm(page)
+  const quantity = edit.getByLabel("Quantity (g)")
+  await expect(quantity).toHaveValue("10")
+  await quantity.fill("")
+  await edit.getByRole("button", { name: "Save changes" }).click()
+  await expect(quantity).toHaveAttribute("aria-invalid", "true")
+  await expect(quantity).toBeFocused()
+  await expect(edit.getByText("Enter the quantity bought.")).toHaveCount(1)
+  await expect(edit.getByRole("alert")).toHaveCount(0)
+  expect((await prisma.transaction.findUniqueOrThrow({ where: { id: stored.id } })).version).toBe(stored.version)
+  expect((await prisma.investmentLot.findFirstOrThrow({ where: { transactionId: stored.id } })).quantity.toString()).toBe("10")
+  // Opened again, it still holds what it held.
+  await edit.getByRole("button", { name: "Cancel" }).click()
+  await purchase.getByRole("button", { name: "Edit" }).click()
+  await expect(editForm(page).getByLabel("Quantity (g)")).toHaveValue("10")
+  await editForm(page).getByRole("button", { name: "Cancel" }).click()
+
+  // A purchase from before quantities existed may still be saved without one.
+  const legacy = entries(page).getByRole("listitem").filter({ hasText: "Old bars" })
+  await legacy.getByRole("button", { expanded: false }).first().click()
+  await legacy.getByRole("button", { name: "Edit" }).click()
+  await expect(editForm(page).getByLabel("Quantity (g)")).toHaveValue("")
+  await editForm(page).getByLabel("Note").fill("Old bars, noted")
+  await editForm(page).getByRole("button", { name: "Save changes" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved changes to Bank → Silver, ₹20,000.00")
+  expect(await prisma.investmentLot.count({ where: { userId, nodeId: await nodeId(userId, "Silver") } })).toBe(0)
+})
+
+test("does not offer an investment held by lots as a source, except to the row that already names one, and points to Sell", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "Bank", "2,00,000")
+  await page.goto("/transactions")
+  const from = form(page).getByLabel("From", { exact: true })
+  await expect(from).toBeVisible()
+  // With nothing held by lots there is nothing to point to.
+  await expect(form(page).getByText("Selling an investment?")).toHaveCount(0)
+
+  await investment(userId, "Gold", { unit: "g" })
+  await investment(userId, "Flat", { valuation: "LUMP", unit: "flat" })
+  await investment(userId, "PPF", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  // Money taken out of a fund before it was valued by quantity.
+  await investment(userId, "Old fund", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await post(userId, "Bank", "Old fund", "20,000")
+  await post(userId, "Old fund", "Bank", "5,000", { note: "Early withdrawal" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Old fund") }, data: { valuationMode: "QUANTITY", lotMethod: "FIFO" } })
+  await page.reload()
+
+  // A contribution-only investment is still a source (EC-28); the ones held by lots are sold, not paid out of.
+  const sources = await optionsOf(from)
+  expect(sources).toEqual(expect.arrayContaining(["Bank", "PPF"]))
+  expect(sources).not.toContain("Gold")
+  expect(sources).not.toContain("Flat")
+  expect(sources).not.toContain("Old fund")
+  await expect(form(page).getByText("Selling an investment? Use Sell on the Investments screen.")).toBeVisible()
+  await expect(form(page).getByRole("link", { name: "Investments screen" })).toHaveAttribute("href", "/investments")
+
+  // The row that already takes money out of one keeps it, so it can still be corrected.
+  const withdrawal = entries(page).getByRole("listitem").filter({ hasText: "Early withdrawal" })
+  await withdrawal.getByRole("button", { expanded: false }).first().click()
+  await withdrawal.getByRole("button", { name: "Edit" }).click()
+  await expect(editForm(page).getByLabel("From", { exact: true })).toHaveValue(await nodeId(userId, "Old fund"))
+  expect(await optionsOf(editForm(page).getByLabel("From", { exact: true }))).toContain("Old fund")
+  expect(await optionsOf(editForm(page).getByLabel("From", { exact: true }))).not.toContain("Gold")
+})
+
+test("shows no quantity when editing a split leg into an investment now valued by quantity: a leg carries none", async ({
+  session: { page, userId },
+}) => {
+  await account(userId, "HDFC Savings", "10,000")
+  // Split before the gold was valued by quantity, as a leg could then be.
+  await investment(userId, "Gold", { valuation: "CONTRIBUTION_ONLY", unit: "g" })
+  await splitFromBank(userId, "100", ["Gold", "Groceries"], "Mixed shopping")
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Gold") }, data: { valuationMode: "QUANTITY", lotMethod: "FIFO" } })
+  await page.goto("/transactions")
+  const group = entries(page).getByRole("listitem").filter({ hasText: "Mixed shopping" })
+  await group.getByRole("button", { expanded: false }).first().click()
+  await group.getByRole("button", { name: "Edit the Gold leg" }).click()
+
+  const edit = editForm(page)
+  await expect(edit.getByLabel("To", { exact: true })).toHaveValue(await nodeId(userId, "Gold"))
+  await expect(edit.getByLabel(/^Quantity/)).toHaveCount(0)
+  await expect(edit.getByLabel(/^Price per/)).toHaveCount(0)
+  await edit.getByLabel("Note").fill("Mixed shopping, gold part")
+  await edit.getByRole("button", { name: "Save changes" }).click()
+  await expect(page.getByRole("status")).toContainText("Saved changes to HDFC Savings → Gold, ₹50.00")
 })

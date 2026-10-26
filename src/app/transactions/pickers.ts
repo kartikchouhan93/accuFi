@@ -23,8 +23,13 @@ const hasRole = (node: PickerNode, role: SystemNodeRole) => node.systemRole === 
 const isOpening = (node: PickerNode) => hasRole(node, "OPENING_BALANCE") || hasRole(node, "OPENING_BALANCE_CONTRA")
 const isOrdinary = (node: PickerNode) => !node.archived && node.systemRole === null
 
+// An investment held by lots (valued by quantity or as a lump) is not a source either: money leaves it only by selling
+// it, on the Investments screen, which the server insists on. One valued by what was put in still is (EC-28).
 export const sourceChoices = (nodes: readonly PickerNode[], keep: readonly string[] = []): PickerNode[] =>
-  nodes.filter((node) => keep.includes(node.id) || isOrdinary(node) || (!node.archived && hasRole(node, "OPENING_BALANCE")))
+  nodes.filter(
+    (node) =>
+      keep.includes(node.id) || (!heldByLots(node) && (isOrdinary(node) || (!node.archived && hasRole(node, "OPENING_BALANCE")))),
+  )
 
 export function destinationChoices(nodes: readonly PickerNode[], sourceId: string, keep: readonly string[] = []): PickerNode[] {
   const source = nodes.find((node) => node.id === sourceId)
