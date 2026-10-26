@@ -471,6 +471,25 @@ describe("lot repository", () => {
     expect(await lotRepo.findLotQuantities(theirs.userId, [theirs.buy.id])).toEqual(new Map([[theirs.buy.id, 10_000_000n]]))
   })
 
+  isolation("findSaleTransactionIds", "finds nothing for another user's sale, even beside the caller's own", async () => {
+    expect(await lotRepo.findSaleTransactionIds(mine.userId, [theirs.sale.id])).toEqual(new Set())
+    expect(await inTransaction((uow) => lotRepo.findSaleTransactionIds(mine.userId, [theirs.sale.id], uow))).toEqual(new Set())
+    expect(await lotRepo.findSaleTransactionIds(mine.userId, [mine.sale.id, theirs.sale.id])).toEqual(new Set([mine.sale.id]))
+    expect(await lotRepo.findSaleTransactionIds(theirs.userId, [theirs.sale.id])).toEqual(new Set([theirs.sale.id]))
+  })
+
+  isolation("findSaleTransactionIds", "does not count another user's consumption smuggled onto the caller's transaction", async () => {
+    // The repositories refuse to write this row; nothing in the database does.
+    const smuggled = await prisma.lotConsumption.create({
+      data: { userId: theirs.userId, lotId: theirs.lot.id, transactionId: mine.legacyBuy.id, quantity: new Prisma.Decimal("1"), costBasisPaise: 1n },
+    })
+    try {
+      expect(await lotRepo.findSaleTransactionIds(mine.userId, [mine.legacyBuy.id])).toEqual(new Set())
+    } finally {
+      await prisma.lotConsumption.delete({ where: { id: smuggled.id } })
+    }
+  })
+
   isolation("findLotGaps", "counts nothing for another user's node", async () => {
     const none = { inflowsWithoutLot: 0, outflowsWithoutConsumption: 0 }
     expect(await lotRepo.findLotGaps(mine.userId, theirs.gold.id)).toEqual(none)

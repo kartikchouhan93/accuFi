@@ -193,6 +193,25 @@ export async function findLotQuantities(userId: string, transactionIds: readonly
 }
 
 /**
+ * Which of `transactionIds` are legs of a sale (call 4: a sale is deleted and entered again, never edited): any leg of a
+ * DISPOSAL group, or a row that consumed lots, whether or not its sale is deleted (a deleted sale's consumption rows
+ * stay). Only the caller's rows, groups and consumptions count. What a screen needs so it never offers an edit the server
+ * refuses; `assertNotASale` (lot-rules) is the same test, one row at a time.
+ */
+export async function findSaleTransactionIds(userId: string, transactionIds: readonly string[], uow?: UnitOfWork): Promise<Set<string>> {
+  if (transactionIds.length === 0) return new Set()
+  const rows = await dbOf(uow).transaction.findMany({
+    where: {
+      userId,
+      id: { in: [...new Set(transactionIds)] },
+      OR: [{ group: { is: { userId, kind: "DISPOSAL" } } }, { consumptions: { some: { userId } } }],
+    },
+    select: { id: true },
+  })
+  return new Set(rows.map((row) => row.id))
+}
+
+/**
  * Every consumption row of the lot `transactionId` acquired, live or not: a deleted sale's rows still point at the lot
  * (they are what restoring the sale brings back), and the database will not delete a lot they reference.
  */

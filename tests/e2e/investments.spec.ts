@@ -164,6 +164,11 @@ test("values gold, sells part of it at a gain, refuses what cannot be done, and 
   const legs = sale.getByRole("list", { name: "Legs" })
   await expect(legs.getByRole("listitem").filter({ hasText: "Gold → Bank" })).toContainText("₹56,000.00")
   await expect(legs.getByRole("listitem").filter({ hasText: "Realised Gain → Bank" })).toContainText("₹12,000.00")
+  // A sale is deleted and entered again, never edited: its legs offer neither, and the row says so.
+  await expect(sale.getByRole("button", { name: /^Edit/ })).toHaveCount(0)
+  await expect(sale.getByRole("button", { name: /out of the split$/ })).toHaveCount(0)
+  await expect(sale).toContainText("A sale cannot be edited. Delete it and enter it again from the Investments screen.")
+  await expect(sale.getByRole("button", { name: "Delete split" })).toBeVisible()
 
   // The first purchase cannot go while a sale takes from it.
   await openTransactions(page, "?from=&to=")

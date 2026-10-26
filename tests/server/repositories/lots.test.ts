@@ -11,6 +11,7 @@ import {
   findLotByTransaction,
   findLotGaps,
   findLotQuantities,
+  findSaleTransactionIds,
   insertConsumptions,
   insertLot,
   updateLot,
@@ -161,6 +162,32 @@ describe("findLotQuantities", () => {
     const quantities = await findLotQuantities(user.id, [first.id, second.id, legacy.id, disposal.id])
     expect(quantities).toEqual(new Map([[first.id, 10n * UNIT], [second.id, 5_500_000n]]))
     expect(await findLotQuantities(user.id, [])).toEqual(new Map())
+  })
+})
+
+describe("findSaleTransactionIds", () => {
+  it("finds the legs of sales: a row that consumed lots (its sale deleted or not) and any leg of a DISPOSAL group", async () => {
+    const { user, buy, sale, lotFor } = await setup()
+    const bought = await buy()
+    const lot = await lotFor(bought.id, 10n * UNIT)
+    const consume = (transactionId: string) =>
+      prisma.lotConsumption.create({ data: { userId: user.id, lotId: lot.id, transactionId, quantity: new Prisma.Decimal("1"), costBasisPaise: 700_000n } })
+    const even = await sale()
+    await consume(even.id)
+    const gone = await sale()
+    await consume(gone.id)
+    await softDelete(gone.id)
+    const disposal = await prisma.transactionGroup.create({ data: { userId: user.id, kind: "DISPOSAL" } })
+    const gainLeg = await sale()
+    await prisma.transaction.update({ where: { id: gainLeg.id }, data: { groupId: disposal.id } })
+    const split = await prisma.transactionGroup.create({ data: { userId: user.id, kind: "MANUAL_SPLIT" } })
+    const splitLeg = await buy(1_000n)
+    await prisma.transaction.update({ where: { id: splitLeg.id }, data: { groupId: split.id } })
+    const plainOut = await sale() // out of the investment with no consumption: a gap, not a sale
+
+    const found = await findSaleTransactionIds(user.id, [bought.id, even.id, gone.id, gainLeg.id, splitLeg.id, plainOut.id])
+    expect(found).toEqual(new Set([even.id, gone.id, gainLeg.id]))
+    expect(await findSaleTransactionIds(user.id, [])).toEqual(new Set())
   })
 })
 

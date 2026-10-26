@@ -38,10 +38,17 @@ export function toPickerNode(node: LedgerNode): PickerNode {
  * of the group, including any the filter alone would not have matched, so `total` is always the sum of the legs below it.
  */
 export type ListEntry =
-  | { kind: "single"; transaction: TransactionView }
+  | {
+      kind: "single"
+      transaction: TransactionView
+      /** Set when the row is a sale (a break-even sale is one plain leg): it is deleted and entered again, never edited. */
+      sale?: true
+    }
   | {
       kind: "group"
       groupId: string
+      /** Set when the group is a sale (a DISPOSAL): no leg of it is edited or taken out; it is deleted whole. */
+      sale?: true
       /** The day of the leg that brought the group into the page. A split's legs share one day. */
       occurredAt: CalendarDate
       /** The one source of every leg, or null if edits have since given the legs different sources. */

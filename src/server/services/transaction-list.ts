@@ -19,7 +19,7 @@ import {
   sumBalances,
   type TransactionFilter,
 } from "@/server/repositories/transaction-repository"
-import { findLotQuantities } from "@/server/repositories/lot-repository"
+import { findLotQuantities, findSaleTransactionIds } from "@/server/repositories/lot-repository"
 import { todayFor } from "@/server/services/clock"
 import { listAllNodes } from "@/server/services/node-service"
 import type { z } from "zod"
@@ -88,6 +88,9 @@ export async function loadTransactionPage(userId: string, filter: ListFilter, cu
 
   // What each purchase on the page bought, so the edit form opens on it. A split's legs never have a lot.
   const quantities = await findLotQuantities(userId, page.items.map((row) => row.id))
+  // Which rows are legs of a sale, which the list offers no edit for (a sale is deleted and entered again).
+  const sales = await findSaleTransactionIds(userId, [...page.items, ...members].map((row) => row.id))
+  const saleFlag = (rows: readonly Transaction[]) => (rows.some((row) => sales.has(row.id)) ? { sale: true as const } : {})
 
   const entries: ListEntry[] = []
   const emitted = new Set<string>()
@@ -95,10 +98,10 @@ export async function loadTransactionPage(userId: string, filter: ListFilter, cu
     const key = row.groupId === null ? null : legKey(row.groupId, row)
     const legs = key === null ? undefined : legsOf.get(key)
     if (key === null || row.groupId === null || legs === undefined || legs.length < 2) {
-      entries.push({ kind: "single", transaction: toTransactionView(row, [], quantities.get(row.id) ?? null) })
+      entries.push({ kind: "single", transaction: toTransactionView(row, [], quantities.get(row.id) ?? null), ...saleFlag([row]) })
     } else if (!emitted.has(key)) {
       emitted.add(key)
-      entries.push(groupEntry(row, row.groupId, legs))
+      entries.push({ ...groupEntry(row, row.groupId, legs), ...saleFlag(legs) })
     }
   }
   return { entries, nextCursor: page.nextCursor }

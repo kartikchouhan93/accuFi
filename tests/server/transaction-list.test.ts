@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it } from "vitest"
 import { calendarDate, todayIn, toDbDate } from "@/domain/calendar-date"
 import { appendEntries } from "@/app/transactions/entries"
 import type { ListEntry } from "@/lib/transaction-list-view"
 import { prisma } from "@/server/db"
+import { sellInvestment } from "@/server/services/investment-service"
 import { loadTransactionPage, loadTransactionScreen } from "@/server/services/transaction-list"
+import { recordTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
 
 // What the transaction screen reads, from real rows: a split is one entry carrying all of its legs even where a page
@@ -165,6 +168,40 @@ describe("loadTransactionPage", () => {
     expect(singles.map((view) => [view.note, view.quantity])).toEqual([["bought", "10.5"], ["legacy", null]])
     const group = page.entries.find((entry) => entry.kind === "group")
     expect(group?.kind === "group" && group.legs.every((leg) => !("quantity" in leg))).toBe(true)
+  })
+
+  it("marks a sale, which cannot be edited: a break-even sale's one leg, every leg of a sale at a gain, a deleted sale; never an ordinary split", async () => {
+    const { user, bank, food, clothes } = await world()
+    await registry.makeNode(user.id, "INCOME_SOURCE", "Realised Gain", { systemRole: "REALISED_GAIN" })
+    await registry.makeNode(user.id, "EXPENSE", "Realised Loss", { systemRole: "REALISED_LOSS" })
+    const gold = await registry.makeNode(user.id, "INVESTMENT", "Gold", { valuationMode: "QUANTITY", unitLabel: "g" })
+    const bought = await recordTransaction(user.id, {
+      fromNodeId: bank.id,
+      toNodeId: gold.id,
+      amount: 70_000_00n,
+      quantity: 10_000_000n,
+      occurredAt: calendarDate("2026-04-01"),
+      idempotencyKey: randomUUID(),
+    })
+    const sell = (quantity: bigint, proceeds: bigint, occurredAt: string) =>
+      sellInvestment(user.id, { nodeId: gold.id, toNodeId: bank.id, quantity, proceeds, occurredAt: calendarDate(occurredAt), idempotencyKey: randomUUID() })
+    const evenSale = await sell(2_000_000n, 14_000_00n, "2026-04-05") // 2 g at cost: one plain leg
+    const gainSale = await sell(3_000_000n, 30_000_00n, "2026-04-06") // 3 g for more than cost: a DISPOSAL group of two legs
+    const goneSale = await sell(1_000_000n, 7_000_00n, "2026-04-07")
+    await prisma.transaction.update({ where: { id: goneSale.legs[0].id }, data: { deletedAt: new Date() } })
+    const split = await makeGroup(user.id, bank.id, [{ to: food.id, amount: 100n }, { to: clothes.id, amount: 200n }], "2026-04-04")
+    expect(evenSale.legs).toHaveLength(1)
+    expect(gainSale.legs).toHaveLength(2)
+
+    const page = await loadTransactionPage(user.id, { deleted: true })
+    const flagOf = (entry: ListEntry) => ("sale" in entry ? entry.sale : undefined)
+    const byId = (id: string) => page.entries.find((entry) => (entry.kind === "single" ? entry.transaction.id === id : entry.legs.some((leg) => leg.id === id)))
+    expect(flagOf(byId(evenSale.legs[0].id)!)).toBe(true)
+    expect(byId(gainSale.legs[0].id)).toMatchObject({ kind: "group", sale: true })
+    expect(flagOf(byId(goneSale.legs[0].id)!)).toBe(true)
+    expect(flagOf(byId(split.rows[0].id)!)).toBeUndefined()
+    expect(flagOf(byId(bought.id)!)).toBeUndefined()
+    expect(() => JSON.stringify(page)).not.toThrow()
   })
 
   it("is plain data", async () => {

@@ -38,6 +38,10 @@ const nameOf = (nodes: Context["nodes"], id: string) => nodes.get(id)?.name ?? "
 
 const deletedRowClass = "opacity-75"
 
+// A sale is deleted and entered again, never edited (the server refuses an edit of one), so its row offers no Edit and
+// no "Take out of split", and says why instead.
+const SALE_NOT_EDITED = "A sale cannot be edited. Delete it and enter it again from the Investments screen."
+
 function Tag({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
     <span title={title} className="rounded-full border border-line-strong px-2 py-0.5 align-middle text-[11px] font-medium text-fg-soft">
@@ -67,7 +71,7 @@ async function undoDelete(id: string, announce: Announce) {
 
 export function EntryRow({ entry, context }: { entry: ListEntry; context: Context }) {
   return entry.kind === "single" ? (
-    <SingleRow transaction={entry.transaction} context={context} />
+    <SingleRow transaction={entry.transaction} sale={entry.sale === true} context={context} />
   ) : (
     <GroupRow entry={entry} context={context} />
   )
@@ -126,7 +130,7 @@ function Heading({ title, amount, onToggle, open, panelId, children }: { title: 
   )
 }
 
-function SingleRow({ transaction, context }: { transaction: TransactionView; context: Context }) {
+function SingleRow({ transaction, sale, context }: { transaction: TransactionView; sale: boolean; context: Context }) {
   const { nodes, today, announce, onEdit } = context
   const panelId = useId()
   const [open, setOpen] = useState(false)
@@ -216,14 +220,19 @@ function SingleRow({ transaction, context }: { transaction: TransactionView; con
               </button>
             </div>
           ) : (
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className={buttonClass} onClick={() => onEdit(transaction)}>
-                Edit
-              </button>
-              <button type="button" className={dangerClass} disabled={pending} onClick={remove}>
-                Delete
-              </button>
-            </div>
+            <>
+              {sale && <p className="mb-3 max-w-xl text-fg-soft">{SALE_NOT_EDITED}</p>}
+              <div className="flex flex-wrap gap-2">
+                {!sale && (
+                  <button type="button" className={buttonClass} onClick={() => onEdit(transaction)}>
+                    Edit
+                  </button>
+                )}
+                <button type="button" className={dangerClass} disabled={pending} onClick={remove}>
+                  Delete
+                </button>
+              </div>
+            </>
           )}
       </Panel>
     </li>
@@ -239,6 +248,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
   const source = entry.fromNodeId === null ? "several sources" : nameOf(nodes, entry.fromNodeId)
   const destinations = entry.legs.map((leg) => nameOf(nodes, leg.toNodeId)).join(", ")
   const deleted = entry.deleted
+  const sale = entry.sale === true
   const projected = !deleted && compareDates(entry.occurredAt, today) > 0
   const total = formatPaiseText(entry.totalPaise)
   // A split whose legs come from different places (a sale: the cost from the investment, the gain from Realised Gain)
@@ -324,7 +334,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
               <li key={leg.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
                 <span className="font-medium">{legName(leg)}</span>
                 <Amount text={figure(leg.amountPaise)} className="ml-auto" />
-                {!deleted && (
+                {!deleted && !sale && (
                   <>
                     <button
                       type="button"
@@ -357,12 +367,16 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
             </div>
           ) : (
             <>
-              <p className="mb-3 max-w-xl text-fg-soft">
-                Edit changes one leg and leaves the split as it is. Taking a leg out keeps the money where it went and makes it an
-                ordinary transaction
-                {entry.legs.length === 2 ? "; with only two legs, that dissolves the split and both become ordinary transactions" : ""}.
-                Deleting removes every leg.
-              </p>
+              {sale ? (
+                <p className="mb-3 max-w-xl text-fg-soft">{SALE_NOT_EDITED}</p>
+              ) : (
+                <p className="mb-3 max-w-xl text-fg-soft">
+                  Edit changes one leg and leaves the split as it is. Taking a leg out keeps the money where it went and makes it an
+                  ordinary transaction
+                  {entry.legs.length === 2 ? "; with only two legs, that dissolves the split and both become ordinary transactions" : ""}.
+                  Deleting removes every leg.
+                </p>
+              )}
               <button type="button" className={dangerClass} disabled={pending} onClick={removeAll}>
                 Delete split
               </button>
