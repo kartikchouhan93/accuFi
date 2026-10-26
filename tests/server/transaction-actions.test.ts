@@ -309,7 +309,7 @@ describe("cache invalidation", () => {
     for (const [name, write] of writes) {
       revalidatePath.mockReset()
       expect(await write(), name).toMatchObject({ ok: true })
-      expect(revalidated(), name).toEqual(["/", "/nodes", "/transactions"])
+      expect(revalidated(), name).toEqual(["/", "/investments", "/investments/prices", "/nodes", "/transactions"])
     }
     const recorded = await actions.recordTransactionAction(input())
     if (!recorded.ok) throw new Error("setup failed")
@@ -322,7 +322,7 @@ describe("cache invalidation", () => {
     for (const [name, write] of follow) {
       revalidatePath.mockReset()
       expect(await write(), name).toMatchObject({ ok: true })
-      expect(revalidated(), name).toEqual(["/", "/nodes", "/transactions"])
+      expect(revalidated(), name).toEqual(["/", "/investments", "/investments/prices", "/nodes", "/transactions"])
     }
   })
 

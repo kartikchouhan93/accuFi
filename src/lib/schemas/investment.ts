@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { positiveRupees } from "./rupees"
+import { positiveRupees, rupees } from "./rupees"
 import { idempotencyKeyField, nodeIdField, noteField, occurredAtField, quantityField } from "./transaction"
 
 // What a client may send to sell (or redeem) part of an investment, and to preview that sale before submitting it.
@@ -24,3 +24,14 @@ export const sellSchema = z.strictObject({ ...saleFields, note: noteField.option
 
 /** The figures a sale would post, asked for while the form is being filled in: nothing is written, so there is no key. */
 export const previewSaleSchema = z.strictObject(saleFields)
+
+// What a client may send to enter, preview or delete a price: one investment, one day, and for entering or previewing the
+// price of one unit in rupees (of the whole asset for a lump). Strict like the rest. Whether the investment is revalued
+// and whether the day is allowed, only the service knows (price-service.ts). The price field is named for the form's
+// control; `rupees` would accept zero, so the refusal is stated here in the price's own words.
+const price = rupees.refine((paise) => paise > 0n, "Enter a price greater than zero")
+
+const priceDay = { nodeId: nodeIdField, asOf: occurredAtField }
+
+export const priceSchema = z.strictObject({ ...priceDay, price })
+export const priceDaySchema = z.strictObject(priceDay)

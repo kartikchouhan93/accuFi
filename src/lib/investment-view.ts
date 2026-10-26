@@ -77,3 +77,24 @@ export interface Portfolio {
     notValuedCount: number
   }
 }
+
+/** What a sale would post (`previewSale`), as it crosses to the browser: paise text, quantities in units, days as CalendarDate. */
+export interface SalePreviewView {
+  /** Paise. What the units sold cost. */
+  costBasisPaise: string
+  proceedsPaise: string
+  /** Paise: proceeds minus cost basis, with a leading "-" for a loss. */
+  gainPaise: string
+  /** What the sale takes from each lot, in the order the lot method takes them. */
+  allocations: { acquiredAt: CalendarDate; quantity: string; costBasisPaise: string }[]
+}
+
+/**
+ * What entering a price would do to the investment's value today (`previewRevaluation`), as paise text. A figure the
+ * investment cannot have is null, never "0" (EC-23): see `RevaluationPreview`.
+ */
+export interface RevaluationPreviewView {
+  beforePaise: string | null
+  afterPaise: string | null
+  changePaise: string | null
+}

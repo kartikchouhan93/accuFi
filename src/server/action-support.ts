@@ -69,14 +69,17 @@ export async function hasLiveSession(): Promise<boolean> {
 
 /**
  * Called by a write, after it has committed, so no screen that shows money is served stale: the transaction list, the
- * ledger with its balances, and the home page with net worth. One list for every action file, because a write in one
- * place moves figures in the others (an account created with an opening balance changes net worth on "/" and the
- * balances on "/transactions"), and `router.refresh()` renews only the page the user happens to be on. Reads and
+ * ledger with its balances, the investments with their values, and the home page with net worth. One list for every
+ * action file, because a write in one place moves figures in the others (an account created with an opening balance changes net worth on "/" and the
+ * balances on "/transactions"), and `router.refresh()` renews only the page the user happens to be on. The investment
+ * screens are listed too: a sale moves the holdings and a price moves their values, and both move net worth. Reads and
  * refused writes do not call it.
  */
 export function wrote(): void {
   revalidatePath("/transactions")
   revalidatePath("/nodes")
+  revalidatePath("/investments")
+  revalidatePath("/investments/prices")
   revalidatePath("/")
 }
 
