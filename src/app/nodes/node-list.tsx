@@ -5,12 +5,14 @@ import { motion } from "motion/react"
 import { useRouter } from "next/navigation"
 import { useId, useState, useTransition } from "react"
 import { Amount } from "@/app/amount"
+import { PriceLine } from "@/app/price-line"
 import { Collapse } from "@/components/ui/collapse"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
+import { Tag } from "@/components/ui/tag"
 import { buttonClass, inputClass } from "@/components/ui/styles"
 import { Switch } from "@/components/ui/switch"
 import type { LedgerKind, SystemNodeRole } from "@/domain/ledger-kind"
-import { NOT_VALUED_COPY, type NotValuedReason } from "@/lib/investment-view"
+import { NOT_VALUED_COPY, type NotValuedReason, type PriceState } from "@/lib/investment-view"
 import { HOLDING_KINDS, KIND_COPY, KIND_ORDER } from "@/lib/node-kinds"
 import { describeBalance, describeResidual, formatPaiseText } from "@/lib/node-money"
 import type { NodeOverview } from "@/lib/node-overview"
@@ -129,6 +131,7 @@ function KindSection({ kind, index, overview, showArchived, announce, onAdd }: S
               node={node}
               balance={overview.balances[node.id] ?? "0"}
               notValued={overview.unvalued[node.id] ?? null}
+              priced={overview.priced[node.id] ?? null}
               announce={announce}
             />
           ))}
@@ -169,13 +172,15 @@ interface RowProps {
   balance: string
   /** Set for an investment that could not be valued: its `balance` is then "0", and is not shown (EC-23). */
   notValued: NotValuedReason | null
+  /** Set for an investment valued at a price: the price's day and staleness, shown under the value (EC-24). */
+  priced: PriceState | null
   announce: Props["announce"]
 }
 
 // What replaces the action buttons when a choice needs confirming: it slides in so the change of state is seen.
 const swap = { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.2 } }
 
-function NodeRow({ node, balance, notValued, announce }: RowProps) {
+function NodeRow({ node, balance, notValued, priced, announce }: RowProps) {
   const router = useRouter()
   const panelId = useId()
   const [open, setOpen] = useState(false)
@@ -286,6 +291,11 @@ function NodeRow({ node, balance, notValued, announce }: RowProps) {
           <span className="shrink-0 text-right">
             <span className="block font-medium text-fg-soft">Not valued</span>
             <span className="block text-xs text-fg-soft">{NOT_VALUED_COPY[notValued]}</span>
+          </span>
+        ) : priced && shownBalance ? (
+          <span className="flex shrink-0 flex-col items-end gap-0.5">
+            <Amount text={shownBalance} className="font-medium" />
+            <PriceLine priced={priced} className="justify-end" />
           </span>
         ) : (
           shownBalance && <Amount text={shownBalance} className="shrink-0 font-medium" />
@@ -436,6 +446,4 @@ function NodeRow({ node, balance, notValued, announce }: RowProps) {
   )
 }
 
-function Tag({ children }: { children: React.ReactNode }) {
-  return <span className="rounded-full border border-line-strong px-2 py-0.5 text-[11px] font-medium text-fg-soft">{children}</span>
-}
+

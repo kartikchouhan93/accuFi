@@ -95,7 +95,7 @@ describe("getDashboard", () => {
     expect(view.netWorth.total).toBe("5000000") // neither is today's
     expect(view.accounts.find((a) => a.name === "Bank")?.balance).toBe("5000000")
     // 50,000 - 30,000 - 1,000 = 19,000 rupees, as of the last future-dated entry.
-    expect(view.projected).toEqual({ total: "1900000", asOf: "2099-06-15" })
+    expect(view.projected).toEqual({ total: "1900000", asOf: "2099-06-15", isPartial: false })
   })
 
   it("has nothing projected when no transaction is dated after today", async () => {
@@ -110,7 +110,7 @@ describe("getDashboard", () => {
     await createLedgerNode(user.id, { kind: "ASSET", name: "Bank", assetSubtype: "SAVINGS", openingBalance: 5_000_000n })
     await createLedgerNode(user.id, { kind: "ASSET", name: "Wallet", assetSubtype: "CASH" })
     await post(user.id, "Bank", "Wallet", 200_000n, "2099-01-01") // between two accounts: net worth is the same either side
-    expect((await getDashboard(user.id)).projected).toEqual({ total: "5000000", asOf: "2099-01-01" })
+    expect((await getDashboard(user.id)).projected).toEqual({ total: "5000000", asOf: "2099-01-01", isPartial: false })
   })
 
   it("returns a coherent empty state for a brand-new account", async () => {
@@ -129,6 +129,7 @@ describe("getDashboard", () => {
       isPartial: false,
       unvaluedNodeIds: [],
       unvaluedNames: [],
+      staleNames: [],
       archivedCount: 0,
     })
   })

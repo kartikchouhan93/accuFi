@@ -1,5 +1,6 @@
 import { addNode, expect, openRow, row, section, test } from "./fixtures"
-import { account, buy, incomeSource, investment, post, price } from "./seed"
+import { formatDay } from "@/lib/transaction-text"
+import { account, buy, incomeSource, investment, post, price, today } from "./seed"
 
 // The node management screen, driven through a real browser against a real server and database. Money is checked as
 // the text the user reads (Indian grouping, a rupee sign, red "owed" wording) because that is the contract of this
@@ -27,21 +28,33 @@ test("shows an investment valued by quantity at its value, and one with no price
   await account(userId, "Bank", "1,00,000")
   await investment(userId, "Gold")
   await investment(userId, "Silver")
+  await investment(userId, "Copper", { unit: "kg" })
   await buy(userId, "Bank", "Gold", "70,000", "10", "2026-01-01")
   await buy(userId, "Bank", "Silver", "2,000", "20", "2026-01-01")
+  await buy(userId, "Bank", "Copper", "1,000", "10", "2026-01-01")
   await price(userId, "Gold", "7,800", "2026-03-01")
+  const day = await today(userId)
+  await price(userId, "Copper", "120", day)
 
   await page.goto("/nodes")
   const investments = section(page, "Investments")
-  // 10 g of gold at 7,800 a gram; the silver has no price, so the kind's total counts only the gold.
+  // 10 g of gold at 7,800 a gram, from a price of 1 Mar: stale. 10 kg of copper at 120, priced today: fresh. The silver
+  // has no price, so the kind's total counts the gold and the copper, 78,000 + 1,200.
   await expect(row(page, "Gold")).toContainText("₹78,000.00")
+  await expect(row(page, "Gold")).toContainText("as of 1 Mar 2026")
+  await expect(row(page, "Gold")).toContainText("Stale")
+  await expect(row(page, "Copper")).toContainText("₹1,200.00")
+  await expect(row(page, "Copper")).toContainText(`as of ${formatDay(day)}`)
+  await expect(row(page, "Copper")).not.toContainText("Stale")
   await expect(row(page, "Silver")).toContainText("Not valued")
   await expect(row(page, "Silver")).not.toContainText("₹")
-  await expect(investments.getByRole("heading", { level: 2 }).locator("..")).toContainText("₹78,000.00")
-  // The bank's 1,00,000 - 70,000 - 2,000 = 28,000, and the gold's 78,000: the silver is named, not counted.
+  await expect(row(page, "Silver")).not.toContainText("as of")
+  await expect(investments.getByRole("heading", { level: 2 }).locator("..")).toContainText("₹79,200.00")
+  // The bank's 1,00,000 - 70,000 - 2,000 - 1,000 = 27,000, and 79,200 of investments: the silver is named, not counted.
   const worth = page.getByRole("region", { name: "Net worth", exact: true })
-  await expect(worth.locator("p").first()).toHaveText("₹1,06,000.00")
-  await expect(worth.getByRole("note")).toContainText("Silver could not be valued")
+  await expect(worth.locator("p").first()).toHaveText("₹1,06,200.00")
+  await expect(worth.getByRole("note").first()).toContainText("Silver could not be valued")
+  await expect(worth.getByRole("note").nth(1)).toHaveText("Gold is valued at a price more than its stale window old.")
 })
 
 test("groups the list by kind", async ({ ledger: page }) => {

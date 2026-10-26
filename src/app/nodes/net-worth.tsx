@@ -10,9 +10,10 @@ import type { NodeOverview } from "@/lib/node-overview"
 export function NetWorth({ overview }: { overview: NodeOverview }) {
   const { netWorth, kinds, nodes } = overview
   const unvaluedNames = nodes.filter((node) => netWorth.unvaluedNodeIds.includes(node.id)).map((node) => node.name)
+  const staleNames = nodes.filter((node) => netWorth.staleNodeIds.includes(node.id)).map((node) => node.name)
   const archivedCount = (Object.keys(kinds) as (keyof typeof kinds)[])
     .filter((kind) => HOLDING_KINDS.has(kind))
     .reduce((sum, kind) => sum + kinds[kind].archivedCount, 0)
 
-  return <NetWorthCard netWorth={{ ...netWorth, unvaluedNames, archivedCount }} projected={null} />
+  return <NetWorthCard netWorth={{ ...netWorth, unvaluedNames, staleNames, archivedCount }} projected={null} />
 }

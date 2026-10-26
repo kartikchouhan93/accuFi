@@ -17,6 +17,12 @@ export const NOT_VALUED_COPY: Record<NotValuedReason, string> = {
   NEEDS_QUANTITY: "Some entries need a quantity",
 }
 
+/** The day of the price behind a value, and whether it is older than the investment's window (EC-24). */
+export interface PriceState {
+  asOf: CalendarDate
+  stale: boolean
+}
+
 export interface HoldingView {
   nodeId: string
   name: string

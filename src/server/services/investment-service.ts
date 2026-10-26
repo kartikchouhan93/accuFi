@@ -6,7 +6,7 @@ import type { Paise } from "@/domain/money"
 import { formatQuantity, type Quantity } from "@/domain/quantity"
 import { validateTransaction } from "@/domain/transaction-rules"
 import { openLots, valueHolding, type HoldingLot, type PricePoint } from "@/domain/valuation"
-import type { HoldingDetail, HoldingView, LotView, NotValuedReason, Portfolio } from "@/lib/investment-view"
+import type { HoldingDetail, HoldingView, LotView, NotValuedReason, Portfolio, PriceState } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
 import { serialisePaise } from "@/lib/serialise"
 import type { TransactionView } from "@/lib/transaction-view"
@@ -377,7 +377,7 @@ export async function readHoldingInputs(userId: string, nodeId: string): Promise
   return { lots, points, needsQuantity: gaps.inflowsWithoutLot + gaps.outflowsWithoutConsumption > 0 }
 }
 
-// The staleness window only labels the price; it never changes a value. What valueAt passes for it is never read back.
+// The staleness window only labels the price; it never changes a value. valueAt reports no price, so it passes any.
 const ANY_WINDOW = 0
 
 /** The holding's value on `asOf`: null when not valued (no price for a held quantity, or call 7); 0 when nothing is held. */
@@ -506,29 +506,62 @@ export async function loadPortfolio(userId: string, asOf?: CalendarDate): Promis
   }
 }
 
-/**
- * The valuation of every investment the user holds by lots (archived ones included), on `asOf`, in the shape net worth
- * takes (`netWorth`, `buildNodeOverview`, `buildDashboard`): a value, or null when not valued, with the reason for each
- * null in `unvalued`. An investment valued by what was put into it is absent from both, so it counts at its balance.
- */
-export async function loadValuationStates(
-  userId: string,
-  asOf: CalendarDate,
-): Promise<{ valuations: Map<string, Paise | null>; unvalued: Map<string, NotValuedReason> }> {
-  const held = (await investments(userId)).filter((node) => lotModeOf(node) !== null)
-  const valued = await Promise.all(
-    held.map(async (node) => {
-      const inputs = await readHoldingInputs(userId, node.id)
-      return { node, inputs, value: valueAt(inputs, asOf) }
-    }),
+/** What net worth needs of the user's investments held by lots: read once, valued on any day (valuationStatesFrom). */
+export interface ValuationInputs {
+  holdings: { node: LedgerNode; inputs: HoldingInputs }[]
+  /** The user's staleness window, for nodes without their own (call 9). */
+  userWindow: number
+}
+
+/** Read every investment the user holds by lots (archived ones included), with its lots, prices and gaps. */
+export async function readValuationInputs(userId: string): Promise<ValuationInputs> {
+  const [nodes, userWindow] = await Promise.all([investments(userId), findStalePriceDays(userId)])
+  const holdings = await Promise.all(
+    nodes.filter((node) => lotModeOf(node) !== null).map(async (node) => ({ node, inputs: await readHoldingInputs(userId, node.id) })),
   )
-  const valuations = new Map<string, Paise | null>()
-  const unvalued = new Map<string, NotValuedReason>()
-  for (const { node, inputs, value } of valued) {
-    valuations.set(node.id, value)
-    if (value === null) unvalued.set(node.id, inputs.needsQuantity ? "NEEDS_QUANTITY" : "NO_PRICE")
+  return { holdings, userWindow }
+}
+
+/** The valuation of each investment held by lots, in the shape net worth takes (`netWorth`, `buildNodeOverview`, `buildDashboard`). */
+export interface ValuationStates {
+  /** A value, or null when not valued. An investment valued by what was put into it is absent, so it counts at its balance. */
+  valuations: Map<string, Paise | null>
+  /** Why each null is null. */
+  unvalued: Map<string, NotValuedReason>
+  /**
+   * For each investment whose value rests on a price (valued, and holding something): that price's day and whether it is
+   * stale on the price day, by the node's window or else the user's (call 9). A screen shows it beside the value (EC-24).
+   */
+  priced: Map<string, PriceState>
+}
+
+/**
+ * Value what `read` holds on `asOf`, at the latest price on or before `priceAsOf` (default `asOf`). The projection of
+ * net worth values the quantity held on its own later day at today's prices (plan call 6, as amended): `priceAsOf`
+ * today, `asOf` that day, so a purchase or a sale dated after today moves units in or out of the holding, at today's
+ * price, rather than leaving today's figure where it is.
+ */
+export function valuationStatesFrom(read: ValuationInputs, asOf: CalendarDate, options: { priceAsOf?: CalendarDate } = {}): ValuationStates {
+  const states: ValuationStates = { valuations: new Map(), unvalued: new Map(), priced: new Map() }
+  for (const { node, inputs } of read.holdings) {
+    const holding = valueHolding({
+      lots: inputs.lots,
+      points: inputs.points,
+      asOf,
+      priceAsOf: options.priceAsOf,
+      stalePriceDays: node.stalePriceDays ?? read.userWindow,
+    })
+    const value = inputs.needsQuantity ? null : holding.valuePaise
+    states.valuations.set(node.id, value)
+    if (value === null) states.unvalued.set(node.id, inputs.needsQuantity ? "NEEDS_QUANTITY" : "NO_PRICE")
+    else if (holding.price && holding.quantityHeld > 0n) states.priced.set(node.id, { asOf: holding.price.asOf, stale: holding.price.stale })
   }
-  return { valuations, unvalued }
+  return states
+}
+
+/** `valuationStatesFrom` for the user's holdings as they are now. */
+export async function loadValuationStates(userId: string, asOf: CalendarDate, options: { priceAsOf?: CalendarDate } = {}): Promise<ValuationStates> {
+  return valuationStatesFrom(await readValuationInputs(userId), asOf, options)
 }
 
 /**

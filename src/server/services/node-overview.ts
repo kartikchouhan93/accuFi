@@ -10,13 +10,14 @@ import { listAllNodes } from "@/server/services/node-service"
  *
  * The figures are the CURRENT ones: transactions dated after today in the user's timezone are not in them (EC-10), so
  * a rent payment entered in advance does not lower this month's net worth until its day comes. An investment held by lots
- * is shown and counted at its value today, or as not valued (`unvalued`, EC-23). Reading the nodes overlaps with finding
+ * is shown and counted at its value today with its price's day and staleness (`priced`, EC-24), or as not valued
+ * (`unvalued`, EC-23). Reading the nodes overlaps with finding
  * today and summing, rather than waiting for the day first.
  */
 export async function loadNodeOverview(userId: string): Promise<NodeOverview> {
-  const [nodes, [balances, { valuations, unvalued }]] = await Promise.all([
+  const [nodes, [balances, { valuations, unvalued, priced }]] = await Promise.all([
     listAllNodes(userId),
     todayFor(userId).then((today) => Promise.all([sumBalances(userId, today), loadValuationStates(userId, today)])),
   ])
-  return buildNodeOverview(nodes, balances, valuations, unvalued)
+  return buildNodeOverview(nodes, balances, valuations, { unvalued, priced })
 }

@@ -157,6 +157,23 @@ describe("valueHolding", () => {
     expect(h.price).toEqual({ asOf: "2026-03-31", pricePerUnitPaise: 780_000n, stale: false })
   })
 
+  it("with priceAsOf, values what is held on asOf at the latest price on or before priceAsOf, judging staleness there", () => {
+    // Both lots are held on 1 Apr. Priced as of 10 Mar, the price of 1 Mar decides (the one of 15 Mar is not known yet),
+    // and it is 9 days old then, not stale; judged on 1 Apr it would be 31 days old.
+    const h = valueHolding({
+      ...base,
+      priceAsOf: d("2026-03-10"),
+      lots: goldLots,
+      points: [point("2026-03-01", 780_000n), point("2026-03-15", 800_000n)],
+    })
+    expect(h.quantityHeld).toBe(parseQuantity("15"))
+    expect(h.valuePaise).toBe(11_700_000n)
+    expect(h.price).toEqual({ asOf: "2026-03-01", pricePerUnitPaise: 780_000n, stale: false })
+    // Held on a day before the second lot, priced later: only the first lot's 10 g, at the later price.
+    const early = valueHolding({ ...base, asOf: d("2026-01-20"), priceAsOf: d("2026-03-20"), lots: goldLots, points: [point("2026-03-15", 800_000n)] })
+    expect(early.valuePaise).toBe(8_000_000n)
+  })
+
   it("reports a loss as a negative gain and negative basis points", () => {
     const h = valueHolding({
       ...base,

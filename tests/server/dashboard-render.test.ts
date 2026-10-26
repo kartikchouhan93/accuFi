@@ -16,6 +16,7 @@ const netWorth: DashboardView["netWorth"] = {
   isPartial: false,
   unvaluedNodeIds: [],
   unvaluedNames: [],
+  staleNames: [],
   archivedCount: 0,
 }
 
@@ -54,12 +55,35 @@ describe("NetWorthCard", () => {
     expect(html).toContain("text-negative")
   })
 
+  it("keeps the partial note as it was, and says nothing about stale prices when none is", () => {
+    const html = card({ isPartial: true, unvaluedNodeIds: ["n1"], unvaluedNames: ["Unpriced fund"] })
+    expect(visibleText(html)).toContain("Partial figure: Unpriced fund could not be valued and is left out of it.")
+    expect(card()).not.toMatch(/stale/i)
+  })
+
+  it("says which investments are valued at a stale price, by name when there are few (EC-24)", () => {
+    expect(visibleText(card({ staleNames: ["Gold"] }))).toContain("Gold is valued at a price more than its stale window old.")
+    expect(visibleText(card({ staleNames: ["Gold", "Silver"] }))).toContain("Gold and Silver are valued at prices more than their stale window old.")
+    expect(visibleText(card({ staleNames: ["A", "B", "C", "D"] }))).toContain("4 investments are valued at prices more than their stale window old.")
+    // Beside the partial note, not instead of it.
+    const both = visibleText(card({ isPartial: true, unvaluedNodeIds: ["n1"], unvaluedNames: ["Unpriced fund"], staleNames: ["Gold"] }))
+    expect(both).toContain("Partial figure: Unpriced fund could not be valued")
+    expect(both).toContain("Gold is valued at a price more than its stale window old.")
+  })
+
+  it("marks a projection that leaves out an unvalued investment as partial", () => {
+    expect(visibleText(card({}, { total: "8774925", asOf: calendarDate("2099-01-01"), isPartial: true }))).toContain(
+      "Projected ₹87,749.25 (partial) once everything dated up to 1 Jan 2099 has happened",
+    )
+    expect(visibleText(card({}, { total: "8774925", asOf: calendarDate("2099-01-01"), isPartial: false }))).not.toContain("(partial)")
+  })
+
   it("mentions archived accounts that are counted but not listed", () => {
     expect(card({ archivedCount: 2 })).toContain("Includes 2 archived")
   })
 
   it("shows what the figure will be once future-dated entries land, when there are any", () => {
-    const html = card({}, { total: "8774925", asOf: calendarDate("2099-01-01") })
+    const html = card({}, { total: "8774925", asOf: calendarDate("2099-01-01"), isPartial: false })
     expect(html).toContain("₹87,749.25")
     expect(html).toContain("1 Jan 2099")
     expect(html).toMatch(/projected/i)
@@ -69,10 +93,11 @@ describe("NetWorthCard", () => {
 
 describe("AccountSummary", () => {
   const accounts: DashboardView["accounts"] = [
-    { id: "a", name: "HDFC Savings", kind: "ASSET", balance: "9599950", notValued: null },
-    { id: "g", name: "Gold", kind: "INVESTMENT", balance: "11700000", notValued: null },
-    { id: "s", name: "Silver", kind: "INVESTMENT", balance: "0", notValued: "NO_PRICE" },
-    { id: "c", name: "Axis card", kind: "LIABILITY", balance: "-124975", notValued: null },
+    { id: "a", name: "HDFC Savings", kind: "ASSET", balance: "9599950", notValued: null, priced: null },
+    { id: "g", name: "Gold", kind: "INVESTMENT", balance: "11700000", notValued: null, priced: { asOf: calendarDate("2026-03-01"), stale: true } },
+    { id: "p", name: "Plot", kind: "INVESTMENT", balance: "450000000", notValued: null, priced: { asOf: calendarDate("2026-10-20"), stale: false } },
+    { id: "s", name: "Silver", kind: "INVESTMENT", balance: "0", notValued: "NO_PRICE", priced: null },
+    { id: "c", name: "Axis card", kind: "LIABILITY", balance: "-124975", notValued: null, priced: null },
   ]
   const kindTotals: DashboardView["kindTotals"] = [
     { kind: "ASSET", total: "9599950", archivedCount: 0 },
@@ -87,6 +112,14 @@ describe("AccountSummary", () => {
     expect(tileOf("Silver")).not.toContain("₹")
     expect(tileOf("Gold")).toContain("₹1,17,000.00")
     expect(tileOf("Gold")).not.toContain("Not valued")
+  })
+
+  it("dates the price behind an investment's value, and labels a stale one (EC-24)", () => {
+    expect(tileOf("Gold")).toContain("as of 1 Mar 2026")
+    expect(tileOf("Gold")).toContain("Stale")
+    expect(tileOf("Plot")).toContain("as of 20 Oct 2026")
+    expect(tileOf("Plot")).not.toContain("Stale")
+    expect(tileOf("HDFC Savings")).not.toContain("as of")
   })
 
   it("groups the accounts by kind and prints a card you owe on as a positive amount owed, once", () => {

@@ -146,6 +146,7 @@ test("names an investment with no price instead of counting it, then counts it a
   await expect(gold).toContainText("Not valued")
   await expect(gold).toContainText("No price yet")
   await expect(gold).not.toContainText("₹")
+  await expect(gold).not.toContainText("as of")
 
   // 15 g at 7,800 a gram is 1,17,000; with the bank's 93,000 that is 2,10,000.
   await price(userId, "Gold", "7,800", "2026-03-01")
@@ -154,6 +155,10 @@ test("names an investment with no price instead of counting it, then counts it a
   await expect(worth).toContainText("₹93,000.00 in accounts, ₹1,17,000.00 invested, ₹0.00 owed.")
   await expect(worth).not.toContainText(/partial/i)
   await expect(gold).toContainText("₹1,17,000.00")
+  // A price from 1 Mar is far older than the 30-day window: the value says which day it is from, and that it is stale.
+  await expect(gold).toContainText("as of 1 Mar 2026")
+  await expect(gold).toContainText("Stale")
+  await expect(worth.getByRole("note")).toHaveText("Gold is valued at a price more than its stale window old.")
 })
 
 test("sign-in and sign-up use the app's own look, not a default one", async ({ page }) => {

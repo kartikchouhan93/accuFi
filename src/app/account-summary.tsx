@@ -1,5 +1,6 @@
 import Link from "next/link"
 import { Amount } from "@/app/amount"
+import { PriceLine } from "@/app/price-line"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import type { DashboardView } from "@/lib/dashboard-view"
@@ -55,6 +56,7 @@ export function AccountSummary({ accounts, kindTotals }: Props) {
                       ) : (
                         <Amount text={describeBalance(account.kind, account.balance)} className="mt-4 block text-2xl font-medium tracking-tight" />
                       )}
+                      {account.priced && <PriceLine priced={account.priced} className="mt-1" />}
                     </SpotlightCard>
                   </li>
                 ))}

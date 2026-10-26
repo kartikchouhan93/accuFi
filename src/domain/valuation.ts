@@ -75,20 +75,27 @@ function basisPoints(gain: bigint, cost: bigint): bigint {
   return gain < 0n ? -rounded : rounded
 }
 
+/**
+ * The holding on `asOf`: the lots acquired and the disposals made by then. It is priced at the latest point on or before
+ * `priceAsOf`, which is `asOf` unless given, and the price is stale once older than `stalePriceDays` on that day. A
+ * separate price day values a holding projected to a later day at the prices known today (plan call 6).
+ */
 export function valueHolding(input: {
   lots: readonly HoldingLot[]
   points: readonly PricePoint[]
   asOf: CalendarDate
   stalePriceDays: number
+  priceAsOf?: CalendarDate
 }): Holding {
   const open = openLots(input.lots, input.asOf)
   const quantityHeld = open.reduce((sum, l) => sum + l.quantityRemaining, 0n)
   const costBasisPaise = open.reduce((sum, l) => sum + l.costBasisRemainingPaise, 0n)
 
-  const latest = latestPrice(input.points, input.asOf)
+  const priceAsOf = input.priceAsOf ?? input.asOf
+  const latest = latestPrice(input.points, priceAsOf)
   const price = latest && {
     ...latest,
-    stale: daysBetween(latest.asOf, input.asOf) > input.stalePriceDays,
+    stale: daysBetween(latest.asOf, priceAsOf) > input.stalePriceDays,
   }
 
   // Nothing held is worth exactly nothing, priced or not; only a held quantity with no price is "not valued".

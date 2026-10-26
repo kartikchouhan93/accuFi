@@ -1,5 +1,6 @@
 import { CalendarClock } from "lucide-react"
 import { PartialNote } from "@/app/partial-note"
+import { StaleNote } from "@/app/stale-note"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import type { DashboardView } from "@/lib/dashboard-view"
 import { holdingsSplit } from "@/lib/holdings-split"
@@ -59,6 +60,7 @@ export function NetWorthCard({ netWorth, projected }: Props) {
         <Figure text={total.amount} />
       </p>
       {netWorth.isPartial && <PartialNote names={netWorth.unvaluedNames} />}
+      {netWorth.staleNames.length > 0 && <StaleNote names={netWorth.staleNames} />}
       {split && (
         <div aria-hidden className="mt-7 flex h-2 w-full gap-1">
           {split.accounts > 0 && <span className="rounded-full bg-positive" style={{ flex: `${split.accounts} 1 0` }} />}
@@ -76,7 +78,8 @@ export function NetWorthCard({ netWorth, projected }: Props) {
         <p className="figures mt-4 flex items-start gap-2 border-t border-line pt-4 text-sm text-fg-soft">
           <CalendarClock aria-hidden className="mt-0.5 size-4 shrink-0" />
           <span>
-            Projected <span className="font-medium text-fg">{formatPaiseText(projected.total)}</span> once everything dated up to{" "}
+            Projected <span className="font-medium text-fg">{formatPaiseText(projected.total)}</span>
+            {projected.isPartial && " (partial)"} once everything dated up to{" "}
             {formatDay(projected.asOf)} has happened. Not counted above.
           </span>
         </p>

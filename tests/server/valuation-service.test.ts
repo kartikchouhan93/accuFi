@@ -413,6 +413,64 @@ describe("previewRevaluation", () => {
   })
 })
 
+describe("stale prices on the dashboard and the ledger (spec §7.3, EC-24)", () => {
+  const priced = async (world: Awaited<ReturnType<typeof setup>>) => {
+    const [view, overview] = await Promise.all([getDashboard(world.user.id), loadNodeOverview(world.user.id)])
+    return {
+      tile: view.accounts.find((a) => a.name === "Gold")?.priced,
+      staleNames: view.netWorth.staleNames,
+      row: overview.priced[world.gold.id],
+      staleNodeIds: overview.netWorth.staleNodeIds,
+    }
+  }
+
+  it("carries the price's date and flags it stale past the user's window", async () => {
+    const world = await setup()
+    await priceGold(world) // 1 Mar: far more than 30 days before today
+    expect(await priced(world)).toEqual({
+      tile: { asOf: MAR_1, stale: true },
+      staleNames: ["Gold"],
+      row: { asOf: MAR_1, stale: true },
+      staleNodeIds: [world.gold.id],
+    })
+  })
+
+  it("judges staleness by the node's own window first, else the user's (call 9)", async () => {
+    const world = await setup()
+    await priceGold(world, RS_7800, shift(world.today, -31))
+    await prisma.ledgerNode.update({ where: { id: world.gold.id }, data: { stalePriceDays: 400 } })
+    expect(await priced(world)).toMatchObject({ tile: { stale: false }, staleNames: [], row: { stale: false }, staleNodeIds: [] })
+
+    await prisma.ledgerNode.update({ where: { id: world.gold.id }, data: { stalePriceDays: null } })
+    await prisma.user.update({ where: { id: world.user.id }, data: { stalePriceDays: 400 } })
+    expect(await priced(world)).toMatchObject({ tile: { stale: false }, row: { stale: false } })
+
+    await prisma.ledgerNode.update({ where: { id: world.gold.id }, data: { stalePriceDays: 30 } })
+    expect(await priced(world)).toMatchObject({ tile: { stale: true }, staleNames: ["Gold"], row: { stale: true } })
+  })
+
+  it("shows a fresh price's date with no stale flag", async () => {
+    const world = await setup()
+    await priceGold(world, RS_7800, world.today)
+    expect(await priced(world)).toEqual({ tile: { asOf: world.today, stale: false }, staleNames: [], row: { asOf: world.today, stale: false }, staleNodeIds: [] })
+  })
+
+  it("has no price line for an investment that is not valued, or holds nothing", async () => {
+    const world = await setup()
+    expect(await priced(world)).toEqual({ tile: null, staleNames: [], row: undefined, staleNodeIds: [] })
+    await priceGold(world)
+    await sellInvestment(world.user.id, {
+      nodeId: world.gold.id,
+      toNodeId: world.bank.id,
+      quantity: g(15n),
+      proceeds: 1_20_000_00n,
+      occurredAt: MAR_1,
+      idempotencyKey: randomUUID(),
+    })
+    expect(await priced(world)).toEqual({ tile: null, staleNames: [], row: undefined, staleNodeIds: [] })
+  })
+})
+
 describe("net worth with valuations", () => {
   it("on the dashboard: an unvalued investment makes the figure partial, is named, and is left out of the total", async () => {
     const world = await setup()
@@ -443,7 +501,48 @@ describe("net worth with valuations", () => {
     expect(view.netWorth).toMatchObject({ total: "21000000", investments: "11700000", isPartial: false })
     expect(view.accounts.find((a) => a.name === "Gold")).toMatchObject({ balance: "11700000", notValued: null })
     expect(view.kindTotals.find((k) => k.kind === "INVESTMENT")?.total).toBe("11700000")
-    expect(view.projected).toEqual({ total: "20900000", asOf: "2099-01-01" })
+    expect(view.projected).toEqual({ total: "20900000", asOf: "2099-01-01", isPartial: false })
+  })
+
+  it("on the dashboard: a purchase dated after today is projected into the holding at today's price, not out of net worth", async () => {
+    const world = await setup()
+    await priceGold(world)
+    await buy(world.user.id, world.bank, world.gold, 37_000_00n, g(5n), "2099-01-01")
+    const view = await getDashboard(world.user.id)
+    // Today the purchase has not happened: 93,000 + 1,17,000.
+    expect(view.netWorth).toMatchObject({ total: "21000000", investments: "11700000" })
+    // By then 37,000 has left the bank and 5 g more is held, at today's 7,800: 56,000 + 20 g x 7,800 = 56,000 + 1,56,000.
+    expect(view.projected).toEqual({ total: "21200000", asOf: "2099-01-01", isPartial: false })
+  })
+
+  it("on the dashboard: a sale dated after today is projected out of the holding, so it is counted once", async () => {
+    const world = await setup()
+    await priceGold(world)
+    await sellInvestment(world.user.id, {
+      nodeId: world.gold.id,
+      toNodeId: world.bank.id,
+      quantity: g(5n),
+      proceeds: 40_000_00n,
+      occurredAt: calendarDate("2099-01-01"),
+      idempotencyKey: randomUUID(),
+    })
+    const view = await getDashboard(world.user.id)
+    expect(view.netWorth).toMatchObject({ total: "21000000", investments: "11700000" })
+    // By then the bank has the 40,000 and 10 g is left, at today's 7,800: 1,33,000 + 78,000.
+    expect(view.projected).toEqual({ total: "21100000", asOf: "2099-01-01", isPartial: false })
+  })
+
+  it("on the dashboard: a projection that leaves out an unvalued investment says it is partial", async () => {
+    const world = await setup()
+    await recordTransaction(world.user.id, {
+      fromNodeId: world.bank.id,
+      toNodeId: world.rent.id,
+      amount: 1_000_00n,
+      occurredAt: calendarDate("2099-01-01"),
+      idempotencyKey: randomUUID(),
+    })
+    // 93,000 - 1,000 in the bank; the gold has no price.
+    expect((await getDashboard(world.user.id)).projected).toEqual({ total: "9200000", asOf: "2099-01-01", isPartial: true })
   })
 
   it("on the ledger: a lot-mode investment's balance and kind total are its value, or 0 with the reason when not valued", async () => {

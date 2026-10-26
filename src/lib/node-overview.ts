@@ -2,7 +2,7 @@ import type { LedgerNode } from "@prisma/client"
 import { netWorth, type NodeBalance } from "../domain/balance"
 import { LEDGER_KINDS, type LedgerKind } from "../domain/ledger-kind"
 import type { Paise } from "../domain/money"
-import type { NotValuedReason } from "./investment-view"
+import type { NotValuedReason, PriceState } from "./investment-view"
 import { toNodeView, type NodeView } from "./node-view"
 import { serialisePaise } from "./serialise"
 
@@ -28,6 +28,11 @@ export interface NodeOverview {
   balances: Record<string, string>
   /** The investments that could not be valued, by node id, with why. Empty when every investment has a value. */
   unvalued: Record<string, NotValuedReason>
+  /**
+   * For each investment whose value rests on a price, the price's day and whether it is stale (EC-24): a screen shows
+   * "as of" that day beside the value, and a Stale label when it is, so an old price never passes for today's.
+   */
+  priced: Record<string, PriceState>
   /** For INVESTMENT, the sum of the values in `balances`: a node not valued counts as nothing there and in net worth. */
   kinds: Record<LedgerKind, KindSummary>
   netWorth: {
@@ -43,19 +48,28 @@ export interface NodeOverview {
     isPartial: boolean
     /** The investments left out of the total, by node id. Empty unless `isPartial`. */
     unvaluedNodeIds: string[]
+    /** The investments counted at a stale price, by node id (archived ones included, as they are in the total). */
+    staleNodeIds: string[]
   }
+}
+
+/** Why an investment's valuation is what it is, beside `valuations` (`ValuationStates` from the investment service). */
+export interface ValuationDetail {
+  /** Why each null valuation is null; one with none given is "NO_PRICE". */
+  unvalued?: ReadonlyMap<string, NotValuedReason>
+  priced?: ReadonlyMap<string, PriceState>
 }
 
 /**
  * `nodes` and `balances` must both cover archived nodes. Balances of nodes missing from `nodes` are ignored.
  * `valuations` is what `netWorth` takes: an investment mapped to a value counts at it instead of its balance; one mapped to
- * `null` cannot be valued and is reported, not counted. `reasons` says why each null is (absent: "NO_PRICE").
+ * `null` cannot be valued and is reported, not counted. `detail` says why each null is and dates each price.
  */
 export function buildNodeOverview(
   nodes: readonly LedgerNode[],
   balances: readonly NodeBalance[],
   valuations?: ReadonlyMap<string, Paise | null>,
-  reasons?: ReadonlyMap<string, NotValuedReason>,
+  detail: ValuationDetail = {},
 ): NodeOverview {
   const kinds = Object.fromEntries(LEDGER_KINDS.map((kind) => [kind, { total: 0n, archivedCount: 0 }])) as Record<
     LedgerKind,
@@ -65,13 +79,16 @@ export function buildNodeOverview(
   const known = new Set(nodes.map((node) => node.id))
   const balanceStrings: Record<string, string> = {}
   const unvalued: Record<string, NotValuedReason> = {}
+  const priced: Record<string, PriceState> = {}
 
   for (const node of nodes) {
     let balance = byNode.get(node.id) ?? 0n
     // `has`, not truthiness: as in netWorth, a 0n value and a null one both mean something.
     if (node.kind === "INVESTMENT" && valuations?.has(node.id)) {
       const value = valuations.get(node.id) ?? null
-      if (value === null) unvalued[node.id] = reasons?.get(node.id) ?? "NO_PRICE"
+      if (value === null) unvalued[node.id] = detail.unvalued?.get(node.id) ?? "NO_PRICE"
+      const price = detail.priced?.get(node.id)
+      if (value !== null && price) priced[node.id] = { asOf: price.asOf, stale: price.stale }
       balance = value ?? 0n
     }
     balanceStrings[node.id] = serialisePaise(balance)
@@ -87,6 +104,7 @@ export function buildNodeOverview(
     nodes: nodes.map(toNodeView),
     balances: balanceStrings,
     unvalued,
+    priced,
     kinds: Object.fromEntries(
       LEDGER_KINDS.map((kind) => [kind, { total: serialisePaise(kinds[kind].total), archivedCount: kinds[kind].archivedCount }]),
     ) as Record<LedgerKind, KindSummary>,
@@ -97,6 +115,7 @@ export function buildNodeOverview(
       liabilities: serialisePaise(worth.liabilities),
       isPartial: worth.isPartial,
       unvaluedNodeIds: worth.unvaluedNodeIds,
+      staleNodeIds: nodes.filter((node) => priced[node.id]?.stale).map((node) => node.id),
     },
   }
 }

@@ -3,7 +3,7 @@ import { fromDbDate, type CalendarDate } from "../domain/calendar-date"
 import type { NodeBalance } from "../domain/balance"
 import type { LedgerKind } from "../domain/ledger-kind"
 import type { Paise } from "../domain/money"
-import type { NotValuedReason } from "./investment-view"
+import type { NotValuedReason, PriceState } from "./investment-view"
 import { HOLDING_KINDS, KIND_ORDER } from "./node-kinds"
 import { buildNodeOverview } from "./node-overview"
 import { serialisePaise } from "./serialise"
@@ -24,6 +24,8 @@ export interface DashboardAccount {
    */
   balance: string
   notValued: NotValuedReason | null
+  /** For an investment valued at a price: that price's day, and whether it is stale (EC-24). Shown beside the value. */
+  priced: PriceState | null
 }
 
 export interface DashboardKindTotal {
@@ -54,6 +56,8 @@ export interface DashboardView {
     unvaluedNodeIds: string[]
     /** The same investments by name (an archived one is not in `accounts`, so the screen could not look it up). */
     unvaluedNames: string[]
+    /** The investments counted at a price older than their window, by name: the figure says so (EC-24). */
+    staleNames: string[]
     /** How many accounts, investments and liabilities are archived: counted in the figures, not listed. */
     archivedCount: number
   }
@@ -61,8 +65,11 @@ export interface DashboardView {
   accounts: DashboardAccount[]
   /** One entry per holding kind, in the same order, with the total over archived nodes too. */
   kindTotals: DashboardKindTotal[]
-  /** What net worth will be once everything already dated after today has happened; null when nothing is. */
-  projected: { total: string; asOf: CalendarDate } | null
+  /**
+   * What net worth will be once everything already dated after today has happened; null when nothing is. `isPartial` when
+   * an investment is left out of it, unvalued.
+   */
+  projected: { total: string; asOf: CalendarDate; isPartial: boolean } | null
   /** The newest transactions up to today, newest first. */
   recent: DashboardTransaction[]
   /** No account, investment or liability exists yet (archived ones count): there is nothing to total, so say how to start. */
@@ -81,11 +88,18 @@ export interface DashboardInput {
   latestDate: CalendarDate | null
   /**
    * Today's value of each investment held by lots (`loadValuationStates`); `null` when it cannot be valued, which the
-   * dashboard must not hide. The projection reuses today's values (call 6): a price is not projected.
+   * dashboard must not hide.
    */
   valuations?: ReadonlyMap<string, Paise | null>
   /** Why each null valuation is null. */
   unvalued?: ReadonlyMap<string, NotValuedReason>
+  /** The day and staleness of the price behind each of today's values. */
+  priced?: ReadonlyMap<string, PriceState>
+  /**
+   * The value of each investment held by lots on `latestDate`, at today's prices (call 6, as amended): what it holds then,
+   * after the purchases and sales dated after today. Without it the projection reuses `valuations`.
+   */
+  projectedValuations?: ReadonlyMap<string, Paise | null>
 }
 
 function differ(current: readonly NodeBalance[], all: readonly NodeBalance[]): boolean {
@@ -93,8 +107,9 @@ function differ(current: readonly NodeBalance[], all: readonly NodeBalance[]): b
   return all.some((row) => (before.get(row.nodeId) ?? 0n) !== row.balance)
 }
 
-export function buildDashboard({ nodes, current, all, recent, latestDate, valuations, unvalued }: DashboardInput): DashboardView {
-  const overview = buildNodeOverview(nodes, current, valuations, unvalued)
+export function buildDashboard(input: DashboardInput): DashboardView {
+  const { nodes, current, all, recent, latestDate, valuations, unvalued, priced } = input
+  const overview = buildNodeOverview(nodes, current, valuations, { unvalued, priced })
   const byId = new Map(nodes.map((node) => [node.id, node]))
   const holdings = nodes.filter((node) => HOLDING_KINDS.has(node.kind) && node.systemRole === null)
   const nameOf = (id: string) => byId.get(id)?.name ?? "an unknown account"
@@ -110,11 +125,13 @@ export function buildDashboard({ nodes, current, all, recent, latestDate, valuat
       kind: node.kind,
       balance: overview.balances[node.id] ?? "0",
       notValued: overview.unvalued[node.id] ?? null,
+      priced: overview.priced[node.id] ?? null,
     }))
 
   const archivedCount = KIND_ORDER.filter((kind) => HOLDING_KINDS.has(kind)).reduce((sum, kind) => sum + overview.kinds[kind].archivedCount, 0)
 
   const projectsMore = differ(current, all)
+  const projection = projectsMore && latestDate !== null ? buildNodeOverview(nodes, all, input.projectedValuations ?? valuations).netWorth : null
   return {
     netWorth: {
       assets: overview.netWorth.assets,
@@ -124,6 +141,7 @@ export function buildDashboard({ nodes, current, all, recent, latestDate, valuat
       isPartial: overview.netWorth.isPartial,
       unvaluedNodeIds: overview.netWorth.unvaluedNodeIds,
       unvaluedNames: overview.netWorth.unvaluedNodeIds.map(nameOf),
+      staleNames: overview.netWorth.staleNodeIds.map(nameOf),
       archivedCount,
     },
     accounts,
@@ -132,10 +150,7 @@ export function buildDashboard({ nodes, current, all, recent, latestDate, valuat
       total: overview.kinds[kind].total,
       archivedCount: overview.kinds[kind].archivedCount,
     })),
-    projected:
-      projectsMore && latestDate !== null
-        ? { total: buildNodeOverview(nodes, all, valuations).netWorth.total, asOf: latestDate }
-        : null,
+    projected: projection && latestDate !== null ? { total: projection.total, asOf: latestDate, isPartial: projection.isPartial } : null,
     recent: recent.map((row) => ({
       id: row.id,
       fromName: nameOf(row.fromNodeId),

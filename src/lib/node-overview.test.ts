@@ -1,6 +1,7 @@
 import type { LedgerNode } from "@prisma/client"
 import { describe, expect, it } from "vitest"
 import type { NodeBalance } from "../domain/balance"
+import { calendarDate } from "../domain/calendar-date"
 import { buildNodeOverview } from "./node-overview"
 
 let sequence = 0
@@ -58,6 +59,7 @@ describe("buildNodeOverview", () => {
       liabilities: "500000",
       isPartial: false,
       unvaluedNodeIds: [],
+      staleNodeIds: [],
     })
   })
 
@@ -81,21 +83,28 @@ describe("buildNodeOverview", () => {
         [plot.id, null],
         [old.id, null],
       ]),
-      new Map([
-        [plot.id, "NO_PRICE"],
-        [old.id, "NEEDS_QUANTITY"],
-      ]),
+      {
+        unvalued: new Map([
+          [plot.id, "NO_PRICE"],
+          [old.id, "NEEDS_QUANTITY"],
+        ]),
+        priced: new Map([[gold.id, { asOf: calendarDate("2026-03-01"), stale: true }]]),
+      },
     )
     expect(overview.balances).toMatchObject({ [mf.id]: "250000", [gold.id]: "780000", [plot.id]: "0", [old.id]: "0" })
     // The fund at what was put in, the gold at its value, the other two at nothing: 2,500 + 7,800.
     expect(overview.kinds.INVESTMENT.total).toBe("1030000")
     expect(overview.unvalued).toEqual({ [plot.id]: "NO_PRICE", [old.id]: "NEEDS_QUANTITY" })
+    expect(overview.priced).toEqual({ [gold.id]: { asOf: "2026-03-01", stale: true } })
+    expect(overview.netWorth.staleNodeIds).toEqual([gold.id])
     expect(overview.netWorth).toMatchObject({ investments: "1030000", total: "2030000", isPartial: true, unvaluedNodeIds: [plot.id, old.id] })
   })
 
   it("calls an investment with no valuation and no reason given unpriced, and has no reasons without valuations", () => {
     expect(buildNodeOverview(nodes, balances, new Map([[mf.id, null]])).unvalued).toEqual({ [mf.id]: "NO_PRICE" })
     expect(buildNodeOverview(nodes, balances).unvalued).toEqual({})
+    expect(buildNodeOverview(nodes, balances).priced).toEqual({})
+    expect(buildNodeOverview(nodes, balances).netWorth.staleNodeIds).toEqual([])
   })
 
   it("does not let an archived card you still owe on raise net worth", () => {
