@@ -9,6 +9,8 @@ const node = (id: string, kind: LedgerKind, over: Partial<PickerNode> = {}): Pic
   kind,
   archived: false,
   systemRole: null,
+  valuationMode: null,
+  unitLabel: null,
   ...over,
 })
 const system = (id: string, kind: LedgerKind, systemRole: SystemNodeRole) => node(id, kind, { systemRole })

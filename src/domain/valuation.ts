@@ -68,8 +68,11 @@ export interface Holding {
   gainBasisPoints: bigint | null
 }
 
-// round_half_up(numerator / denominator) on the magnitude, so a loss rounds exactly as the matching gain does.
-function basisPoints(gain: bigint, cost: bigint): bigint {
+/**
+ * A gain as basis points of its cost (935 is 9.35%): round_half_up on the magnitude, so a loss rounds exactly as the
+ * matching gain does. `cost` must be positive.
+ */
+export function basisPoints(gain: bigint, cost: bigint): bigint {
   const magnitude = gain < 0n ? -gain : gain
   const rounded = (magnitude * 10_000n * 2n + cost) / (2n * cost)
   return gain < 0n ? -rounded : rounded

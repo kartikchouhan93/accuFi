@@ -67,3 +67,20 @@ export function TransactionsSkeleton() {
     </Shell>
   )
 }
+
+export function InvestmentsSkeleton() {
+  return (
+    <Shell label="your investments">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-10 w-52" />
+        <Skeleton className="h-11 w-40" />
+      </div>
+      <Skeleton className="mt-8 h-56 rounded-3xl" />
+      <div className="mt-8 grid gap-5 lg:grid-cols-2">
+        {Array.from({ length: 4 }, (_, i) => (
+          <Skeleton key={i} className="h-52 rounded-3xl" />
+        ))}
+      </div>
+    </Shell>
+  )
+}

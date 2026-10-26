@@ -15,10 +15,22 @@ export interface PickerNode {
   archived: boolean
   /** Set for the application's own nodes (Opening Balance, Realised Gain and the like), null for the user's. */
   systemRole: SystemNodeRole | null
+  /** How an investment is valued (by quantity, as a lump, or by what was put in); null for every other kind. */
+  valuationMode: LedgerNode["valuationMode"]
+  /** What one unit of an investment is called ("gram"); null for every other kind. */
+  unitLabel: string | null
 }
 
 export function toPickerNode(node: LedgerNode): PickerNode {
-  return { id: node.id, name: node.name, kind: node.kind, archived: node.archivedAt !== null, systemRole: node.systemRole }
+  return {
+    id: node.id,
+    name: node.name,
+    kind: node.kind,
+    archived: node.archivedAt !== null,
+    systemRole: node.systemRole,
+    valuationMode: node.valuationMode,
+    unitLabel: node.unitLabel,
+  }
 }
 
 /**

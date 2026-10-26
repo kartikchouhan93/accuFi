@@ -1,4 +1,5 @@
 import { CalendarClock } from "lucide-react"
+import { Figure } from "@/app/figure"
 import { PartialNote } from "@/app/partial-note"
 import { StaleNote } from "@/app/stale-note"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
@@ -24,27 +25,6 @@ interface Props {
 
 function Dot({ className }: { className: string }) {
   return <span aria-hidden className={cn("mr-1.5 inline-block size-2 rounded-full align-middle", className)} />
-}
-
-// "-₹1,09,749.75" as sign and symbol, whole rupees, paise. Anything that does not look like that is printed as it is.
-function Figure({ text }: { text: string }) {
-  const match = /^(-?)(₹)([\d,]+)(\.\d{2})$/.exec(text)
-  if (!match) return <>{text}</>
-  const [, sign, symbol, whole, paise] = match
-  return (
-    <>
-      <span className="settle mr-1 align-top text-[0.5em] leading-[1.6] text-fg-soft">
-        {sign}
-        {symbol}
-      </span>
-      <span className="settle" style={{ "--delay": "90ms" } as React.CSSProperties}>
-        {whole}
-      </span>
-      <span className="settle text-[0.5em] text-fg-soft" style={{ "--delay": "220ms" } as React.CSSProperties}>
-        {paise}
-      </span>
-    </>
-  )
 }
 
 export function NetWorthCard({ netWorth, projected }: Props) {

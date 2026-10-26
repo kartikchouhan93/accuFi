@@ -535,7 +535,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   )
 }
 
-interface FieldProps {
+export interface FieldProps {
   idBase: string
   label: string
   optional?: boolean
@@ -545,13 +545,14 @@ interface FieldProps {
   children: (control: ControlAttributes) => React.ReactNode
 }
 
-interface ControlAttributes {
+export interface ControlAttributes {
   id: string
   "aria-invalid": true | undefined
   "aria-describedby": string | undefined
 }
 
-function Field({ idBase, label, optional, hint, errors, children }: FieldProps) {
+/** A labelled control with its optional hint and its error, tied together for assistive technology. Shared with the Sell form. */
+export function Field({ idBase, label, optional, hint, errors, children }: FieldProps) {
   const hintId = `${idBase}-hint`
   const errorId = `${idBase}-error`
   const invalid = errors !== undefined && errors.length > 0

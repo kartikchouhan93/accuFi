@@ -241,6 +241,12 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
   const deleted = entry.deleted
   const projected = !deleted && compareDates(entry.occurredAt, today) > 0
   const total = formatPaiseText(entry.totalPaise)
+  // A split whose legs come from different places (a sale: the cost from the investment, the gain from Realised Gain)
+  // names each leg's source too, or two legs into the same account would read the same.
+  const mixed = entry.fromNodeId === null
+  const legTitle = (leg: TransactionView) =>
+    mixed ? `${nameOf(nodes, leg.fromNodeId)} → ${nameOf(nodes, leg.toNodeId)}` : nameOf(nodes, leg.toNodeId)
+  const legName = (leg: TransactionView) => (mixed ? legTitle(leg) : `→ ${legTitle(leg)}`)
 
   // Any leg restores the whole split: the service brings back every deleted member of the group.
   const restoreAll = () =>
@@ -316,14 +322,14 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
           <ul aria-label="Legs" className="mb-4 max-w-xl divide-y divide-line rounded-xl border border-line bg-canvas/60 px-3">
             {entry.legs.map((leg) => (
               <li key={leg.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2">
-                <span className="font-medium">→ {nameOf(nodes, leg.toNodeId)}</span>
+                <span className="font-medium">{legName(leg)}</span>
                 <Amount text={figure(leg.amountPaise)} className="ml-auto" />
                 {!deleted && (
                   <>
                     <button
                       type="button"
                       className={linkClass}
-                      aria-label={`Edit the ${nameOf(nodes, leg.toNodeId)} leg`}
+                      aria-label={`Edit the ${legTitle(leg)} leg`}
                       onClick={() => onEdit(leg)}
                     >
                       Edit
@@ -332,7 +338,7 @@ function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group
                       type="button"
                       className={linkClass}
                       disabled={pending}
-                      aria-label={`Take ${nameOf(nodes, leg.toNodeId)} out of the split`}
+                      aria-label={`Take ${legTitle(leg)} out of the split`}
                       onClick={() => takeOut(leg)}
                     >
                       Take out of split
