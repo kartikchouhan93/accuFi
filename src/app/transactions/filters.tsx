@@ -23,6 +23,9 @@ interface Props {
 export function Filters({ filter, problems, nodes }: Props) {
   const router = useRouter()
   const formId = useId()
+  // A link from a report can name several ledgers at once. The picker holds one, so a list gets a first option of its own,
+  // selected, whose value is the whole list: applying another filter keeps it, and choosing "Any" clears it.
+  const together = new Set(filter.node.split(",").map((id) => id.trim()).filter((id) => id !== ""))
 
   function apply(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -64,6 +67,7 @@ export function Filters({ filter, problems, nodes }: Props) {
           "Involving",
           <select {...common("node")} defaultValue={filter.node} className={inputClass}>
             <option value="">Any account or ledger</option>
+            {together.size > 1 && <option value={filter.node}>{together.size} ledgers together</option>}
             {groupByKind(nodes).map((group) => (
               <optgroup key={group.kind} label={group.label}>
                 {group.nodes.map((node) => (
@@ -85,6 +89,15 @@ export function Filters({ filter, problems, nodes }: Props) {
                 {KIND_COPY[kind].singular}
               </option>
             ))}
+          </select>,
+        )}
+        {field(
+          "flow",
+          "Counted as",
+          <select {...common("flow")} defaultValue={filter.flow} className={inputClass}>
+            <option value="">Any</option>
+            <option value="income">Income</option>
+            <option value="spending">Spending</option>
           </select>,
         )}
         {field("from", "From date", <input {...common("from")} type="date" defaultValue={filter.from} className={`${inputClass} figures`} />)}

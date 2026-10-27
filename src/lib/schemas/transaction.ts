@@ -118,14 +118,25 @@ export const transactionIdSchema = z.strictObject({ id: transactionId })
 // What narrows the list: every field is text exactly as it was typed or sat in the URL, and blank means "no filter". It
 // becomes typed values here, as validation issues, so a bad date or amount is shown beside its field instead of being
 // silently ignored (a list that quietly shows everything while the filter says otherwise is worse than an error).
-// `node` and `kind` both match a transaction at either end. `tag` is comma separated and requires every tag.
+// `node` and `kind` both match a transaction at either end. `node` is comma separated (a report links to several
+// ledgers at once): any of them matches. `flow` is "income" or "spending", resolved to nodes by the service. `tag` is comma
+// separated and requires every tag.
 const blank = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (typeof value === "string" && value.trim() === "" ? undefined : value), schema.optional())
 
 const filterAmount = rupees.refine((paise) => paise >= 0n, "Enter an amount of zero or more")
 
+export const FILTER_NODES_MAX = 50
+export const FLOWS = ["income", "spending"] as const
+
+const filterNodes = z
+  .string()
+  .transform((text) => [...new Set(text.split(",").map((id) => id.trim()).filter((id) => id !== ""))])
+  .pipe(z.array(nodeId).max(FILTER_NODES_MAX, `At most ${FILTER_NODES_MAX} ledgers`))
+
 const filterFields = {
-  node: blank(nodeId),
+  node: blank(filterNodes),
+  flow: blank(z.enum(FLOWS)),
   kind: blank(z.enum(LEDGER_KINDS)),
   from: blank(occurredAt),
   to: blank(occurredAt),

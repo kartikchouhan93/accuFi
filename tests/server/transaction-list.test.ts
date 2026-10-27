@@ -55,7 +55,7 @@ describe("loadTransactionPage", () => {
   it("shows the whole group when only one of its legs matches the filter, and the total is still the sum of the legs shown", async () => {
     const { user, bank, food, clothes } = await world()
     await makeGroup(user.id, bank.id, [{ to: food.id, amount: 6_000n }, { to: clothes.id, amount: 4_000n }], "2026-04-01")
-    const page = await loadTransactionPage(user.id, { node: clothes.id })
+    const page = await loadTransactionPage(user.id, { node: [clothes.id] })
     expect(page.entries).toHaveLength(1)
     const [entry] = page.entries
     expect(entry.kind === "group" && entry.legs.map((leg) => leg.amountPaise)).toEqual(["6000", "4000"])
@@ -151,7 +151,7 @@ describe("loadTransactionPage", () => {
     await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: "2026-04-02" })
     expect((await loadTransactionPage(user.id, { kind: "INCOME_SOURCE" })).entries).toHaveLength(1)
     expect((await loadTransactionPage(user.id, { kind: "ASSET" })).entries).toHaveLength(2)
-    expect((await loadTransactionPage(user.id, { node: other.bank.id })).entries).toHaveLength(0)
+    expect((await loadTransactionPage(user.id, { node: [other.bank.id] })).entries).toHaveLength(0)
   })
 
   it("gives each purchase the quantity its lot holds, null for one without a lot, and nothing on a split's legs", async () => {
@@ -305,5 +305,108 @@ describe("loadTransactionScreen", () => {
     const screen = await loadTransactionScreen(user.id, { from: "", to: "", q: "not mine" })
     expect(screen.page.entries).toEqual([])
     expect(screen.nodes.some((node) => node.id === other.bank.id)).toBe(false)
+  })
+})
+
+describe("loadTransactionScreen: ledger and flow filters", () => {
+  async function flowWorld() {
+    const user = await registry.makeUser()
+    const salary = await registry.makeNode(user.id, "INCOME_SOURCE", "Salary")
+    const bank = await registry.makeNode(user.id, "ASSET", "Bank")
+    const food = await registry.makeNode(user.id, "EXPENSE", "Food")
+    const opening = await registry.makeNode(user.id, "INCOME_SOURCE", "Opening Balance", { systemRole: "OPENING_BALANCE" })
+    const contra = await registry.makeNode(user.id, "EXPENSE", "Opening Balance Contra", { systemRole: "OPENING_BALANCE_CONTRA" })
+    return { user, salary, bank, food, opening, contra }
+  }
+  const all = { from: "", to: "" }
+  const amounts = (screen: Awaited<ReturnType<typeof loadTransactionScreen>>) =>
+    screen.page.entries.map((entry) => (entry.kind === "single" ? entry.transaction.amountPaise : "group")).sort()
+
+  it("flow=spending lists the entries touching an expense, opening balances aside, and totals what came into them", async () => {
+    const { user, bank, food, contra } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 1_000_00n })
+    await registry.makeTransaction(user.id, food.id, bank.id, { amountPaise: 200_00n })
+    await registry.makeTransaction(user.id, bank.id, contra.id, { amountPaise: 5_000_00n })
+    const screen = await loadTransactionScreen(user.id, { ...all, flow: "spending" })
+    expect(amounts(screen)).toEqual(["100000", "20000"])
+    expect(screen.netTotal).toEqual({ paise: "80000" })
+    expect(screen.filter.flow).toBe("spending")
+  })
+
+  it("flow=income lists the entries touching an income source, opening balances aside, and totals what left them as a negative", async () => {
+    const { user, salary, bank, opening } = await flowWorld()
+    await registry.makeTransaction(user.id, salary.id, bank.id, { amountPaise: 3_000_00n })
+    await registry.makeTransaction(user.id, opening.id, bank.id, { amountPaise: 9_000_00n })
+    const screen = await loadTransactionScreen(user.id, { ...all, flow: "income" })
+    expect(amounts(screen)).toEqual(["300000"])
+    expect(screen.netTotal).toEqual({ paise: "-300000" })
+  })
+
+  it("counts an archived node of that kind, and gives zero and an empty list when the flow resolves to no node", async () => {
+    const { user, bank, food } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 700_00n })
+    await prisma.ledgerNode.update({ where: { id: food.id }, data: { archivedAt: new Date() } })
+    expect((await loadTransactionScreen(user.id, { ...all, flow: "spending" })).netTotal).toEqual({ paise: "70000" })
+
+    const bare = await registry.makeUser()
+    const empty = await loadTransactionScreen(bare.id, { ...all, flow: "income" })
+    expect(empty.page.entries).toEqual([])
+    expect(empty.netTotal).toEqual({ paise: "0" })
+  })
+
+  it("node=a,b lists entries touching either, and an entry between them cancels in the total", async () => {
+    const { user, bank, food, salary } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 400_00n }) // between the two: cancels
+    await registry.makeTransaction(user.id, salary.id, bank.id, { amountPaise: 3_000_00n }) // into the set
+    await registry.makeTransaction(user.id, food.id, salary.id, { amountPaise: 50_00n }) // out of the set (odd, but a row)
+    const screen = await loadTransactionScreen(user.id, { ...all, node: `${food.id},${bank.id}` })
+    expect(amounts(screen)).toEqual(["300000", "40000", "5000"])
+    expect(screen.netTotal).toEqual({ paise: "295000" }) // 3,000 in, 50 out
+  })
+
+  it("intersects node with flow", async () => {
+    const { user, bank, food, salary } = await flowWorld()
+    const other = await registry.makeNode(user.id, "EXPENSE", "Rent")
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 100_00n })
+    await registry.makeTransaction(user.id, bank.id, other.id, { amountPaise: 900_00n })
+    const both = await loadTransactionScreen(user.id, { ...all, flow: "spending", node: `${food.id},${bank.id},${salary.id}` })
+    expect(amounts(both)).toEqual(["10000"]) // only Food is spending and in the node list
+    expect(both.netTotal).toEqual({ paise: "10000" })
+    const disjoint = await loadTransactionScreen(user.id, { ...all, flow: "spending", node: salary.id })
+    expect(disjoint.page.entries).toEqual([])
+    expect(disjoint.netTotal).toEqual({ paise: "0" })
+  })
+
+  it("answers a bad flow with the reason on flow, an empty list and no total", async () => {
+    const { user, bank, food } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id)
+    const screen = await loadTransactionScreen(user.id, { ...all, flow: "bogus" })
+    expect(Object.keys(screen.problems)).toEqual(["flow"])
+    expect(screen.page.entries).toEqual([])
+    expect(screen.netTotal).toBeNull()
+  })
+
+  it("has no total without a node or a flow", async () => {
+    const { user, bank, food } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id)
+    expect((await loadTransactionScreen(user.id, all)).netTotal).toBeNull()
+    expect((await loadTransactionScreen(user.id, { ...all, kind: "EXPENSE" })).netTotal).toBeNull()
+  })
+
+  it("totals live entries only when deleted ones are listed too", async () => {
+    const { user, bank, food } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 500_00n })
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 999_00n, deletedAt: new Date() })
+    const screen = await loadTransactionScreen(user.id, { ...all, node: food.id, deleted: "1" })
+    expect(screen.page.entries).toHaveLength(2)
+    expect(screen.netTotal).toEqual({ paise: "50000" })
+  })
+
+  it("applies the flow to a load-more page the same way", async () => {
+    const { user, bank, food, contra } = await flowWorld()
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 100_00n })
+    await registry.makeTransaction(user.id, bank.id, contra.id, { amountPaise: 5_000_00n })
+    const page = await loadTransactionPage(user.id, { flow: "spending" })
+    expect(page.entries).toHaveLength(1)
   })
 })

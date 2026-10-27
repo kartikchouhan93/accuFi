@@ -141,6 +141,18 @@ describe("transaction repository", () => {
     expect(asA.items.every((t) => t.userId === a.user.id)).toBe(true)
   })
 
+  isolation("sumNetIntoNodes", "never counts another user's rows, however their node ids are named", async () => {
+    expect(await txRepo.sumNetIntoNodes(a.user.id, { nodeIds: [b.food.id] })).toBe(0n)
+    expect(await txRepo.sumNetIntoNodes(a.user.id, { nodeIds: [b.bank.id, b.food.id] })).toBe(0n)
+    // Mixed with A's own node, only A's row is in the figure: A's bank -> food of 500 is what came into food.
+    expect(await txRepo.sumNetIntoNodes(a.user.id, { nodeIds: [a.food.id, b.food.id] })).toBe(500n)
+  })
+
+  isolation("findTransactions", "returns none of another user's rows for a multi-id node filter containing a foreign id", async () => {
+    const mixed = await txRepo.findTransactions(a.user.id, { nodeIds: [a.food.id, b.food.id, b.bank.id] })
+    expect(mixed.items.map((t) => t.id)).toEqual([a.tx.id])
+  })
+
   isolation("findGroupMembers", "never returns another user's group, however it is named", async () => {
     // Worlds of their own: the legs written here must not change what the shared `a` and `b` show the tests below.
     const mine = await registry.makeWorld()

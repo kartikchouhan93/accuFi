@@ -11,6 +11,7 @@ import {
   MAX_PAGE_SIZE,
   softDeleteTransaction,
   sumBalances,
+  sumNetIntoNodes,
   undeleteTransaction,
   updateTransaction,
   VersionConflictError,
@@ -470,5 +471,42 @@ describe("findTransactions", () => {
       expect(all).not.toContain(notYetSeen.id)
       expect(new Set(all).size).toBe(22)
     })
+  })
+})
+
+describe("sumNetIntoNodes", () => {
+  // Bank -> Food 500, Bank -> Clothes 300, Food -> Clothes 100, Food -> Bank 50, and a deleted Bank -> Food 999.
+  async function world() {
+    const { user, bank, food } = await setup()
+    const clothes = await registry.makeNode(user.id, "EXPENSE", "Clothes")
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 500n })
+    await registry.makeTransaction(user.id, bank.id, clothes.id, { amountPaise: 300n })
+    await registry.makeTransaction(user.id, food.id, clothes.id, { amountPaise: 100n })
+    await registry.makeTransaction(user.id, food.id, bank.id, { amountPaise: 50n })
+    await registry.makeTransaction(user.id, bank.id, food.id, { amountPaise: 999n, deletedAt: new Date() })
+    return { user, bank, food, clothes }
+  }
+
+  it("is what came into the set from outside less what went out of it, live entries only", async () => {
+    const { user, food } = await world()
+    expect(await sumNetIntoNodes(user.id, { nodeIds: [food.id] })).toBe(350n) // 500 in, 100 and 50 out
+  })
+
+  it("lets an entry between two members of the set cancel", async () => {
+    const { user, food, clothes } = await world()
+    expect(await sumNetIntoNodes(user.id, { nodeIds: [food.id, clothes.id] })).toBe(750n) // 800 in, 50 out
+  })
+
+  it("applies the other filter fields, and never counts a deleted entry whatever includeDeleted says", async () => {
+    const { user, food, clothes } = await world()
+    expect(await sumNetIntoNodes(user.id, { nodeIds: [food.id, clothes.id], minAmount: 200n })).toBe(800n)
+    expect(await sumNetIntoNodes(user.id, { nodeIds: [food.id], includeDeleted: true })).toBe(350n)
+  })
+
+  it("is zero for an empty set, and for another user's ids", async () => {
+    const { user, food, clothes } = await world()
+    expect(await sumNetIntoNodes(user.id, { nodeIds: [] })).toBe(0n)
+    const stranger = await registry.makeUser()
+    expect(await sumNetIntoNodes(stranger.id, { nodeIds: [food.id, clothes.id] })).toBe(0n)
   })
 })

@@ -71,6 +71,8 @@ export interface TransactionPage {
 export interface FilterValues {
   node: string
   kind: string
+  /** "income" or "spending": every reportable node of that kind, resolved on the server. "" for no flow filter. */
+  flow: string
   from: string
   to: string
   min: string
@@ -81,7 +83,7 @@ export interface FilterValues {
   deleted: string
 }
 
-export const FILTER_KEYS = ["node", "kind", "from", "to", "min", "max", "tag", "q", "deleted"] as const satisfies readonly (keyof FilterValues)[]
+export const FILTER_KEYS = ["node", "kind", "flow", "from", "to", "min", "max", "tag", "q", "deleted"] as const satisfies readonly (keyof FilterValues)[]
 
 export interface TransactionScreen {
   /** Today in the user's own timezone: what a new entry is dated and what "current balance" means. */
@@ -101,4 +103,9 @@ export interface TransactionScreen {
   /** Problems with the filter, by field. When there are any, `page` is empty rather than a list the filter did not make. */
   problems: Record<string, string[]>
   page: TransactionPage
+  /**
+   * Net paise into the filtered ledgers (from `node` and/or `flow`) from outside them, over live entries that match every
+   * other filter; null when neither is set or the filter did not parse.
+   */
+  netTotal: { paise: string } | null
 }

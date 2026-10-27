@@ -1,5 +1,6 @@
 import type { Transaction } from "@prisma/client"
 import { fromDbDate, monthRange } from "@/domain/calendar-date"
+import { isReportable } from "@/domain/reports"
 import { fieldErrorsOf } from "@/lib/field-errors"
 import { serialisePaise } from "@/lib/serialise"
 import { transactionQuerySchema } from "@/lib/schemas/transaction"
@@ -17,6 +18,7 @@ import {
   findGroupMembers,
   findTransactions,
   sumBalances,
+  sumNetIntoNodes,
   type TransactionFilter,
 } from "@/server/repositories/transaction-repository"
 import { findLotQuantities, findSaleTransactionIds } from "@/server/repositories/lot-repository"
@@ -32,9 +34,28 @@ import type { z } from "zod"
 /** The filters after parsing: typed values, any of them absent. */
 export type ListFilter = z.output<typeof transactionQuerySchema>
 
-function toRepositoryFilter(filter: ListFilter): TransactionFilter {
+// What a flow filter stands for: the nodes whose entries are income or spending.
+const FLOW_KIND = { income: "INCOME_SOURCE", spending: "EXPENSE" } as const
+
+/**
+ * The nodes the filter names, or undefined when it names none: `node` as given, or what `flow` stands for (the user's
+ * reportable nodes of that kind, archived ones included, the opening-balance pair never), or both intersected. A flow
+ * that stands for no node gives an empty list, which matches nothing, not undefined, which would match everything.
+ */
+async function resolveNodeIds(userId: string, filter: ListFilter): Promise<string[] | undefined> {
+  if (filter.flow === undefined) return filter.node
+  const kind = FLOW_KIND[filter.flow]
+  const flowIds = (await listAllNodes(userId))
+    .filter((node) => node.kind === kind && isReportable(node))
+    .map((node) => node.id)
+  if (filter.node === undefined) return flowIds
+  const wanted = new Set(filter.node)
+  return flowIds.filter((id) => wanted.has(id))
+}
+
+function toRepositoryFilter(filter: ListFilter, nodeIds: string[] | undefined): TransactionFilter {
   return {
-    ...(filter.node !== undefined && { nodeIds: [filter.node] }),
+    ...(nodeIds !== undefined && { nodeIds }),
     ...(filter.kind !== undefined && { kinds: [filter.kind] }),
     from: filter.from,
     to: filter.to,
@@ -71,8 +92,12 @@ function groupEntry(anchor: Transaction, groupId: string, legs: Transaction[]): 
  * were deleted a moment ago) the leg that matched is shown as an ordinary row.
  */
 export async function loadTransactionPage(userId: string, filter: ListFilter, cursor?: string): Promise<TransactionPage> {
+  return pageOf(userId, filter, await resolveNodeIds(userId, filter), cursor)
+}
+
+async function pageOf(userId: string, filter: ListFilter, nodeIds: string[] | undefined, cursor?: string): Promise<TransactionPage> {
   const includeDeleted = filter.deleted === true
-  const page = await findTransactions(userId, toRepositoryFilter(filter), cursor, DEFAULT_PAGE_SIZE)
+  const page = await findTransactions(userId, toRepositoryFilter(filter, nodeIds), cursor, DEFAULT_PAGE_SIZE)
   const members = await findGroupMembers(
     userId,
     page.items.flatMap((row) => (row.groupId === null ? [] : [row.groupId])),
@@ -122,11 +147,14 @@ export async function loadTransactionScreen(userId: string, query: Record<string
 
   const filter = Object.fromEntries(FILTER_KEYS.map((key) => [key, (asked[key] ?? "").trim()])) as unknown as FilterValues
   const parsed = transactionQuerySchema.safeParse(filter)
-  const [nodes, balances, states, page] = await Promise.all([
+  // Resolved once for the list and the total beside it, which must be of the same entries.
+  const nodeIds = parsed.success ? await resolveNodeIds(userId, parsed.data) : undefined
+  const [nodes, balances, states, page, netTotal] = await Promise.all([
     listAllNodes(userId),
     sumBalances(userId, today),
     loadValuationStates(userId, today),
-    parsed.success ? loadTransactionPage(userId, parsed.data) : { entries: [], nextCursor: null },
+    parsed.success ? pageOf(userId, parsed.data, nodeIds) : { entries: [], nextCursor: null },
+    parsed.success && nodeIds !== undefined ? sumNetIntoNodes(userId, { ...toRepositoryFilter(parsed.data, nodeIds), nodeIds }) : null,
   ])
   // The figures the ledger and the dashboard show, from the same calculation: an investment held by lots at its value
   // today, or not valued (EC-23), never at what it cost.
@@ -140,5 +168,6 @@ export async function loadTransactionScreen(userId: string, query: Record<string
     filter,
     problems: parsed.success ? {} : fieldErrorsOf(parsed.error),
     page,
+    netTotal: netTotal === null ? null : { paise: serialisePaise(netTotal) },
   }
 }

@@ -8,6 +8,7 @@ import type { TransactionScreen } from "@/lib/transaction-list-view"
 import type { TransactionView } from "@/lib/transaction-view"
 import { Balances } from "./balances"
 import { Filters } from "./filters"
+import { FilteredTotal } from "./filtered-total"
 import type { TransactionNotice } from "./notice"
 import { TransactionForm } from "./transaction-form"
 import { TransactionList } from "./transaction-list"
@@ -53,6 +54,7 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
         <div className="min-w-0 space-y-8">
           <Balances nodes={screen.nodes} balances={screen.balances} unvalued={screen.unvalued} priced={screen.priced} />
           <Filters filter={screen.filter} problems={screen.problems} nodes={screen.nodes} />
+          {screen.netTotal && <FilteredTotal paise={screen.netTotal.paise} deleted={screen.filter.deleted === "1"} />}
           <TransactionList
             page={screen.page}
             filter={screen.filter}

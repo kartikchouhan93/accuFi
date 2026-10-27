@@ -135,6 +135,31 @@ export async function findTransactions(
 }
 
 /**
+ * What came into the `nodeIds` set from outside it less what went out of it to outside it, over live transactions that
+ * match every other field of `filter` (`includeDeleted` is ignored: a figure is of what counts). An entry with both ends
+ * inside the set is in neither direction, so it cancels. One aggregate per direction, in SQL; the filter conditions are
+ * `findTransactions`' own, so the total and the list it sits beside agree. An empty set is 0.
+ */
+export async function sumNetIntoNodes(userId: string, filter: TransactionFilter & { nodeIds: string[] }): Promise<Paise> {
+  if (filter.nodeIds.length === 0) return 0n
+  const conditions = filterConditions(filter)
+  const total = async (direction: Prisma.TransactionWhereInput) => {
+    const { _sum } = await prisma.transaction.aggregate({
+      _sum: { amountPaise: true },
+      where: { userId, deletedAt: null, AND: [...conditions, direction] },
+    })
+    return _sum.amountPaise ?? 0n
+  }
+  const inside = { in: filter.nodeIds }
+  const outside = { notIn: filter.nodeIds }
+  const [into, out] = await Promise.all([
+    total({ toNodeId: inside, fromNodeId: outside }),
+    total({ fromNodeId: inside, toNodeId: outside }),
+  ])
+  return into - out
+}
+
+/**
  * Every live member of each of these groups (deleted ones too when `includeDeleted`, which is how a deleted split is
  * shown whole), whatever filter found the group: a page of `findTransactions` can end in
  * the middle of a split, and the legs that did not fit are still part of it. Ordered as the legs were written (all of a

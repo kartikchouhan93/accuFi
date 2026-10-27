@@ -236,7 +236,8 @@ test("gives B nothing for a URL that carries A's identifiers, and no more than f
   }
   expect(await screenFor({ q: kayak.id }), "q=<A's transaction>").toBe(ghostSearch)
   // Through the deleted filter too, which reaches rows the default list hides.
-  expect(await screenFor({ node: await nodeId(a.userId, VAULT), deleted: "1" })).toBe(ghostNode)
+  // (Compared with a ghost id under the same switch: the filtered total says "Counts live entries only." whenever it is on.)
+  expect(await screenFor({ node: await nodeId(a.userId, VAULT), deleted: "1" })).toBe(await screenFor({ node: GHOST, deleted: "1" }))
 
   // A, with the same URL, gets A's rows: it is the owner that makes the difference, not the URL.
   await a.page.goto(`/transactions?${new URLSearchParams({ from: "", to: "", node: await nodeId(a.userId, VAULT) })}`)
@@ -552,7 +553,7 @@ test("lists none of A's gold in B's transactions, whatever B filters or names", 
   await screenFor({ kind: "INVESTMENT", q: "Zephyr" })
   const ghostNode = await screenFor({ node: GHOST })
   expect(await screenFor({ node: goldId }), "node=<A's gold>").toBe(ghostNode)
-  expect(await screenFor({ node: goldId, deleted: "1" }), "node=<A's gold>, deleted").toBe(ghostNode)
+  expect(await screenFor({ node: goldId, deleted: "1" }), "node=<A's gold>, deleted").toBe(await screenFor({ node: GHOST, deleted: "1" }))
   const ghostSearch = await screenFor({ q: GHOST })
   for (const transaction of goldHistory) expect(await screenFor({ q: transaction.id }), `q=${transaction.id}`).toBe(ghostSearch)
 })

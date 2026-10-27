@@ -228,7 +228,7 @@ describe("transactionQuerySchema", () => {
       q: " lunch ",
     })
     expect(filled.success && filled.data).toEqual({
-      node: "n1",
+      node: ["n1"],
       kind: "EXPENSE",
       from: "2026-03-01",
       to: "2026-03-31",
@@ -237,6 +237,31 @@ describe("transactionQuerySchema", () => {
       tag: ["food", "trip"],
       q: "lunch",
     })
+  })
+
+  it("reads node as a comma-separated list: trimmed, de-duplicated, blank is no filter, at most 50", () => {
+    const parse = (node: string) => transactionQuerySchema.safeParse({ node })
+    const list = parse("a,b,a")
+    expect(list.success && list.data.node).toEqual(["a", "b"])
+    const single = parse("abc")
+    expect(single.success && single.data.node).toEqual(["abc"])
+    const spaced = parse(" a , b ,, ")
+    expect(spaced.success && spaced.data.node).toEqual(["a", "b"])
+    const blank = parse("")
+    expect(blank.success && blank.data.node).toBeUndefined()
+    const fifty = parse(Array.from({ length: 50 }, (_, i) => `n${i}`).join(","))
+    expect(fifty.success && fifty.data.node).toHaveLength(50)
+    expect(issuePaths(parse(Array.from({ length: 51 }, (_, i) => `n${i}`).join(",")))).toEqual(["node"])
+  })
+
+  it("reads flow as income or spending, blank as no filter, and anything else as an issue on flow", () => {
+    for (const flow of ["income", "spending"]) {
+      const parsed = transactionQuerySchema.safeParse({ flow })
+      expect(parsed.success && parsed.data.flow).toBe(flow)
+    }
+    const blank = transactionQuerySchema.safeParse({ flow: "" })
+    expect(blank.success && blank.data.flow).toBeUndefined()
+    expect(issuePaths(transactionQuerySchema.safeParse({ flow: "bogus" }))).toEqual(["flow"])
   })
 
   it("reads the deleted switch as on only for \"1\", and as absent for anything else", () => {
@@ -267,5 +292,10 @@ describe("listTransactionsSchema", () => {
     expect(listTransactionsSchema.safeParse({ userId: "x" }).success).toBe(false)
     const withDeleted = listTransactionsSchema.safeParse({ deleted: "1", cursor: "abc" })
     expect(withDeleted.success && withDeleted.data).toEqual({ deleted: true, cursor: "abc" })
+  })
+
+  it("takes the multi-ledger and flow filters a page was showing", () => {
+    const parsed = listTransactionsSchema.safeParse({ node: "a,b", flow: "spending", cursor: "abc" })
+    expect(parsed.success && parsed.data).toEqual({ node: ["a", "b"], flow: "spending", cursor: "abc" })
   })
 })
