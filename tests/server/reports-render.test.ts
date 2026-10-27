@@ -3,9 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { calendarDate } from "@/domain/calendar-date"
-import type { CashFlowView, RangeView, RankedRowView, RankedView } from "@/lib/report-view"
+import type { CashFlowView, InvestmentGrowthView, RangeView, RankedRowView, RankedView } from "@/lib/report-view"
 import { createRegistry } from "./repositories/fixtures"
-import { flowScenario, type Scenario } from "./reports/scenarios"
+import { flowScenario, holdingsScenario, type Scenario } from "./reports/scenarios"
 
 // What the income-vs-expense, spending and income reports say, as markup, from literal views shaped exactly as the
 // server sends them (Scenario F, January to March 2026: plan "Shared scenarios"). Then the dispatcher page itself, with
@@ -27,7 +27,11 @@ const { CashFlowReport } = await import("@/app/reports/cash-flow-report")
 const { RankedReport, RankedBreakdown } = await import("@/app/reports/ranked-report")
 const { ReportShell } = await import("@/app/reports/report-shell")
 const { default: ReportPage, generateMetadata } = await import("@/app/reports/[report]/page")
-const { loadCashFlow, loadRangeOptions } = await import("@/server/services/report-service")
+const { loadAccountHistory, loadCashFlow, loadNetWorthReport, loadRangeOptions } = await import("@/server/services/report-service")
+const { NetWorthReport } = await import("@/app/reports/net-worth-report")
+const { AccountHistoryReport } = await import("@/app/reports/account-history-report")
+const { InvestmentGrowthReport } = await import("@/app/reports/investment-growth-report")
+const { RangeControl } = await import("@/app/reports/range-control")
 
 /** All the text, the screen-reader-only parts included: what a link is announced as. */
 const accessibleText = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
@@ -342,8 +346,10 @@ describe("RankedReport, nothing to rank", () => {
 const registry = createRegistry()
 afterAll(registry.cleanup)
 let scenario: Scenario
+let holdings: Scenario
 beforeAll(async () => {
   scenario = await flowScenario(registry)
+  holdings = await holdingsScenario(registry)
 })
 beforeEach(() => {
   requireUserId.mockReset()
@@ -354,10 +360,11 @@ type Search = Record<string, string | string[] | undefined>
 const page = (report: string, search: Search = {}) => ReportPage({ params: Promise.resolve({ report }), searchParams: Promise.resolve(search) })
 
 /** What a call threw for Next to handle (a redirect or a not-found), or null if it returned. */
-async function nextSignal(run: () => Promise<unknown>): Promise<string | null> {
+async function nextSignal(run: () => Promise<unknown>, thrown?: (error: unknown) => void): Promise<string | null> {
   try {
     await run()
   } catch (error) {
+    thrown?.(error)
     const digest = (error as { digest?: unknown }).digest
     if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT;")) return `redirect ${digest.split(";")[2]}`
     if (typeof digest === "string" && digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) return `http ${digest.split(";")[1]}`
@@ -368,7 +375,14 @@ async function nextSignal(run: () => Promise<unknown>): Promise<string | null> {
 
 /** The page's element: the shell, with the report as its child. */
 async function shellOf(report: string, search: Search = {}) {
-  const element = (await page(report, search)) as ReactElement<{ rangeError: string | null; choice: unknown; options: unknown; children: ReactElement<{ view: unknown }> }>
+  const element = (await page(report, search)) as ReactElement<{
+    current: string
+    range: unknown
+    rangeError: string | null
+    choice: unknown
+    options: unknown
+    children: ReactElement<{ view: unknown; choice?: unknown }>
+  }>
   expect(element.type).toBe(ReportShell)
   expect(isValidElement(element.props.children)).toBe(true)
   return element.props
@@ -431,9 +445,86 @@ describe("the report dispatcher", () => {
     expect(props.children.props.view).toEqual(await loadCashFlow(scenario.user.id, { kind: "last12" }))
   })
 
-  it("is not found for an unknown report, and for the reports not built yet", async () => {
+  it("is not found for an unknown report", async () => {
     signIn()
-    for (const slug of ["nope", "net-worth", "accounts", "investments"]) expect(await nextSignal(() => page(slug)), slug).toBe("http 404")
+    for (const slug of ["nope", "reports", "Net-Worth"]) expect(await nextSignal(() => page(slug)), slug).toBe("http 404")
+  })
+
+  it("serves net worth over the range in the URL", async () => {
+    requireUserId.mockResolvedValue(holdings.user.id)
+    const props = await shellOf("net-worth", q1Search)
+    expect(props.rangeError).toBeNull()
+    expect(props.children.type).toBe(NetWorthReport)
+    const view = props.children.props.view as Awaited<ReturnType<typeof loadNetWorthReport>>
+    expect(view.points.map((p) => p.totalPaise)).toEqual(["11000000", "18550000", "18700000"])
+    expect(visibleText(renderToStaticMarkup(props.children))).toContain("Excludes: Gold (No price yet)")
+  })
+
+  it("serves the history of the account in the URL, keeping the range for the picker", async () => {
+    signIn()
+    const props = await shellOf("accounts", { ...q1Search, node: scenario.nodes.Card.id })
+    expect(props.children.type).toBe(AccountHistoryReport)
+    expect(props.children.props.choice).toEqual({ kind: "custom", from: "2026-01-01", to: "2026-03-31" })
+    const view = props.children.props.view as Awaited<ReturnType<typeof loadAccountHistory>>
+    expect(view.selected).toMatchObject({ id: scenario.nodes.Card.id, name: "Card" })
+    expect(view.steps.at(-1)?.closingPaise).toBe("-1750000")
+    // No node: the oldest live account.
+    const plain = await shellOf("accounts", q1Search)
+    expect((plain.children.props.view as Awaited<ReturnType<typeof loadAccountHistory>>).selected?.id).toBe(scenario.nodes.Bank.id)
+  })
+
+  it("uses the first node of a repeated node parameter", async () => {
+    signIn()
+    const props = await shellOf("accounts", { ...q1Search, node: [scenario.nodes.Card.id, scenario.nodes.Bank.id] })
+    expect((props.children.props.view as Awaited<ReturnType<typeof loadAccountHistory>>).selected?.id).toBe(scenario.nodes.Card.id)
+  })
+
+  it("serves investment growth for the portfolio, or for the investment in the URL", async () => {
+    requireUserId.mockResolvedValue(holdings.user.id)
+    const all = await shellOf("investments", q1Search)
+    expect(all.children.type).toBe(InvestmentGrowthReport)
+    const view = all.children.props.view as InvestmentGrowthView
+    expect(view.selected).toBeNull()
+    expect(view.points[0].covered).toEqual({ covered: 1, total: 2 })
+    const gold = await shellOf("investments", { ...q1Search, node: holdings.nodes.Gold.id })
+    expect((gold.children.props.view as InvestmentGrowthView).points.map((p) => p.valuePaise)).toEqual([null, "11250000", "5320000"])
+  })
+
+  it("is not found for another user's account, and says nothing of it", async () => {
+    signIn()
+    const theirs = await registry.makeNode(holdings.user.id, "ASSET", "Marigold Private Reserve")
+    let thrown: unknown
+    expect(await nextSignal(() => page("accounts", { ...q1Search, node: theirs.id }), (error) => (thrown = error))).toBe("http 404")
+    const said = JSON.stringify({ message: (thrown as Error).message, digest: (thrown as { digest?: unknown }).digest, stack: (thrown as Error).stack })
+    expect(said).not.toContain("Marigold")
+    expect(said).not.toContain(theirs.id)
+    // Their investment, and a node of the wrong kind, under the other balance reports.
+    expect(await nextSignal(() => page("investments", { ...q1Search, node: holdings.nodes.Gold.id }))).toBe("http 404")
+    expect(await nextSignal(() => page("investments", { ...q1Search, node: scenario.nodes.Bank.id }))).toBe("http 404")
+    expect(await nextSignal(() => page("accounts", { ...q1Search, node: scenario.nodes.Salary.id }))).toBe("http 404")
+  })
+
+  it("shows a balance report over the last 12 months, with the reason beside the control, for a range it cannot read", async () => {
+    signIn()
+    const props = await shellOf("accounts", { range: "month-2026-13", node: scenario.nodes.Bank.id })
+    expect(props.rangeError).toBe('"month-2026-13" is not a recognised date range')
+    expect(props.choice).toEqual({ kind: "last12" })
+    expect(props.children.props.view).toEqual(await loadAccountHistory(scenario.user.id, { kind: "last12" }, scenario.nodes.Bank.id))
+    const control = renderToStaticMarkup(
+      createElement(RangeControl, {
+        current: "accounts",
+        choice: props.choice as never,
+        range: props.range as never,
+        options: props.options as never,
+        rangeError: props.rangeError,
+      }),
+    )
+    expect(visibleText(control).replaceAll("&quot;", '"')).toContain('"month-2026-13" is not a recognised date range. Showing the last 12 months instead.')
+
+    requireUserId.mockResolvedValue(holdings.user.id)
+    const worth = await shellOf("net-worth", { range: "month-2026-13" })
+    expect(worth.rangeError).toBe('"month-2026-13" is not a recognised date range')
+    expect(worth.children.props.view).toEqual(await loadNetWorthReport(holdings.user.id, { kind: "last12" }))
   })
 
   it("sends a signed-out visitor, or a session whose user is gone, to the login page", async () => {
@@ -447,6 +538,7 @@ describe("the report dispatcher", () => {
   it("titles the page after the report", async () => {
     expect(await generateMetadata({ params: Promise.resolve({ report: "cash-flow" }) })).toEqual({ title: "Income vs expense · Reports" })
     expect(await generateMetadata({ params: Promise.resolve({ report: "spending" }) })).toEqual({ title: "Spending · Reports" })
+    expect(await generateMetadata({ params: Promise.resolve({ report: "accounts" }) })).toEqual({ title: "Account history · Reports" })
     expect(await generateMetadata({ params: Promise.resolve({ report: "nope" }) })).toEqual({ title: "Reports" })
   })
 })

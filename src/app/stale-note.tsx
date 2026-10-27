@@ -10,11 +10,15 @@ function listed(names: readonly string[]): string {
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
 }
 
+/** The note's words, for a place that shows them without the note's box (a report's table row). */
+export function staleText(names: readonly string[]): string {
+  return names.length === 1
+    ? `${names[0]} is valued at a price more than its stale window old.`
+    : `${names.length <= NAMED_AT_MOST ? listed(names) : `${names.length} investments`} are valued at prices more than their stale window old.`
+}
+
 export function StaleNote({ names }: { names: readonly string[] }) {
-  const text =
-    names.length === 1
-      ? `${names[0]} is valued at a price more than its stale window old.`
-      : `${names.length <= NAMED_AT_MOST ? listed(names) : `${names.length} investments`} are valued at prices more than their stale window old.`
+  const text = staleText(names)
   return (
     <p role="note" className="mt-3 flex max-w-xl items-start gap-2.5 rounded-xl bg-notice-wash px-3.5 py-2.5 text-sm font-medium text-notice-fg">
       <Clock aria-hidden className="mt-0.5 size-4 shrink-0" />

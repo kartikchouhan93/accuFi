@@ -426,7 +426,12 @@ export function buildInvestmentGrowthView(input: {
       stale: point.stale,
       covered: single ? null : { covered: point.covered, total: point.total },
       unvaluedNames: sortedByName(point.unvaluedNodeIds, nameById).map(nameById),
-      drill: { node: nodes.map((node) => node.id), from: bucket.from, to: bucket.to },
+      // An empty node list is no filter at all (transactionsHref leaves it out), so a user with no investment would be
+      // sent to every entry of the month; the investment kind is what the figure is of, and has none of theirs.
+      drill:
+        nodes.length > 0
+          ? { node: nodes.map((node) => node.id), from: bucket.from, to: bucket.to }
+          : { kind: "INVESTMENT", from: bucket.from, to: bucket.to },
     }
   })
   return { range, empty: false, investments, selected, points }

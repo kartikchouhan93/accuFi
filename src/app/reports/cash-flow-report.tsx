@@ -108,7 +108,8 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
           Month by month
         </h2>
         <p className="mt-1 text-sm text-fg-soft">Each income and spending figure opens the entries it is made of.</p>
-        <div className="-mx-5 mt-4 overflow-x-auto px-5 sm:-mx-6 sm:px-6">
+        {/* Relative, so the screen-reader-only text in the cells (absolutely placed) is clipped with the table, not left out past the page edge. */}
+        <div className="relative -mx-5 mt-4 overflow-x-auto px-5 sm:-mx-6 sm:px-6">
           <table className="figures w-full min-w-max border-collapse text-[13px] sm:text-[15px]">
             <caption className="sr-only">Income, spending and net saved by period, {rangeWords(view)}</caption>
             <thead>

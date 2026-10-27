@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { netWorth } from "@/domain/balance"
 import { calendarDate, todayIn } from "@/domain/calendar-date"
 import { QUANTITY_SCALE } from "@/domain/quantity"
+import { transactionsHref } from "@/lib/report-drill"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { sumBalances } from "@/server/repositories/transaction-repository"
@@ -341,6 +342,17 @@ describe("loadInvestmentGrowth, Scenario N, January to March 2026", () => {
     }
     const other = await holdingsScenario(registry)
     await expect(loadInvestmentGrowth(user.id, Q1, other.nodes.Gold.id)).rejects.toBeInstanceOf(NotFoundError)
+  })
+
+  it("drills a month into the investment entries, not every entry, for a user with transactions but no investments", async () => {
+    const view = await loadInvestmentGrowth(flows.user.id, Q1, undefined)
+    expect(view.investments).toEqual([])
+    expect(view.points.map((p) => p.drill)).toEqual([
+      { kind: "INVESTMENT", from: "2026-01-01", to: "2026-01-31" },
+      { kind: "INVESTMENT", from: "2026-02-01", to: "2026-02-28" },
+      { kind: "INVESTMENT", from: "2026-03-01", to: "2026-03-31" },
+    ])
+    expect(transactionsHref(view.points[0].drill)).toBe("/transactions?kind=INVESTMENT&from=2026-01-01&to=2026-01-31")
   })
 
   it("says empty, with no points, for a user with no transactions", async () => {
