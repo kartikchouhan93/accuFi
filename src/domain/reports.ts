@@ -95,7 +95,11 @@ export interface RankedRow {
   paise: Paise
   /** Its own flow alone. */
   directPaise: Paise
-  /** Tenths of a percent of the positive rows' total (852 is 85.2%); null for a refund or when there is no total. */
+  /**
+   * Tenths of a percent of the positive top-level rows' total (852 is 85.2%). Only a top-level row in `rows` has one:
+   * null for a refund, for every child (a child can exceed its parent when a sibling refund lowers it), and when
+   * there is no total.
+   */
   shareTenths: bigint | null
   archived: boolean
   /** True for Realised Gain / Realised Loss: it came from selling an investment, not from a source or a purchase. */
@@ -123,7 +127,7 @@ export function shareTenths(part: Paise, whole: Paise): bigint | null {
 
 // Equal amounts fall back to name then id so the order never depends on input order.
 function byNameThenId(a: RankedRow, b: RankedRow): number {
-  return a.name.localeCompare(b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  return a.name.localeCompare(b.name, "en") || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 }
 const byAmount = (a: RankedRow, b: RankedRow) => (a.paise !== b.paise ? (a.paise > b.paise ? -1 : 1) : byNameThenId(a, b))
 const byMostNegative = (a: RankedRow, b: RankedRow) => (a.paise !== b.paise ? (a.paise < b.paise ? -1 : 1) : byNameThenId(a, b))
@@ -143,6 +147,7 @@ export function rankFlows(kind: FlowKind, nodes: readonly FlowNode[], moves: rea
     direct.set(move.nodeId, (direct.get(move.nodeId) ?? 0n) + flowOf(kind, move))
   }
 
+  // Assumes parentId data is acyclic (the schema allows one level only, HierarchyDepthError); a cycle would drop its nodes.
   const childrenOf = new Map<string, FlowNode[]>()
   const topLevel: FlowNode[] = []
   for (const n of eligible) {
@@ -178,11 +183,7 @@ export function rankFlows(kind: FlowKind, nodes: readonly FlowNode[], moves: rea
   const refunds = built.filter((r) => r.paise < 0n).sort(byMostNegative)
 
   const whole = rows.reduce((sum, r) => sum + r.paise, 0n)
-  const withShare = (row: RankedRow): RankedRow => ({
-    ...row,
-    shareTenths: shareTenths(row.paise, whole),
-    children: row.children.map(withShare),
-  })
+  const withShare = (row: RankedRow): RankedRow => ({ ...row, shareTenths: shareTenths(row.paise, whole) })
 
   return {
     rows: rows.map(withShare),

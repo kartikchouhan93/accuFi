@@ -193,6 +193,30 @@ describe("rankFlows (spending)", () => {
     ])
   })
 
+  it("gives children no share, while the top-level row keeps its own", () => {
+    const tree = [
+      node("food", "Food", "EXPENSE"),
+      node("groceries", "Groceries", "EXPENSE", { parentId: "food" }),
+      node("dining", "Dining", "EXPENSE", { parentId: "food" }),
+      node("fuel", "Fuel", "EXPENSE"),
+      node("petrol", "Petrol", "EXPENSE", { parentId: "fuel" }),
+      node("cab", "Cab", "EXPENSE", { parentId: "fuel" }),
+    ]
+    const ranked = rankFlows("EXPENSE", tree, [
+      mv("groceries", "all", 1000n, 0n),
+      mv("dining", "all", 0n, 300n),
+      mv("petrol", "all", 0n, 500n),
+      mv("cab", "all", 0n, 100n),
+    ])
+    const [food] = ranked.rows
+    expect(food.shareTenths).toBe(1000n)
+    expect(food.children.map((c) => c.shareTenths)).toEqual([null, null])
+    const [fuel] = ranked.refunds
+    expect(fuel.id).toBe("fuel")
+    expect(fuel.shareTenths).toBeNull()
+    expect(fuel.children.map((c) => c.shareTenths)).toEqual([null, null])
+  })
+
   it("gives a parent with children but no direct moves a direct amount of zero", () => {
     const tree = [node("food", "Food", "EXPENSE"), node("groceries", "Groceries", "EXPENSE", { parentId: "food" })]
     const ranked = rankFlows("EXPENSE", tree, [mv("groceries", "all", 500n, 0n)])
