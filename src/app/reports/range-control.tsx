@@ -8,7 +8,7 @@ import { buttonClass, inputClass } from "@/components/ui/styles"
 import type { CalendarDate } from "@/domain/calendar-date"
 import type { RangeChoice } from "@/domain/periods"
 import { reportHref, type ReportSlug } from "@/lib/report-nav"
-import type { RangeView } from "@/lib/report-view"
+import type { RangeOptions, RangeView } from "@/lib/report-view"
 import { formatDay } from "@/lib/transaction-text"
 import { cn } from "@/lib/utils"
 
@@ -18,14 +18,8 @@ import { cn } from "@/lib/utils"
 // what it was given, says why (`rangeError`) and shows the default; the message sits beside the control and is tied to it
 // with aria-describedby. Only an empty field is caught here, since there is nothing to send for it.
 
-/** What the pickers offer: every month and financial year from the user's first entry to today, newest first. */
-export interface RangeOptions {
-  months: { year: number; month: number }[]
-  /** Start years of financial years. */
-  fys: number[]
-  /** The month (1–12) the user's financial year starts in; 4 (April) when not given. */
-  fyStartMonth?: number
-}
+// The pickers' options are made by the server (loadRangeOptions); the type lives with the other report views.
+export type { RangeOptions }
 
 type Kind = RangeChoice["kind"]
 

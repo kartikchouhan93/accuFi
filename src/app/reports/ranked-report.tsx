@@ -8,6 +8,7 @@ import { Collapse } from "@/components/ui/collapse"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { Tag } from "@/components/ui/tag"
 import { formatPaiseText } from "@/lib/node-money"
+import { isNegative } from "@/lib/report-text"
 import type { RankedRowView, RankedView } from "@/lib/report-view"
 import { formatDay } from "@/lib/transaction-text"
 import { cn } from "@/lib/utils"
@@ -25,8 +26,6 @@ const WORDS = {
   EXPENSE: { title: "Where the money went", column: "Expense", total: "Total spending", verb: "spent", nothing: "Nothing was spent" },
   INCOME_SOURCE: { title: "Where the money came from", column: "Income source", total: "Total income", verb: "came in", nothing: "Nothing came in" },
 } as const
-
-const isNegative = (paise: string) => paise.startsWith("-")
 
 function Marks({ row }: { row: Pick<RankedRowView, "fromSales" | "archived"> }) {
   return (
@@ -50,15 +49,15 @@ function Signed({ paise }: { paise: string }) {
 /** What a parent row is made of: its own entries, then each child, signed and without a share. */
 export function RankedBreakdown({ row }: { row: RankedRowView }) {
   const lines = [
-    { key: "direct", name: "Direct", paise: row.directPaise, drill: { ...row.drill, node: [row.id] }, marks: null },
-    ...row.children.map((child) => ({ key: child.id, name: child.name, paise: child.paise, drill: child.drill, marks: <Marks row={child} /> })),
+    { key: "direct", name: "Direct", context: ` entries of ${row.name}`, paise: row.directPaise, drill: { ...row.drill, node: [row.id] }, marks: null },
+    ...row.children.map((child) => ({ key: child.id, name: child.name, context: undefined, paise: child.paise, drill: child.drill, marks: <Marks row={child} /> })),
   ]
   return (
     <ul className="mt-2 space-y-0.5 border-l border-line pl-4 text-[15px]">
       {lines.map((line) => (
         <li key={line.key} className="flex items-baseline justify-between gap-4 py-1">
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-            <DrillLink drill={line.drill} className={cn(line.key === "direct" && "text-fg-soft")}>
+            <DrillLink drill={line.drill} context={line.context} className={cn(line.key === "direct" && "text-fg-soft")}>
               {line.name}
             </DrillLink>
             {line.marks}
@@ -79,14 +78,14 @@ function RowLabel(props: { row: RankedRowView; open: boolean; panelId: string; o
   return (
     <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-normal">
       {/* A row with nothing to open keeps its name in line with the rows that have a toggle. */}
-      {row.children.length === 0 && indent && <span aria-hidden className="-ml-1 size-6 shrink-0" />}
+      {row.children.length === 0 && indent && <span aria-hidden className="size-6 shrink-0" />}
       {row.children.length > 0 && (
         <button
           type="button"
           aria-expanded={open}
           aria-controls={open ? panelId : undefined}
           onClick={onToggle}
-          className="-ml-1 grid size-6 shrink-0 place-items-center rounded-md text-fg-soft transition-colors hover:bg-panel hover:text-fg"
+          className="grid size-6 shrink-0 place-items-center rounded-md text-fg-soft transition-colors hover:bg-panel hover:text-fg"
         >
           <ChevronRight aria-hidden className={cn("size-4 transition-transform duration-200", open && "rotate-90")} />
           <span className="sr-only">Breakdown of {row.name}</span>

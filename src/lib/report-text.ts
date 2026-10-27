@@ -5,6 +5,9 @@ import { formatDay } from "./transaction-text"
 // short says which of its days it covers ("1–15 Apr 2026"), so a short bar is never read as a quiet month. A one-day
 // bucket is that day. Read from the date text itself, as formatDay is, so no timezone can move a day.
 
+/** Paise text below zero: the sign is in the text, so nothing has to be read as a number. */
+export const isNegative = (paise: string): boolean => paise.startsWith("-")
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export function periodLabel(bucket: Pick<BucketView, "from" | "to" | "partial">): string {

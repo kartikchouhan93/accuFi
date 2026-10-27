@@ -49,6 +49,19 @@ async function loadReport(slug: ReportSlug, userId: string, choice: RangeChoice)
   }
 }
 
+/**
+ * The report over `choice`; when the loader finds it cannot report on that range (it reads, but ends before it starts),
+ * the last 12 months instead, with the reason. `rangeError` is what reading the URL already found.
+ */
+async function loadWithFallback(slug: ReportSlug, userId: string, choice: RangeChoice, rangeError: string | null) {
+  try {
+    return { choice, rangeError, loaded: await loadReport(slug, userId, choice) }
+  } catch (error) {
+    if (!(error instanceof ReportRangeError) || choice.kind === "last12") throw error
+    return { choice: LAST_12, rangeError: error.message, loaded: await loadReport(slug, userId, LAST_12) }
+  }
+}
+
 export default async function ReportPage({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
   const { report } = await params
   if (!isReportSlug(report) || !BUILT.has(report)) notFound()
@@ -65,26 +78,19 @@ export default async function ReportPage({ params, searchParams }: { params: Par
   }
 
   let options: Awaited<ReturnType<typeof loadRangeOptions>>
-  let loaded: Awaited<ReturnType<typeof loadReport>>
+  let shown: Awaited<ReturnType<typeof loadWithFallback>>
   try {
     const userId = await requireUserId()
-    try {
-      ;[options, loaded] = await Promise.all([loadRangeOptions(userId), loadReport(report, userId, choice)])
-    } catch (error) {
-      // A range that reads but cannot be reported on is only found out by the loader.
-      if (!(error instanceof ReportRangeError) || choice.kind === "last12") throw error
-      choice = LAST_12
-      rangeError = error.message
-      ;[options, loaded] = await Promise.all([loadRangeOptions(userId), loadReport(report, userId, choice)])
-    }
+    // The options do not depend on the range, so they are read once, beside the report.
+    ;[options, shown] = await Promise.all([loadRangeOptions(userId), loadWithFallback(report, userId, choice, rangeError)])
   } catch (error) {
     redirectIfUnauthenticated(error) // the route guard normally catches a missing session first; a deleted user's it cannot
     throw error
   }
 
   return (
-    <ReportShell current={report} range={loaded.range} choice={choice} options={options} rangeError={rangeError}>
-      {loaded.body}
+    <ReportShell current={report} range={shown.loaded.range} choice={shown.choice} options={options} rangeError={shown.rangeError}>
+      {shown.loaded.body}
     </ReportShell>
   )
 }

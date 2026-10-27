@@ -1,7 +1,7 @@
 import { BarChart } from "@/components/charts/bar-chart"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { formatPaiseText } from "@/lib/node-money"
-import { periodLabel } from "@/lib/report-text"
+import { isNegative, periodLabel } from "@/lib/report-text"
 import type { CashFlowView } from "@/lib/report-view"
 import { formatDay } from "@/lib/transaction-text"
 import { cn } from "@/lib/utils"
@@ -13,8 +13,6 @@ import { NothingToReport } from "./report-notes"
 // the entries it is made of, so a month here can be checked against the Transactions screen. What was saved is the
 // difference of the two and has no entries of its own, so it is printed, not linked. Realised gains and losses count as
 // income and spending; when there are any, a line says how much of each, so a sale is not mistaken for earnings.
-
-const isNegative = (paise: string) => paise.startsWith("-")
 
 function rangeWords(view: CashFlowView) {
   return `${formatDay(view.range.from)} to ${formatDay(view.range.to)}`
@@ -54,7 +52,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
               Income
             </dt>
             <dd className="figures mt-1 font-display text-3xl font-semibold tracking-tight">
-              <DrillLink drill={totals.incomeDrill}>{formatPaiseText(totals.incomePaise)}</DrillLink>
+              <DrillLink drill={totals.incomeDrill} context=", total income">{formatPaiseText(totals.incomePaise)}</DrillLink>
             </dd>
           </div>
           <div>
@@ -62,7 +60,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
               Spending
             </dt>
             <dd className="figures mt-1 font-display text-3xl font-semibold tracking-tight">
-              <DrillLink drill={totals.spendingDrill}>{formatPaiseText(totals.spendingPaise)}</DrillLink>
+              <DrillLink drill={totals.spendingDrill} context=", total spending">{formatPaiseText(totals.spendingPaise)}</DrillLink>
             </dd>
           </div>
           <div className="sm:border-l sm:border-line sm:pl-6">
@@ -109,7 +107,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
         <h2 id="cash-flow-table-heading" className="font-display text-lg font-semibold tracking-tight">
           Month by month
         </h2>
-        <p className="mt-1 text-sm text-fg-soft">Each figure opens the entries it is made of.</p>
+        <p className="mt-1 text-sm text-fg-soft">Each income and spending figure opens the entries it is made of.</p>
         <div className="-mx-5 mt-4 overflow-x-auto px-5 sm:-mx-6 sm:px-6">
           <table className="figures w-full min-w-max border-collapse text-[13px] sm:text-[15px]">
             <caption className="sr-only">Income, spending and net saved by period, {rangeWords(view)}</caption>
@@ -136,10 +134,10 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
                     {labels[index]}
                   </th>
                   <td className="py-2.5 pl-3 sm:pl-4 text-right">
-                    <DrillLink drill={row.incomeDrill}>{formatPaiseText(row.incomePaise)}</DrillLink>
+                    <DrillLink drill={row.incomeDrill} context={`, income, ${labels[index]}`}>{formatPaiseText(row.incomePaise)}</DrillLink>
                   </td>
                   <td className="py-2.5 pl-3 sm:pl-4 text-right">
-                    <DrillLink drill={row.spendingDrill}>{formatPaiseText(row.spendingPaise)}</DrillLink>
+                    <DrillLink drill={row.spendingDrill} context={`, spending, ${labels[index]}`}>{formatPaiseText(row.spendingPaise)}</DrillLink>
                   </td>
                   <td className={cn("py-2.5 pl-3 sm:pl-4 text-right", isNegative(row.savedPaise) ? "text-negative" : "text-fg-soft")}>
                     {formatPaiseText(row.savedPaise)}
@@ -153,10 +151,10 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
                   Total
                 </th>
                 <td className="py-3 pl-3 sm:pl-4 text-right">
-                  <DrillLink drill={totals.incomeDrill}>{formatPaiseText(totals.incomePaise)}</DrillLink>
+                  <DrillLink drill={totals.incomeDrill} context=", total income">{formatPaiseText(totals.incomePaise)}</DrillLink>
                 </td>
                 <td className="py-3 pl-3 sm:pl-4 text-right">
-                  <DrillLink drill={totals.spendingDrill}>{formatPaiseText(totals.spendingPaise)}</DrillLink>
+                  <DrillLink drill={totals.spendingDrill} context=", total spending">{formatPaiseText(totals.spendingPaise)}</DrillLink>
                 </td>
                 <td className={cn("py-3 pl-3 sm:pl-4 text-right", isNegative(totals.savedPaise) && "text-negative")}>{formatPaiseText(totals.savedPaise)}</td>
               </tr>

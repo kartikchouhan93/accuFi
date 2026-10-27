@@ -29,12 +29,16 @@ const { ReportShell } = await import("@/app/reports/report-shell")
 const { default: ReportPage, generateMetadata } = await import("@/app/reports/[report]/page")
 const { loadCashFlow, loadRangeOptions } = await import("@/server/services/report-service")
 
-const visibleText = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
-/** Every link in the markup as [href, visible text], in document order. */
-const links = (html: string): [string, string][] =>
-  [...html.matchAll(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1].replace(/&amp;/g, "&"), visibleText(m[2])])
+/** All the text, the screen-reader-only parts included: what a link is announced as. */
+const accessibleText = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
+/** What is on screen: without the text that only a screen reader reads. */
+const visibleText = (html: string) => accessibleText(html.replace(/<span class="sr-only">[\s\S]*?<\/span>/g, ""))
+/** Every link in the markup as [href, visible text, accessible text], in document order. */
+const links = (html: string): [string, string, string][] =>
+  [...html.matchAll(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1].replace(/&amp;/g, "&"), visibleText(m[2]), accessibleText(m[2])])
 const hrefs = (html: string) => links(html).map(([href]) => href)
 const textOf = (html: string, href: string) => links(html).filter(([h]) => h === href).map(([, text]) => text)
+const namesOf = (html: string, href: string) => links(html).filter(([h]) => h === href).map(([, , name]) => name)
 
 const expectClean = (html: string) => {
   expect(html).not.toContain("NaN")
@@ -103,6 +107,16 @@ describe("CashFlowReport", () => {
     expect(textOf(html, "/transactions?flow=income&from=2026-01-01&to=2026-03-31")).toContain("₹1,52,300.00")
     expect(textOf(html, "/transactions?flow=spending&from=2026-01-01&to=2026-03-31")).toContain("₹51,300.00")
     expect(hrefs(html).every((href) => href.startsWith("/transactions?"))).toBe(true)
+  })
+
+  it("names what each figure link is of, for a screen reader, without changing what is shown", () => {
+    expect(namesOf(html, "/transactions?flow=spending&from=2026-01-01&to=2026-01-31")).toEqual(["₹21,500.00, spending, Jan 2026"])
+    expect(namesOf(html, "/transactions?flow=income&from=2026-02-01&to=2026-02-28")).toEqual(["₹50,300.00, income, Feb 2026"])
+    // The hero and the totals row both lead to every entry of the range.
+    expect(namesOf(html, "/transactions?flow=income&from=2026-01-01&to=2026-03-31")).toEqual(["₹1,52,300.00, total income", "₹1,52,300.00, total income"])
+    expect(namesOf(html, "/transactions?flow=spending&from=2026-01-01&to=2026-03-31")).toEqual(["₹51,300.00, total spending", "₹51,300.00, total spending"])
+    // Every figure link says what it is of.
+    for (const [href, text, name] of links(html)) expect(name, href).not.toBe(text)
   })
 
   it("says what realised gains and losses from investment sales are counted in the figures", () => {
@@ -219,7 +233,7 @@ describe("RankedReport, spending", () => {
     const button = /<button[^>]*aria-expanded="false"[^>]*>[\s\S]*?<\/button>/.exec(itemOf(html, "Food"))?.[0] ?? ""
     // Closed, so it controls nothing yet: the panel is not in the document (Collapse).
     expect(button).not.toContain("aria-controls")
-    expect(visibleText(button)).toContain("Breakdown of Food")
+    expect(accessibleText(button)).toContain("Breakdown of Food")
     // Only a row with children has one.
     expect(itemOf(html, "Rent")).not.toContain("<button")
   })
@@ -265,6 +279,7 @@ describe("RankedBreakdown", () => {
     const text = visibleText(html)
     expect(text).toMatch(/Direct[\s\S]*₹1,000\.00[\s\S]*Groceries[\s\S]*₹6,000\.00/)
     expect(textOf(html, "/transactions?node=food&from=2026-01-01&to=2026-03-31")).toEqual(["Direct"])
+    expect(namesOf(html, "/transactions?node=food&from=2026-01-01&to=2026-03-31")).toEqual(["Direct entries of Food"])
     expect(textOf(html, "/transactions?node=groceries&from=2026-01-01&to=2026-03-31")).toEqual(["Groceries"])
     expect(text).not.toContain("%")
     expect(text).not.toContain("net refund")
@@ -406,6 +421,14 @@ describe("the report dispatcher", () => {
     expect(props.rangeError).not.toBe("")
     expect(props.choice).toEqual({ kind: "last12" })
     expect(props.children.props.view).toMatchObject({ kind: "EXPENSE" })
+  })
+
+  it("falls back, with the reason shown, for a custom date that does not exist", async () => {
+    signIn()
+    const props = await shellOf("cash-flow", { range: "custom", from: "2026-02-30", to: "2026-03-01" })
+    expect(props.rangeError).toBe('"2026-02-30" is not a valid "from" date (expected YYYY-MM-DD)')
+    expect(props.choice).toEqual({ kind: "last12" })
+    expect(props.children.props.view).toEqual(await loadCashFlow(scenario.user.id, { kind: "last12" }))
   })
 
   it("is not found for an unknown report, and for the reports not built yet", async () => {

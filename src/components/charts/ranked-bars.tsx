@@ -35,7 +35,9 @@ export function RankedBars({ rows }: { rows: RankedBarRow[] }) {
       {rows.map((row, index) => (
         <li key={row.key} className={cn("rounded-2xl px-3 py-2.5 transition-colors hover:bg-panel-raised", row.muted && "text-fg-soft")}>
           <div className="flex items-baseline justify-between gap-4">
-            <span className="min-w-0 truncate font-medium">{row.label}</span>
+            {/* Padded on every side by more than the focus ring (2px outline, 2px offset) and pulled back by as much, so a
+                link or button in the label keeps its whole ring although `truncate` clips what overflows. */}
+            <span className="-m-1.5 min-w-0 truncate p-1.5 font-medium">{row.label}</span>
             <span className="figures flex shrink-0 items-baseline gap-3">
               <span className={cn(!row.muted && "font-medium text-fg")}>{row.amount}</span>
               {row.shareTenths !== null && <span className="w-14 text-right text-sm text-fg-soft">{formatShare(row.shareTenths)}</span>}

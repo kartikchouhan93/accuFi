@@ -1,6 +1,5 @@
 import { addDays, compareDates, daysBetween, type CalendarDate } from "@/domain/calendar-date"
 import type { LedgerKind } from "@/domain/ledger-kind"
-import type { RangeOptions } from "@/app/reports/range-control"
 import {
   clipToHistory,
   dayBuckets,
@@ -24,6 +23,7 @@ import {
   type CashFlowView,
   type InvestmentGrowthView,
   type NetWorthReportView,
+  type RangeOptions,
   type RangeView,
   type RankedView,
 } from "@/lib/report-view"

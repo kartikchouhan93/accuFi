@@ -47,6 +47,15 @@ export interface BucketView {
   partial: boolean
 }
 
+/** What a report's range pickers offer: every month and financial year from the user's first entry to today, newest first. */
+export interface RangeOptions {
+  months: { year: number; month: number }[]
+  /** Start years of financial years. */
+  fys: number[]
+  /** The month (1–12) the user's financial year starts in; 4 (April) when not given. */
+  fyStartMonth?: number
+}
+
 function toBucketView(bucket: Bucket): BucketView {
   return { key: bucket.key, from: bucket.from, to: bucket.to, partial: bucket.partial }
 }
