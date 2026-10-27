@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { addDays, calendarDate, toDbDate, todayIn, type CalendarDate } from "@/domain/calendar-date"
 import { ReportRangeError } from "@/domain/periods"
 import type { CashFlowView, RankedRowView, RankedView } from "@/lib/report-view"
 import { prisma } from "@/server/db"
 import { seedAccountNodes } from "@/server/services/account-seed"
 import { archiveLedgerNode, createLedgerNode } from "@/server/services/node-service"
-import { loadCashFlow, loadRanked } from "@/server/services/report-service"
+import { loadCashFlow, loadRangeOptions, loadRanked } from "@/server/services/report-service"
 import { recordTransaction } from "@/server/services/transaction-service"
 import { loadTransactionScreen } from "@/server/services/transaction-list"
 import { createRegistry } from "../repositories/fixtures"
@@ -270,5 +270,65 @@ describe("degenerate ranges", () => {
     const choice = { kind: "custom", from: calendarDate("2026-03-01"), to: calendarDate("2026-01-01") } as const
     await expect(loadCashFlow(scenario.user.id, choice)).rejects.toBeInstanceOf(ReportRangeError)
     await expect(loadRanked(scenario.user.id, choice, "EXPENSE")).rejects.toBeInstanceOf(ReportRangeError)
+  })
+})
+
+// What the range pickers offer: every month and financial year from the first live entry to today, today being the
+// user's own day. The clock is moved (Date only) to a moment that is still 31 March in UTC but already 1 April in
+// Kolkata, the users' timezone, so a list built from the machine's day instead would miss April and FY 2026-27.
+describe("loadRangeOptions", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const lateOn31March = () => vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-03-31T20:00:00Z") })
+
+  it("offers each month and financial year from the first entry (1 Jan 2026) to today in the user's timezone, newest first", async () => {
+    lateOn31March()
+    expect(await loadRangeOptions(scenario.user.id)).toEqual({
+      months: [
+        { year: 2026, month: 4 },
+        { year: 2026, month: 3 },
+        { year: 2026, month: 2 },
+        { year: 2026, month: 1 },
+      ],
+      fys: [2026, 2025],
+      fyStartMonth: 4,
+    })
+  })
+
+  it("offers nothing to a user with no transactions", async () => {
+    const user = await registry.makeUser()
+    await prisma.$transaction((tx) => seedAccountNodes(tx, user.id))
+    lateOn31March()
+    expect(await loadRangeOptions(user.id)).toEqual({ months: [], fys: [], fyStartMonth: 4 })
+  })
+
+  it("counts financial years from the user's own start month", async () => {
+    const { user, salary, bank } = await newUserWithNodes()
+    await post(user.id, salary.id, bank.id, 100_000n, calendarDate("2026-01-05"))
+    await prisma.user.update({ where: { id: user.id }, data: { financialYearStartMonth: 1 } })
+    lateOn31March()
+    expect(await loadRangeOptions(user.id)).toEqual({
+      months: [
+        { year: 2026, month: 4 },
+        { year: 2026, month: 3 },
+        { year: 2026, month: 2 },
+        { year: 2026, month: 1 },
+      ],
+      fys: [2026],
+      fyStartMonth: 1,
+    })
+  })
+
+  it("ignores a soft-deleted entry older than every live one", async () => {
+    const { user, salary, bank } = await newUserWithNodes()
+    const old = await post(user.id, salary.id, bank.id, 100_000n, calendarDate("2025-12-20"))
+    await post(user.id, salary.id, bank.id, 100_000n, calendarDate("2026-03-02"))
+    await prisma.transaction.update({ where: { id: old.id }, data: { deletedAt: new Date("2026-03-03T00:00:00Z") } })
+    lateOn31March()
+    expect((await loadRangeOptions(user.id)).months).toEqual([
+      { year: 2026, month: 4 },
+      { year: 2026, month: 3 },
+    ])
   })
 })

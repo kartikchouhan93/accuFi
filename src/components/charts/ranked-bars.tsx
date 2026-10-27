@@ -19,6 +19,8 @@ export interface RankedBarRow {
   shareTenths: number | null
   /** Drawn quieter: a line that is not ranked against the others. */
   muted?: boolean
+  /** Shown under the row, inside it: what the row is made of, when the report lets it open. */
+  detail?: React.ReactNode
 }
 
 /** 852 as "85.2%". Integer arithmetic on an integer that is at most 1000, so it is exact. */
@@ -47,6 +49,7 @@ export function RankedBars({ rows }: { rows: RankedBarRow[] }) {
               />
             </div>
           )}
+          {row.detail}
         </li>
       ))}
     </ol>

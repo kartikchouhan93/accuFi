@@ -1,0 +1,429 @@
+import { isValidElement, createElement, type ReactElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { randomUUID } from "node:crypto"
+import { calendarDate } from "@/domain/calendar-date"
+import type { CashFlowView, RangeView, RankedRowView, RankedView } from "@/lib/report-view"
+import { createRegistry } from "./repositories/fixtures"
+import { flowScenario, type Scenario } from "./reports/scenarios"
+
+// What the income-vs-expense, spending and income reports say, as markup, from literal views shaped exactly as the
+// server sends them (Scenario F, January to March 2026: plan "Shared scenarios"). Then the dispatcher page itself, with
+// the session replaced: which report a slug serves, how it reads the range from the URL, and what it does with one it
+// cannot use. Rendering to markup has no app router, so the router is stubbed; notFound and redirect stay real.
+
+const { requireUserId, auth, UnauthenticatedError } = vi.hoisted(() => {
+  class UnauthenticatedError extends Error {}
+  return { requireUserId: vi.fn(), auth: vi.fn(), UnauthenticatedError }
+})
+vi.mock("@/server/auth", () => ({ requireUserId, auth, UnauthenticatedError, signOut: vi.fn() }))
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }))
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ push: vi.fn() }),
+}))
+
+const { CashFlowReport } = await import("@/app/reports/cash-flow-report")
+const { RankedReport, RankedBreakdown } = await import("@/app/reports/ranked-report")
+const { ReportShell } = await import("@/app/reports/report-shell")
+const { default: ReportPage, generateMetadata } = await import("@/app/reports/[report]/page")
+const { loadCashFlow, loadRangeOptions } = await import("@/server/services/report-service")
+
+const visibleText = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&")
+/** Every link in the markup as [href, visible text], in document order. */
+const links = (html: string): [string, string][] =>
+  [...html.matchAll(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1].replace(/&amp;/g, "&"), visibleText(m[2])])
+const hrefs = (html: string) => links(html).map(([href]) => href)
+const textOf = (html: string, href: string) => links(html).filter(([h]) => h === href).map(([, text]) => text)
+
+const expectClean = (html: string) => {
+  expect(html).not.toContain("NaN")
+  expect(html).not.toContain("undefined")
+  expect(html).not.toContain("Infinity")
+}
+
+const Q1: RangeView = {
+  from: calendarDate("2026-01-01"),
+  to: calendarDate("2026-03-31"),
+  clampedToToday: false,
+  historyBegins: null,
+  futureCount: 0,
+}
+
+const month = (key: string, from: string, to: string, partial = false) => ({ key, from: calendarDate(from), to: calendarDate(to), partial })
+const flows = (from: string, to: string) => ({
+  incomeDrill: { flow: "income" as const, from: calendarDate(from), to: calendarDate(to) },
+  spendingDrill: { flow: "spending" as const, from: calendarDate(from), to: calendarDate(to) },
+})
+
+// Task 5's Scenario F cash flow, as loadCashFlow returns it.
+const cashFlow: CashFlowView = {
+  range: Q1,
+  empty: false,
+  buckets: [
+    { bucket: month("2026-01", "2026-01-01", "2026-01-31"), incomePaise: "5000000", spendingPaise: "2150000", savedPaise: "2850000", ...flows("2026-01-01", "2026-01-31") },
+    { bucket: month("2026-02", "2026-02-01", "2026-02-28"), incomePaise: "5030000", spendingPaise: "1700000", savedPaise: "3330000", ...flows("2026-02-01", "2026-02-28") },
+    { bucket: month("2026-03", "2026-03-01", "2026-03-31"), incomePaise: "5200000", spendingPaise: "1280000", savedPaise: "3920000", ...flows("2026-03-01", "2026-03-31") },
+  ],
+  totals: {
+    incomePaise: "15230000",
+    spendingPaise: "5130000",
+    savedPaise: "10100000",
+    gainPaise: "200000",
+    lossPaise: "80000",
+    ...flows("2026-01-01", "2026-03-31"),
+  },
+}
+
+const renderCashFlow = (view: CashFlowView) => renderToStaticMarkup(createElement(CashFlowReport, { view }))
+
+describe("CashFlowReport", () => {
+  const html = renderCashFlow(cashFlow)
+  const text = visibleText(html)
+
+  it("prints the totals of the range", () => {
+    expect(text).toContain("₹1,52,300.00")
+    expect(text).toContain("₹51,300.00")
+    expect(text).toContain("₹1,01,000.00")
+  })
+
+  it("has a table of Period, Income, Spending and Net saved with a row per month and a totals row", () => {
+    expect(text).toMatch(/Period\s*Income\s*Spending\s*Net saved/)
+    expect(text).toMatch(/Jan 2026\s*₹50,000\.00\s*₹21,500\.00\s*₹28,500\.00/)
+    expect(text).toMatch(/Feb 2026\s*₹50,300\.00\s*₹17,000\.00\s*₹33,300\.00/)
+    expect(text).toMatch(/Mar 2026\s*₹52,000\.00\s*₹12,800\.00\s*₹39,200\.00/)
+    expect(text).toMatch(/Total\s*₹1,52,300\.00\s*₹51,300\.00\s*₹1,01,000\.00/)
+  })
+
+  it("links every income and spending figure to the entries it is made of", () => {
+    expect(textOf(html, "/transactions?flow=spending&from=2026-01-01&to=2026-01-31")).toContain("₹21,500.00")
+    expect(textOf(html, "/transactions?flow=income&from=2026-01-01&to=2026-01-31")).toContain("₹50,000.00")
+    expect(textOf(html, "/transactions?flow=income&from=2026-02-01&to=2026-02-28")).toContain("₹50,300.00")
+    expect(textOf(html, "/transactions?flow=spending&from=2026-03-01&to=2026-03-31")).toContain("₹12,800.00")
+    expect(textOf(html, "/transactions?flow=income&from=2026-01-01&to=2026-03-31")).toContain("₹1,52,300.00")
+    expect(textOf(html, "/transactions?flow=spending&from=2026-01-01&to=2026-03-31")).toContain("₹51,300.00")
+    expect(hrefs(html).every((href) => href.startsWith("/transactions?"))).toBe(true)
+  })
+
+  it("says what realised gains and losses from investment sales are counted in the figures", () => {
+    expect(text).toContain("Includes ₹2,000.00 realised gains and ₹800.00 realised losses from investment sales.")
+    const none = visibleText(renderCashFlow({ ...cashFlow, totals: { ...cashFlow.totals, gainPaise: "0", lossPaise: "0" } }))
+    expect(none).not.toContain("realised")
+    const lossOnly = visibleText(renderCashFlow({ ...cashFlow, totals: { ...cashFlow.totals, gainPaise: "0" } }))
+    expect(lossOnly).toContain("Includes ₹0.00 realised gains and ₹800.00 realised losses from investment sales.")
+  })
+
+  it("keeps the chart and its View as table", () => {
+    expect(html).toContain('role="img"')
+    expect(text).toContain("View as table")
+    expect(html.match(/data-bar=/g)).toHaveLength(6)
+  })
+
+  it("labels a partial bucket with the days it covers", () => {
+    const partial: CashFlowView = {
+      ...cashFlow,
+      range: { ...Q1, from: calendarDate("2026-01-10"), to: calendarDate("2026-04-15") },
+      buckets: [
+        { ...cashFlow.buckets[0], bucket: month("2026-01", "2026-01-10", "2026-01-31", true), ...flows("2026-01-10", "2026-01-31") },
+        { ...cashFlow.buckets[1] },
+        { ...cashFlow.buckets[2] },
+        { bucket: month("2026-04", "2026-04-01", "2026-04-15", true), incomePaise: "0", spendingPaise: "0", savedPaise: "0", ...flows("2026-04-01", "2026-04-15") },
+      ],
+    }
+    const out = renderCashFlow(partial)
+    expect(visibleText(out)).toContain("10–31 Jan 2026")
+    expect(visibleText(out)).toContain("1–15 Apr 2026")
+    expect(textOf(out, "/transactions?flow=spending&from=2026-01-10&to=2026-01-31")).toContain("₹21,500.00")
+    expectClean(out)
+  })
+
+  it("prints a month that spent more than came in as a negative saving", () => {
+    const out = visibleText(
+      renderCashFlow({ ...cashFlow, buckets: [{ ...cashFlow.buckets[0], incomePaise: "100000", spendingPaise: "250050", savedPaise: "-150050" }] }),
+    )
+    expect(out).toMatch(/Jan 2026\s*₹1,000\.00\s*₹2,500\.50\s*-₹1,500\.50/)
+  })
+
+  it("offers a way to start, and no chart, when nothing has been recorded", () => {
+    const zero = { incomePaise: "0", spendingPaise: "0", savedPaise: "0", gainPaise: "0", lossPaise: "0", ...flows("2025-11-01", "2026-10-28") }
+    const out = renderCashFlow({ range: { ...Q1, from: calendarDate("2025-11-01"), to: calendarDate("2026-10-28") }, empty: true, buckets: [], totals: zero })
+    expect(visibleText(out)).toContain("Nothing to report yet")
+    expect(hrefs(out)).toContain("/transactions")
+    expect(out).not.toContain('role="img"')
+    expectClean(out)
+  })
+
+  it("prints no NaN or undefined", () => {
+    expectClean(html)
+  })
+})
+
+// Task 5's Scenario F spending, as loadRanked(…, "EXPENSE") returns it. Ids are stand-ins for the nodes' cuids.
+const drill = (...node: string[]) => ({ node, from: Q1.from, to: Q1.to })
+const row = (over: Partial<RankedRowView> & Pick<RankedRowView, "id" | "name" | "paise">): RankedRowView => ({
+  directPaise: over.paise,
+  shareTenths: null,
+  archived: false,
+  fromSales: false,
+  drill: drill(over.id),
+  children: [],
+  ...over,
+})
+
+const groceries = row({ id: "groceries", name: "Groceries", paise: "600000" })
+const food = row({ id: "food", name: "Food", paise: "700000", directPaise: "100000", shareTenths: 133, drill: drill("food", "groceries"), children: [groceries] })
+const spending: RankedView = {
+  range: Q1,
+  empty: false,
+  kind: "EXPENSE",
+  rows: [row({ id: "rent", name: "Rent", paise: "4500000", shareTenths: 852 }), food, row({ id: "loss", name: "Realised Loss", paise: "80000", shareTenths: 15, fromSales: true })],
+  refunds: [row({ id: "dining", name: "Dining", paise: "-150000" })],
+  totalPaise: "5130000",
+  totalDrill: { flow: "spending", from: Q1.from, to: Q1.to },
+}
+
+const income: RankedView = {
+  range: Q1,
+  empty: false,
+  kind: "INCOME_SOURCE",
+  rows: [
+    row({ id: "salary", name: "Salary", paise: "15000000", shareTenths: 985 }),
+    row({ id: "gain", name: "Realised Gain", paise: "200000", shareTenths: 13, fromSales: true }),
+    row({ id: "interest", name: "Interest", paise: "30000", shareTenths: 2 }),
+  ],
+  refunds: [],
+  totalPaise: "15230000",
+  totalDrill: { flow: "income", from: Q1.from, to: Q1.to },
+}
+
+const renderRanked = (view: RankedView) => renderToStaticMarkup(createElement(RankedReport, { view }))
+/** The markup of the list item whose link reads `name`. */
+const itemOf = (html: string, name: string) => html.split("<li").find((part) => new RegExp(`>${name}</a>`).test(part)) ?? ""
+const refundsBlock = (html: string) => /<section[^>]*aria-labelledby="net-refunds"[\s\S]*?<\/section>/.exec(html)?.[0] ?? ""
+
+describe("RankedReport, spending", () => {
+  const html = renderRanked(spending)
+  const text = visibleText(html)
+
+  it("ranks Rent, then Food, then Realised Loss, each with its amount and share", () => {
+    expect(text).toMatch(/Rent[\s\S]*₹45,000\.00[\s\S]*85\.2%[\s\S]*Food[\s\S]*₹7,000\.00[\s\S]*13\.3%[\s\S]*Realised Loss[\s\S]*₹800\.00[\s\S]*1\.5%/)
+  })
+
+  it("links each name to the entries it is made of, a parent with its children", () => {
+    expect(textOf(html, "/transactions?node=rent&from=2026-01-01&to=2026-03-31")).toEqual(["Rent"])
+    expect(textOf(html, "/transactions?node=food%2Cgroceries&from=2026-01-01&to=2026-03-31")).toEqual(["Food"])
+    expect(textOf(html, "/transactions?node=loss&from=2026-01-01&to=2026-03-31")).toEqual(["Realised Loss"])
+  })
+
+  it("lets a parent open to show what it is made of", () => {
+    const button = /<button[^>]*aria-expanded="false"[^>]*>[\s\S]*?<\/button>/.exec(itemOf(html, "Food"))?.[0] ?? ""
+    // Closed, so it controls nothing yet: the panel is not in the document (Collapse).
+    expect(button).not.toContain("aria-controls")
+    expect(visibleText(button)).toContain("Breakdown of Food")
+    // Only a row with children has one.
+    expect(itemOf(html, "Rent")).not.toContain("<button")
+  })
+
+  it("lists net refunds apart, with signed amounts and no share", () => {
+    const block = refundsBlock(html)
+    expect(visibleText(block)).toContain("Net refunds")
+    expect(visibleText(block)).toMatch(/Dining[\s\S]*-₹1,500\.00/)
+    expect(textOf(block, "/transactions?node=dining&from=2026-01-01&to=2026-03-31")).toEqual(["Dining"])
+    expect(visibleText(block)).not.toContain("%")
+    // Dining is a refund, not a ranked row.
+    expect(itemOf(html.replace(block, ""), "Dining")).toBe("")
+  })
+
+  it("marks a row that came from selling an investment", () => {
+    expect(visibleText(itemOf(html, "Realised Loss"))).toContain("from investment sales")
+    expect(visibleText(itemOf(html, "Rent"))).not.toContain("from investment sales")
+  })
+
+  it("marks an archived row", () => {
+    const archived = renderRanked({ ...spending, rows: [{ ...spending.rows[0], archived: true }, ...spending.rows.slice(1)] })
+    expect(visibleText(itemOf(archived, "Rent"))).toContain("archived")
+    expect(visibleText(itemOf(html, "Rent"))).not.toContain("archived")
+  })
+
+  it("ends with the total, linked to every spending entry of the range", () => {
+    expect(textOf(html, "/transactions?flow=spending&from=2026-01-01&to=2026-03-31").join(" ")).toContain("₹51,300.00")
+    expect(text).toMatch(/Total spending[\s\S]*₹51,300\.00/)
+  })
+
+  it("keeps a View as table", () => {
+    expect(text).toContain("View as table")
+  })
+
+  it("prints no NaN or undefined", () => {
+    expectClean(html)
+  })
+})
+
+describe("RankedBreakdown", () => {
+  it("shows the parent's own entries as Direct, then each child, with no share", () => {
+    const html = renderToStaticMarkup(createElement(RankedBreakdown, { row: food }))
+    const text = visibleText(html)
+    expect(text).toMatch(/Direct[\s\S]*₹1,000\.00[\s\S]*Groceries[\s\S]*₹6,000\.00/)
+    expect(textOf(html, "/transactions?node=food&from=2026-01-01&to=2026-03-31")).toEqual(["Direct"])
+    expect(textOf(html, "/transactions?node=groceries&from=2026-01-01&to=2026-03-31")).toEqual(["Groceries"])
+    expect(text).not.toContain("%")
+    expect(text).not.toContain("net refund")
+    expectClean(html)
+  })
+
+  it("signs a child that took in more than it spent and calls it a net refund", () => {
+    const refunded = { ...food, paise: "50000", children: [{ ...groceries, paise: "-50000", directPaise: "-50000" }] }
+    const text = visibleText(renderToStaticMarkup(createElement(RankedBreakdown, { row: refunded })))
+    expect(text).toMatch(/Groceries[\s\S]*-₹500\.00[\s\S]*net refund/)
+  })
+
+  it("marks an archived child", () => {
+    const text = visibleText(renderToStaticMarkup(createElement(RankedBreakdown, { row: { ...food, children: [{ ...groceries, archived: true }] } })))
+    expect(text).toMatch(/Groceries[\s\S]*archived/)
+  })
+})
+
+describe("RankedReport, income", () => {
+  const html = renderRanked(income)
+  const text = visibleText(html)
+
+  it("ranks the income sources with their shares and marks realised gains as from sales", () => {
+    expect(text).toMatch(/Salary[\s\S]*₹1,50,000\.00[\s\S]*98\.5%[\s\S]*Realised Gain[\s\S]*₹2,000\.00[\s\S]*1\.3%[\s\S]*Interest[\s\S]*₹300\.00[\s\S]*0\.2%/)
+    expect(visibleText(itemOf(html, "Realised Gain"))).toContain("from investment sales")
+  })
+
+  it("has no refunds block when nothing was refunded, and totals to every income entry", () => {
+    expect(refundsBlock(html)).toBe("")
+    expect(textOf(html, "/transactions?flow=income&from=2026-01-01&to=2026-03-31").join(" ")).toContain("₹1,52,300.00")
+    expect(text).toMatch(/Total income[\s\S]*₹1,52,300\.00/)
+    expectClean(html)
+  })
+})
+
+describe("RankedReport, nothing to rank", () => {
+  it("prints no NaN, no percentage and no undefined for a range with no activity", () => {
+    for (const view of [
+      { ...spending, rows: [], refunds: [], totalPaise: "0" },
+      { ...spending, rows: [row({ id: "rent", name: "Rent", paise: "0" })], refunds: [], totalPaise: "0" },
+      { ...income, rows: [], refunds: [], totalPaise: "0" },
+    ]) {
+      const html = renderRanked(view)
+      expectClean(html)
+      expect(visibleText(html)).not.toContain("%")
+      expect(visibleText(html)).toContain("₹0.00")
+    }
+  })
+
+  it("offers a way to start when nothing has been recorded", () => {
+    const html = renderRanked({ ...spending, empty: true, rows: [], refunds: [], totalPaise: "0" })
+    expect(visibleText(html)).toContain("Nothing to report yet")
+    expect(hrefs(html)).toContain("/transactions")
+    expectClean(html)
+  })
+})
+
+// -- The dispatcher -------------------------------------------------------------------------------------------------------
+
+const registry = createRegistry()
+afterAll(registry.cleanup)
+let scenario: Scenario
+beforeAll(async () => {
+  scenario = await flowScenario(registry)
+})
+beforeEach(() => {
+  requireUserId.mockReset()
+  auth.mockReset()
+})
+
+type Search = Record<string, string | string[] | undefined>
+const page = (report: string, search: Search = {}) => ReportPage({ params: Promise.resolve({ report }), searchParams: Promise.resolve(search) })
+
+/** What a call threw for Next to handle (a redirect or a not-found), or null if it returned. */
+async function nextSignal(run: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await run()
+  } catch (error) {
+    const digest = (error as { digest?: unknown }).digest
+    if (typeof digest === "string" && digest.startsWith("NEXT_REDIRECT;")) return `redirect ${digest.split(";")[2]}`
+    if (typeof digest === "string" && digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) return `http ${digest.split(";")[1]}`
+    throw error
+  }
+  return null
+}
+
+/** The page's element: the shell, with the report as its child. */
+async function shellOf(report: string, search: Search = {}) {
+  const element = (await page(report, search)) as ReactElement<{ rangeError: string | null; choice: unknown; options: unknown; children: ReactElement<{ view: unknown }> }>
+  expect(element.type).toBe(ReportShell)
+  expect(isValidElement(element.props.children)).toBe(true)
+  return element.props
+}
+
+describe("the report dispatcher", () => {
+  const signIn = () => requireUserId.mockResolvedValue(scenario.user.id)
+  const q1Search = { range: "custom", from: "2026-01-01", to: "2026-03-31" }
+
+  it("serves the income-vs-expense report with the range in the URL and the pickers' options", async () => {
+    signIn()
+    const props = await shellOf("cash-flow", q1Search)
+    expect(props.rangeError).toBeNull()
+    expect(props.choice).toEqual({ kind: "custom", from: "2026-01-01", to: "2026-03-31" })
+    expect(props.options).toEqual(await loadRangeOptions(scenario.user.id))
+    expect(props.children.type).toBe(CashFlowReport)
+    const view = props.children.props.view as CashFlowView
+    expect(view.totals).toMatchObject({ incomePaise: "15230000", spendingPaise: "5130000", savedPaise: "10100000" })
+    expect(visibleText(renderToStaticMarkup(props.children))).toContain("₹1,52,300.00")
+  })
+
+  it("serves spending and income as ranked reports", async () => {
+    signIn()
+    const spent = await shellOf("spending", q1Search)
+    expect(spent.children.type).toBe(RankedReport)
+    expect(spent.children.props.view).toMatchObject({ kind: "EXPENSE", totalPaise: "5130000" })
+    const earned = await shellOf("income", q1Search)
+    expect(earned.children.props.view).toMatchObject({ kind: "INCOME_SOURCE", totalPaise: "15230000" })
+  })
+
+  it("uses the first value of a repeated parameter", async () => {
+    signIn()
+    const props = await shellOf("cash-flow", { range: ["custom", "last12"], from: ["2026-02-01", "2025-01-01"], to: ["2026-02-28", "2025-12-31"] })
+    expect(props.choice).toEqual({ kind: "custom", from: "2026-02-01", to: "2026-02-28" })
+    expect((props.children.props.view as CashFlowView).totals.incomePaise).toBe("5030000")
+  })
+
+  it("says why a range it cannot read was not used, and shows the last 12 months instead", async () => {
+    signIn()
+    const props = await shellOf("cash-flow", { range: "month-2026-13" })
+    expect(props.rangeError).toBe('"month-2026-13" is not a recognised date range')
+    expect(props.choice).toEqual({ kind: "last12" })
+    expect(props.children.props.view).toEqual(await loadCashFlow(scenario.user.id, { kind: "last12" }))
+  })
+
+  it("does the same for a range it can read but not report on", async () => {
+    signIn()
+    const props = await shellOf("spending", { range: "custom", from: "2026-03-01", to: "2026-01-01" })
+    expect(props.rangeError).toEqual(expect.any(String))
+    expect(props.rangeError).not.toBe("")
+    expect(props.choice).toEqual({ kind: "last12" })
+    expect(props.children.props.view).toMatchObject({ kind: "EXPENSE" })
+  })
+
+  it("is not found for an unknown report, and for the reports not built yet", async () => {
+    signIn()
+    for (const slug of ["nope", "net-worth", "accounts", "investments"]) expect(await nextSignal(() => page(slug)), slug).toBe("http 404")
+  })
+
+  it("sends a signed-out visitor, or a session whose user is gone, to the login page", async () => {
+    requireUserId.mockRejectedValue(new UnauthenticatedError())
+    expect(await nextSignal(() => page("cash-flow"))).toBe("redirect /login")
+    requireUserId.mockReset()
+    requireUserId.mockResolvedValue(randomUUID())
+    expect(await nextSignal(() => page("spending"))).toBe("redirect /login")
+  })
+
+  it("titles the page after the report", async () => {
+    expect(await generateMetadata({ params: Promise.resolve({ report: "cash-flow" }) })).toEqual({ title: "Income vs expense · Reports" })
+    expect(await generateMetadata({ params: Promise.resolve({ report: "spending" }) })).toEqual({ title: "Spending · Reports" })
+    expect(await generateMetadata({ params: Promise.resolve({ report: "nope" }) })).toEqual({ title: "Reports" })
+  })
+})

@@ -1,6 +1,16 @@
 import { addDays, compareDates, daysBetween, type CalendarDate } from "@/domain/calendar-date"
 import type { LedgerKind } from "@/domain/ledger-kind"
-import { clipToHistory, dayBuckets, monthBuckets, resolveRange, type RangeChoice, type ResolvedRange } from "@/domain/periods"
+import type { RangeOptions } from "@/app/reports/range-control"
+import {
+  clipToHistory,
+  dayBuckets,
+  monthBuckets,
+  resolveRange,
+  selectableFinancialYears,
+  selectableMonths,
+  type RangeChoice,
+  type ResolvedRange,
+} from "@/domain/periods"
 import { cashFlow, rankFlows } from "@/domain/reports"
 import {
   buildAccountHistoryView,
@@ -58,6 +68,16 @@ async function resolveReportRange(userId: string, choice: RangeChoice, options: 
   // Only a range ending today leaves anything out: the live entries dated after it.
   const futureCount = compareDates(to, today) === 0 ? await countLiveTransactionsAfter(userId, today) : 0
   return { today, resolved, first, range: { from, to, clampedToToday: resolved.clampedToToday, historyBegins, futureCount } }
+}
+
+/**
+ * What the range pickers offer: every month and every financial year (by the user's own start month) from the month of
+ * the user's first live entry to today in their timezone, newest first. Nothing to pick for a user with no entries.
+ */
+export async function loadRangeOptions(userId: string): Promise<RangeOptions> {
+  const [today, fyStartMonth, first] = await Promise.all([todayFor(userId), findFinancialYearStartMonth(userId), findFirstTransactionDate(userId)])
+  if (first === null) return { months: [], fys: [], fyStartMonth }
+  return { months: selectableMonths(first, today), fys: selectableFinancialYears(first, today, fyStartMonth), fyStartMonth }
 }
 
 // -- Flow reports: cash flow, spending, income -----------------------------------------------------------------------------
