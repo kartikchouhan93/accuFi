@@ -78,6 +78,13 @@ export function daysBetween(from: CalendarDate, to: CalendarDate): number {
   return (toDbDate(to).getTime() - toDbDate(from).getTime()) / MS_PER_DAY
 }
 
+/** The day `days` after `date` (negative for earlier). UTC midnight maths, so no daylight-saving or timezone effect. */
+export function addDays(date: CalendarDate, days: number): CalendarDate {
+  const moved = toDbDate(date)
+  moved.setUTCDate(moved.getUTCDate() + days)
+  return fromDbDate(moved)
+}
+
 function assertMonth(month: number): void {
   if (!Number.isInteger(month) || month < 1 || month > 12) {
     throw new CalendarDateError(`Month must be an integer from 1 to 12, got ${month}`)

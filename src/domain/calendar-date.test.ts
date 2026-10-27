@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   CalendarDateError,
+  addDays,
   calendarDate,
   compareDates,
   daysBetween,
@@ -214,5 +215,17 @@ describe("financialYearRange", () => {
     for (const month of [0, 13, 1.5]) {
       expect(() => financialYearRange(calendarDate("2026-05-15"), month), String(month)).toThrow(CalendarDateError)
     }
+  })
+})
+
+describe("addDays", () => {
+  it("moves across month, leap-day and year boundaries", () => {
+    expect(addDays(calendarDate("2026-02-28"), 1)).toBe("2026-03-01")
+    expect(addDays(calendarDate("2024-02-28"), 1)).toBe("2024-02-29")
+    expect(addDays(calendarDate("2026-01-01"), -1)).toBe("2025-12-31")
+  })
+
+  it("returns the same day for zero", () => {
+    expect(addDays(calendarDate("2026-10-27"), 0)).toBe("2026-10-27")
   })
 })
