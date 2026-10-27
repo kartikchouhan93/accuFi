@@ -19,3 +19,13 @@ export async function findStalePriceDays(userId: string): Promise<number> {
   if (!user) throw new UserNotFoundError()
   return user.stalePriceDays
 }
+
+/**
+ * The month (1-12) the user's financial year starts in; 4, April, until they change it. Throws UserNotFoundError for an
+ * id that is not a user, as `findStalePriceDays` does.
+ */
+export async function findFinancialYearStartMonth(userId: string): Promise<number> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { financialYearStartMonth: true } })
+  if (!user) throw new UserNotFoundError()
+  return user.financialYearStartMonth
+}

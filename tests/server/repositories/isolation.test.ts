@@ -8,8 +8,10 @@ import * as lotRepo from "@/server/repositories/lot-repository"
 import * as nodeRepo from "@/server/repositories/node-repository"
 import * as priceRepo from "@/server/repositories/price-repository"
 import * as txRepo from "@/server/repositories/transaction-repository"
-import { findStalePriceDays, findUserTimezone } from "@/server/repositories/user-repository"
+import * as reportRepo from "@/server/repositories/report-repository"
+import { findFinancialYearStartMonth, findStalePriceDays, findUserTimezone } from "@/server/repositories/user-repository"
 import { inTransaction } from "@/server/repositories/unit-of-work"
+import { flowScenario, holdingsScenario } from "../reports/scenarios"
 import { createRegistry } from "./fixtures"
 
 // The highest-severity property of the application: one user must never see or change another's finances. The
@@ -567,6 +569,91 @@ describe("user repository", () => {
       await prisma.user.update({ where: { id: b.user.id }, data: { stalePriceDays: 30 } })
     }
   })
+
+  isolation("findFinancialYearStartMonth", "answers only for the id it is given, and refuses an id that is not a user", async () => {
+    await prisma.user.update({ where: { id: b.user.id }, data: { financialYearStartMonth: 1 } })
+    try {
+      expect(await findFinancialYearStartMonth(a.user.id)).toBe(4)
+      expect(await findFinancialYearStartMonth(b.user.id)).toBe(1)
+      expect(await findFinancialYearStartMonth("no-such-user").catch((e: unknown) => e)).toBeInstanceOf(UserNotFoundError)
+    } finally {
+      await prisma.user.update({ where: { id: b.user.id }, data: { financialYearStartMonth: 4 } })
+    }
+  })
+})
+
+describe("report repository", () => {
+  const range = { from: calendarDate("2026-01-01"), to: calendarDate("2026-12-31") }
+  let flow: Awaited<ReturnType<typeof flowScenario>>
+  let holdings: Awaited<ReturnType<typeof holdingsScenario>>
+  beforeAll(async () => {
+    flow = await flowScenario(registry)
+    holdings = await holdingsScenario(registry)
+  })
+
+  isolation("findMoves", "finds nothing for another user's nodes, however they are named, and none of theirs for the caller", async () => {
+    const theirNodeIds = Object.values(flow.nodes).map((n) => n.id)
+    const own = await registry.makeWorld() // one live entry, bank -> food, on 2026-04-01
+    // A's own nodes, filtered or not: nothing of the scenario's user shows up
+    expect(await reportRepo.findMoves(own.user.id, { ...range, bucket: "month", nodeIds: theirNodeIds })).toEqual([])
+    expect(await reportRepo.findMoves(own.user.id, { ...range, bucket: "month", nodeIds: [flow.nodes.Bank.id, own.bank.id] })).toEqual([
+      { nodeId: own.bank.id, bucket: "2026-04", inPaise: 0n, outPaise: 500n },
+    ])
+    expect(await reportRepo.findMoves(own.user.id, { ...range, bucket: "day", kinds: ["ASSET", "EXPENSE", "INCOME_SOURCE"] })).toEqual([
+      { nodeId: own.bank.id, bucket: "2026-04-01", inPaise: 0n, outPaise: 500n },
+      { nodeId: own.food.id, bucket: "2026-04-01", inPaise: 500n, outPaise: 0n },
+    ])
+    // and the scenario's own user still sees their rows, so the empty answers above are about scoping
+    expect((await reportRepo.findMoves(flow.user.id, { ...range, bucket: "month", nodeIds: [flow.nodes.Bank.id] })).length).toBe(3)
+  })
+
+  isolation("findMoves", "does not count another user's transaction smuggled onto the caller's node", async () => {
+    // The repositories refuse to write this row; nothing in the database does.
+    const own = await registry.makeWorld()
+    const smuggled = await registry.makeTransaction(flow.user.id, flow.nodes.Bank.id, own.food.id, { amountPaise: 777n, occurredAt: "2026-04-02" })
+    try {
+      const rows = await reportRepo.findMoves(own.user.id, { ...range, bucket: "month", nodeIds: [own.food.id] })
+      expect(rows).toEqual([{ nodeId: own.food.id, bucket: "2026-04", inPaise: 500n, outPaise: 0n }])
+    } finally {
+      await prisma.transaction.delete({ where: { id: smuggled.id } })
+    }
+  })
+
+  isolation("findMoves", "does not report another user's node that the caller's transaction was pointed at", async () => {
+    const own = await registry.makeWorld()
+    const smuggled = await registry.makeTransaction(own.user.id, own.bank.id, flow.nodes.Food.id, { amountPaise: 333n, occurredAt: "2026-04-03" })
+    try {
+      const rows = await reportRepo.findMoves(own.user.id, { ...range, bucket: "month" })
+      expect(rows.some((r) => r.nodeId === flow.nodes.Food.id)).toBe(false)
+      expect(await reportRepo.findMoves(own.user.id, { ...range, bucket: "month", nodeIds: [flow.nodes.Food.id] })).toEqual([])
+    } finally {
+      await prisma.transaction.delete({ where: { id: smuggled.id } })
+    }
+  })
+
+  isolation("findRealisedByMonth", "finds nothing for a user other than the one who sold", async () => {
+    const own = await registry.makeWorld()
+    expect(await reportRepo.findRealisedByMonth(own.user.id, range)).toEqual([])
+    expect(await reportRepo.findRealisedByMonth(holdings.user.id, range)).toEqual([
+      { nodeId: holdings.nodes.Gold.id, bucket: "2026-03", gainPaise: 480_000n, lossPaise: 0n },
+    ])
+  })
+
+  isolation("findFirstTransactionDate", "reads only the caller's own entries", async () => {
+    const own = await registry.makeWorld()
+    const none = await registry.makeUser()
+    expect(await reportRepo.findFirstTransactionDate(own.user.id)).toBe("2026-04-01") // not the scenario's 2026-01-01
+    expect(await reportRepo.findFirstTransactionDate(flow.user.id)).toBe("2026-01-01")
+    expect(await reportRepo.findFirstTransactionDate(none.id)).toBeNull()
+  })
+
+  isolation("countLiveTransactionsAfter", "counts only the caller's own entries", async () => {
+    const own = await registry.makeWorld()
+    const none = await registry.makeUser()
+    expect(await reportRepo.countLiveTransactionsAfter(own.user.id, calendarDate("2026-03-31"))).toBe(1)
+    expect(await reportRepo.countLiveTransactionsAfter(none.id, calendarDate("2000-01-01"))).toBe(0)
+    expect(await reportRepo.countLiveTransactionsAfter(flow.user.id, calendarDate("2026-03-31"))).toBe(0)
+  })
 })
 
 describe("unit of work", () => {
@@ -637,6 +724,7 @@ describe("coverage", () => {
       "lot-repository.ts",
       "node-repository.ts",
       "price-repository.ts",
+      "report-repository.ts",
       "transaction-repository.ts",
       "unit-of-work.ts",
       "user-repository.ts",
