@@ -26,9 +26,13 @@ const COLUMNS = ["Month", "Invested", "Value", "Gain", "Realised"] as const
 
 const isPartial = (point: GrowthPointView) => point.covered !== null && point.covered.covered < point.covered.total
 
+/** "covers 1 of 2" for a portfolio month that values only some of the investments; null when it values them all. */
+const coverage = (point: GrowthPointView): string | null =>
+  point.covered && isPartial(point) ? `covers ${point.covered.covered} of ${point.covered.total}` : null
+
 function valueText(point: GrowthPointView): string {
   if (point.valuePaise === null) return "Not valued"
-  const covered = point.covered && isPartial(point) ? `, covers ${point.covered.covered} of ${point.covered.total}` : ""
+  const covered = coverage(point) ? `, ${coverage(point)}` : ""
   return `${formatPaiseText(point.valuePaise)}${covered}${point.stale ? ", at an old price" : ""}`
 }
 
@@ -36,8 +40,8 @@ function notesOf(point: GrowthPointView, name: string | null): RowNote[] {
   const notes: RowNote[] = []
   if (point.covered && isPartial(point)) {
     const names = point.unvaluedNames
-    const left = names.length > 0 ? ` ${names.join(", ")} could not be valued and ${names.length === 1 ? "is" : "are"} left out of it.` : ""
-    notes.push({ key: "partial", kind: "partial", text: `Value covers ${point.covered.covered} of ${point.covered.total} investments.${left}` })
+    const left = names.length > 0 ? ` (${names.join(", ")} not valued)` : ""
+    notes.push({ key: "partial", kind: "partial", text: `Value and gain cover ${point.covered.covered} of ${point.covered.total} investments${left}.` })
   }
   if (point.stale) {
     notes.push({
@@ -86,7 +90,7 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
 
   return (
     <div className="space-y-6">
-      <NodePicker slug="investments" choice={choice} label="Investment" value={selected?.id ?? ""} groups={[{ options }]} />
+      <NodePicker key={selected?.id ?? ""} slug="investments" choice={choice} label="Investment" value={selected?.id ?? ""} groups={[{ options }]} />
 
       <div className="rise">
         <LineChart
@@ -111,7 +115,7 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
               cells: [
                 formatPaiseText(point.investedPaise),
                 valueText(point),
-                point.gainPaise === null ? "Not valued" : formatPaiseText(point.gainPaise),
+                point.gainPaise === null ? "Not valued" : `${formatPaiseText(point.gainPaise)}${coverage(point) ? `, ${coverage(point)}` : ""}`,
                 formatPaiseText(point.realisedPaise),
               ],
             })),
@@ -171,6 +175,13 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
                   </td>
                   <td className="whitespace-nowrap py-2.5 pl-3 text-right sm:pl-4">
                     <Signed paise={point.gainPaise} />
+                    {/* The gain is over the valued investments only, so it is not read as a gain on all that was invested. */}
+                    {point.gainPaise !== null && coverage(point) && (
+                      <>
+                        {" "}
+                        <span className="ml-1 text-xs font-medium text-fg-soft">{coverage(point)}</span>
+                      </>
+                    )}
                   </td>
                   <td className="whitespace-nowrap py-2.5 pl-3 text-right sm:pl-4">
                     <Signed paise={point.realisedPaise} />

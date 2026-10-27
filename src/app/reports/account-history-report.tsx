@@ -46,7 +46,8 @@ function Picker({ view, choice }: { view: AccountHistoryView; choice: RangeChoic
     const options = of(kind)
     return options.length > 0 ? [{ label: KIND_COPY[kind].plural, options }] : []
   })
-  return <NodePicker slug="accounts" choice={choice} label="Account" value={view.selected?.id ?? ""} groups={groups} placeholder="Choose an account" />
+  const value = view.selected?.id ?? ""
+  return <NodePicker key={value} slug="accounts" choice={choice} label="Account" value={value} groups={groups} placeholder="Choose an account" />
 }
 
 export function AccountHistoryReport({ view, choice }: { view: AccountHistoryView; choice: RangeChoice }) {
@@ -57,7 +58,9 @@ export function AccountHistoryReport({ view, choice }: { view: AccountHistoryVie
     return (
       <div className="space-y-6">
         <Picker view={view} choice={choice} />
-        <p className="text-fg-soft">Choose an account to see how its balance moved over this range.</p>
+        <p className="text-fg-soft">
+          {selected === null ? "Choose an account to see how its balance moved over this range." : `No activity for ${selected.name} in this range.`}
+        </p>
       </div>
     )
   }
@@ -83,7 +86,8 @@ export function AccountHistoryReport({ view, choice }: { view: AccountHistoryVie
           series={[
             {
               key: "closing",
-              label: owed ? "Owed" : "Balance",
+              // The point's text already says "owed" or "in credit" of a liability, so the series is not named for it too.
+              label: "Balance",
               tone: "accent",
               values: steps.map((row) => (owed ? owedOf(row.closingPaise) : row.closingPaise)),
               texts: steps.map((row) => words(row.closingPaise).text),

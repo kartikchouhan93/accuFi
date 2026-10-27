@@ -41,6 +41,8 @@ const rowText = (html: string, label: string) => {
 /** The `d` of each series line, by series key. */
 const seriesPath = (html: string, key: string) => new RegExp(`<path[^>]*data-series="${key}"[^>]*\\sd="([^"]*)"`).exec(html)?.[1] ?? null
 const count = (text: string, pattern: RegExp) => (text.match(pattern) ?? []).length
+/** The node picker: a form of its own with the labelled select and a Show button that applies it. */
+const pickerForm = (html: string, name: string) => new RegExp(`<form[^>]*aria-label="${name}"[^>]*>[\\s\\S]*?</form>`).exec(html)?.[0] ?? ""
 
 const expectClean = (html: string) => {
   expect(html).not.toContain("NaN")
@@ -269,7 +271,8 @@ describe("AccountHistoryReport", () => {
     expect(rowText(out, "Jan 2026")).toBe("Jan 2026 ₹0.00 ₹5,000.00 ₹20,000.00 ₹15,000.00 owed")
     expect(rowText(out, "Feb 2026")).toBe("Feb 2026 ₹15,000.00 owed ₹0.00 ₹2,500.00 ₹17,500.00 owed")
     expect(visibleText(out)).not.toContain("-₹15,000.00")
-    expect(out).toMatch(/<title>Jan 2026, Owed: ₹15,000\.00 owed<\/title>/)
+    expect(out).toMatch(/<title>Jan 2026, Balance: ₹15,000\.00 owed<\/title>/)
+    expect(out).not.toContain("Owed: ")
     expectClean(out)
   })
 
@@ -296,10 +299,25 @@ describe("AccountHistoryReport", () => {
     expect(select).toMatch(/<option[^>]*value="bank"[^>]*selected=""/)
   })
 
+  it("applies the chosen account with a Show button, not on change", () => {
+    const form = pickerForm(html, "Report account")
+    expect(form).toMatch(/<select[^>]*name="node"/)
+    expect(form).toMatch(/<button[^>]*type="submit"[^>]*>Show<\/button>/)
+    expect(form).toMatch(/<label[^>]*for="[^"]+"[^>]*>Account<\/label>/)
+  })
+
   it("asks for an account when none is chosen", () => {
     const out = renderHistory({ ...bank, selected: null, steps: [] })
     expect(visibleText(out)).toContain("Choose an account")
+    expect(visibleText(out)).not.toContain("No activity")
     expect(out).not.toContain('role="img"')
+    expectClean(out)
+  })
+
+  it("says a chosen account has no activity in the range, rather than asking for one", () => {
+    const out = renderHistory({ ...bank, steps: [] })
+    expect(visibleText(out)).toContain("No activity for Bank in this range.")
+    expect(visibleText(out)).not.toContain("Choose an account to see")
     expectClean(out)
   })
 
@@ -369,10 +387,16 @@ describe("InvestmentGrowthReport, the whole portfolio", () => {
 
   it("says January's value covers only one of the two investments, and which is left out", () => {
     const jan = rowText(html, "Jan 2026")
-    expect(jan).toMatch(/^Jan 2026 ₹80,000\.00 ₹10,000\.00 ₹0\.00 ₹0\.00/)
-    expect(jan).toContain("covers 1 of 2")
-    expect(jan).toContain("Gold could not be valued")
-    expect(rowText(html, "Feb 2026")).not.toContain("covers")
+    // The gain is over the valued investments only, so it says so beside the figure and in the note under the row.
+    expect(jan).toBe("Jan 2026 ₹80,000.00 ₹10,000.00 ₹0.00 covers 1 of 2 ₹0.00 Value and gain cover 1 of 2 investments (Gold not valued).")
+    expect(rowText(html, "Feb 2026")).toBe("Feb 2026 ₹1,17,000.00 ₹1,22,500.00 ₹5,500.00 ₹0.00")
+    expect(rowText(html, "Feb 2026")).not.toContain("cover")
+  })
+
+  it("qualifies a partial month's gain in the View as table too, and only that month's", () => {
+    expect(html).toContain("<td class=\"py-2 pl-4 text-right\">₹0.00, covers 1 of 2</td>")
+    expect(html).toContain("<td class=\"py-2 pl-4 text-right\">₹5,500.00</td>")
+    expect(html).not.toContain("₹5,500.00, covers")
   })
 
   it("shows what March's sale realised", () => {
@@ -403,6 +427,7 @@ describe("InvestmentGrowthReport, the whole portfolio", () => {
       ["fund", "Fund (archived)"],
     ])
     expect(select).toMatch(/<option[^>]*value=""[^>]*selected=""/)
+    expect(pickerForm(html, "Report investment")).toMatch(/<button[^>]*type="submit"[^>]*>Show<\/button>/)
   })
 
   it("marks a month valued at a stale price", () => {
