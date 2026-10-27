@@ -1,15 +1,29 @@
 import type { LedgerNode } from "@prisma/client"
+import { netWorth, type NodeBalance } from "../domain/balance"
 import type { CalendarDate } from "../domain/calendar-date"
+import type { LedgerKind } from "../domain/ledger-kind"
+import type { Paise } from "../domain/money"
 import type { Bucket } from "../domain/periods"
-import type { CashFlow, FlowNode, Ranked, RankedRow } from "../domain/reports"
+import {
+  portfolioPoint,
+  stepBalances,
+  type CashFlow,
+  type FlowNode,
+  type GrowthNodePoint,
+  type Move,
+  type Ranked,
+  type RankedRow,
+  type Step,
+} from "../domain/reports"
+import type { NotValuedReason, PriceState } from "./investment-view"
 import type { Drill } from "./report-drill"
 import { serialisePaise } from "./serialise"
 
 // What the report screens are made of, in a shape that can cross to the browser: money as paise text, days as
-// CalendarDate, never a bigint or a Date. Built from the domain's report functions (src/domain/reports.ts), which are the
-// only arithmetic: this file renames, serialises and attaches the drill-through each figure leads to. It imports nothing
+// CalendarDate, never a bigint or a Date. Built from the domain's report functions (src/domain/reports.ts) and `netWorth`
+// (src/domain/balance.ts), which are the only arithmetic: this file renames, serialises and attaches the drill-through each figure leads to. It imports nothing
 // from the server, so the tests of a view need no database. Sections: shared range and nodes, flow reports (cash flow,
-// spending and income).
+// spending and income), balance reports (net worth over time, account history, investment growth).
 
 // -- Shared: the range a report covers, and the nodes it classifies ------------------------------------------------------
 
@@ -155,4 +169,256 @@ export function buildRankedView(input: {
     totalPaise: serialisePaise(ranked.totalPaise),
     totalDrill: { flow: input.kind === "INCOME_SOURCE" ? "income" : "spending", from: range.from, to: range.to },
   }
+}
+
+// -- Balance reports: net worth over time, account history, investment growth ----------------------------------------------
+// Every balance here is a running balance (`stepBalances`) from the openings the day before the range, so a point is the
+// balance on its bucket's last day. Net worth and the value of an investment held by lots come from the same functions the
+// dashboard uses: `netWorth` over those balances, with the valuation the service worked out as of each bucket's last day.
+
+/** What `valuationStatesFrom` says of the investments held by lots on one day (its `ValuationStates`, without the server). */
+export interface BucketValuation {
+  valuations: ReadonlyMap<string, Paise | null>
+  unvalued: ReadonlyMap<string, NotValuedReason>
+  priced: ReadonlyMap<string, PriceState>
+}
+
+/** Node ids in name order, then id, so a list never depends on the order the database returned. */
+function sortedByName(ids: Iterable<string>, nameOf: (id: string) => string): string[] {
+  return [...ids].sort((a, b) => nameOf(a).localeCompare(nameOf(b), "en") || (a < b ? -1 : a > b ? 1 : 0))
+}
+
+/** The closing balance of each node in each bucket, keyed by bucket key then node id. */
+function closings(buckets: readonly Bucket[], openings: readonly NodeBalance[], moves: readonly Move[]): Map<string, Map<string, Step>> {
+  return stepBalances(buckets, new Map(openings.map((row) => [row.nodeId, row.balance])), moves)
+}
+
+export interface NetWorthPointView {
+  bucket: BucketView
+  /** The day the point is valued on: the bucket's last day. */
+  asOf: CalendarDate
+  assetsPaise: string
+  investmentsPaise: string
+  /** The positive amount owed. */
+  liabilitiesPaise: string
+  totalPaise: string
+  /** An investment could not be valued on `asOf` and is left out of the total. */
+  partial: boolean
+  unvalued: { nodeId: string; name: string; reason: NotValuedReason }[]
+  /** Investments counted at a price older than their window on `asOf` (EC-24). */
+  staleNames: string[]
+  /** Every entry of the month; the other three, the entries touching an account, an investment or a liability. */
+  movementDrill: Drill
+  assetsDrill: Drill
+  investmentsDrill: Drill
+  liabilitiesDrill: Drill
+}
+
+export interface NetWorthReportView {
+  range: RangeView
+  /** The user has no live transaction at all: `points` is empty. */
+  empty: boolean
+  points: NetWorthPointView[]
+}
+
+const HOLDING_KIND_SET: ReadonlySet<LedgerKind> = new Set(["ASSET", "INVESTMENT", "LIABILITY"])
+
+export function buildNetWorthView(input: {
+  range: RangeView
+  empty: boolean
+  buckets: readonly Bucket[]
+  /** Every node's balance the day before the range (`sumBalances`); its kind and archived flag are what net worth reads. */
+  openings: readonly NodeBalance[]
+  /** The moves of the holding nodes per bucket. */
+  moves: readonly Move[]
+  /** The valuation on each bucket's last day, one per bucket in the same order. */
+  valuations: readonly BucketValuation[]
+  /** Node id to name, for the investments named as not valued or stale. */
+  names: ReadonlyMap<string, string>
+}): NetWorthReportView {
+  const { range, buckets } = input
+  if (input.empty) return { range, empty: true, points: [] }
+  const holdings = input.openings.filter((row) => HOLDING_KIND_SET.has(row.kind))
+  const steps = closings(buckets, holdings, input.moves)
+  const nameOf = (id: string) => input.names.get(id) ?? "an unknown investment"
+
+  const points = buckets.map((bucket, index): NetWorthPointView => {
+    const state = input.valuations[index]
+    const inBucket = steps.get(bucket.key)!
+    const balances = holdings.map((row) => ({ ...row, balance: inBucket.get(row.nodeId)?.closingPaise ?? row.balance }))
+    const worth = netWorth(balances, state.valuations)
+    const drill = (kind?: LedgerKind): Drill => (kind ? { kind, from: bucket.from, to: bucket.to } : { from: bucket.from, to: bucket.to })
+    return {
+      bucket: toBucketView(bucket),
+      asOf: bucket.to,
+      assetsPaise: serialisePaise(worth.assets),
+      investmentsPaise: serialisePaise(worth.investments),
+      liabilitiesPaise: serialisePaise(worth.liabilities),
+      totalPaise: serialisePaise(worth.total),
+      partial: worth.isPartial,
+      unvalued: sortedByName(worth.unvaluedNodeIds, nameOf).map((nodeId) => ({
+        nodeId,
+        name: nameOf(nodeId),
+        reason: state.unvalued.get(nodeId)!,
+      })),
+      staleNames: sortedByName(
+        [...state.priced].filter(([, price]) => price.stale).map(([id]) => id),
+        nameOf,
+      ).map(nameOf),
+      movementDrill: drill(),
+      assetsDrill: drill("ASSET"),
+      investmentsDrill: drill("INVESTMENT"),
+      liabilitiesDrill: drill("LIABILITY"),
+    }
+  })
+  return { range, empty: false, points }
+}
+
+export interface AccountRef {
+  id: string
+  name: string
+  kind: "ASSET" | "LIABILITY"
+  archived: boolean
+}
+
+export interface AccountHistoryView {
+  range: RangeView
+  empty: boolean
+  /** Days for a range of 93 days or fewer as asked for (before it is clipped to history), months otherwise. */
+  granularity: "day" | "month"
+  /** Every account and liability of the user, archived ones included, oldest first. */
+  accounts: AccountRef[]
+  /** The account the steps are of; null when the user has none to show. */
+  selected: AccountRef | null
+  steps: { bucket: BucketView; openingPaise: string; inPaise: string; outPaise: string; closingPaise: string; drill: Drill }[]
+}
+
+/** The account-history choice of `node`, or null for a node that is not an account or a liability. */
+export function toAccountRef(node: LedgerNode): AccountRef | null {
+  return node.kind === "ASSET" || node.kind === "LIABILITY"
+    ? { id: node.id, name: node.name, kind: node.kind, archived: node.archivedAt !== null }
+    : null
+}
+
+export function buildAccountHistoryView(input: {
+  range: RangeView
+  empty: boolean
+  granularity: "day" | "month"
+  accounts: AccountRef[]
+  selected: AccountRef | null
+  buckets: readonly Bucket[]
+  /** The selected account's balance the day before the range. */
+  openingPaise: Paise
+  /** The selected account's moves per bucket. */
+  moves: readonly Move[]
+}): AccountHistoryView {
+  const { range, granularity, accounts, selected } = input
+  if (input.empty || selected === null) return { range, empty: input.empty, granularity, accounts, selected, steps: [] }
+  const steps = closings(input.buckets, [{ nodeId: selected.id, kind: selected.kind, balance: input.openingPaise, archived: selected.archived }], input.moves)
+  return {
+    range,
+    empty: false,
+    granularity,
+    accounts,
+    selected,
+    steps: input.buckets.map((bucket) => {
+      const step = steps.get(bucket.key)!.get(selected.id)!
+      return {
+        bucket: toBucketView(bucket),
+        openingPaise: serialisePaise(step.openingPaise),
+        inPaise: serialisePaise(step.inPaise),
+        outPaise: serialisePaise(step.outPaise),
+        closingPaise: serialisePaise(step.closingPaise),
+        drill: { node: [selected.id], from: bucket.from, to: bucket.to },
+      }
+    }),
+  }
+}
+
+export interface GrowthPointView {
+  bucket: BucketView
+  asOf: CalendarDate
+  /** What is in the investments on `asOf`: their balance. */
+  investedPaise: string
+  /** What they are worth on `asOf`, over the ones that can be valued; null for a single investment that cannot be (a gap). */
+  valuePaise: string | null
+  /** Value minus invested over the same valued investments; null with `valuePaise`. */
+  gainPaise: string | null
+  /** Gain minus loss realised by sales in the bucket. */
+  realisedPaise: string
+  stale: boolean
+  /** For the whole portfolio: how many of the investments are valued. Null for a single investment. */
+  covered: { covered: number; total: number } | null
+  /** The investments not valued on `asOf`, by name. */
+  unvaluedNames: string[]
+  drill: Drill
+}
+
+export interface InvestmentGrowthView {
+  range: RangeView
+  empty: boolean
+  /** Every investment of the user, archived ones included, oldest first. */
+  investments: { id: string; name: string; archived: boolean }[]
+  /** Null for the whole portfolio. */
+  selected: { id: string; name: string } | null
+  points: GrowthPointView[]
+}
+
+export function buildInvestmentGrowthView(input: {
+  range: RangeView
+  empty: boolean
+  buckets: readonly Bucket[]
+  investments: readonly LedgerNode[]
+  /** One of `investments`, or null for the whole portfolio. */
+  selectedId: string | null
+  /** Every investment's balance the day before the range. */
+  openings: readonly NodeBalance[]
+  /** The investments' moves per bucket. */
+  moves: readonly Move[]
+  /** The valuation on each bucket's last day, one per bucket in the same order. */
+  valuations: readonly BucketValuation[]
+  /** What sales realised per investment and month (`findRealisedByMonth`). */
+  realised: readonly { nodeId: string; bucket: string; gainPaise: Paise; lossPaise: Paise }[]
+}): InvestmentGrowthView {
+  const { range, buckets } = input
+  const investments = input.investments.map((node) => ({ id: node.id, name: node.name, archived: node.archivedAt !== null }))
+  const chosen = input.selectedId === null ? null : investments.find((node) => node.id === input.selectedId) ?? null
+  const selected = chosen && { id: chosen.id, name: chosen.name }
+  if (input.empty) return { range, empty: true, investments, selected, points: [] }
+
+  const nodes = chosen ? [chosen] : investments
+  const ids = new Set(nodes.map((node) => node.id))
+  const names = new Map(nodes.map((node) => [node.id, node.name]))
+  const nameById = (id: string) => names.get(id)!
+  const openings = input.openings.filter((row) => ids.has(row.nodeId))
+  const steps = closings(buckets, openings, input.moves.filter((move) => ids.has(move.nodeId)))
+  const realisedIn = (key: string) =>
+    input.realised.filter((row) => row.bucket === key && ids.has(row.nodeId)).reduce((sum, row) => sum + row.gainPaise - row.lossPaise, 0n)
+
+  const points = buckets.map((bucket, index): GrowthPointView => {
+    const state = input.valuations[index]
+    const inBucket = steps.get(bucket.key)!
+    const perNode = nodes.map((node): GrowthNodePoint => {
+      const investedPaise = inBucket.get(node.id)?.closingPaise ?? 0n
+      // As in netWorth: absent from the valuations means valued by what was put in; present and null means not valued.
+      const valuePaise = state.valuations.has(node.id) ? state.valuations.get(node.id)! : investedPaise
+      return { nodeId: node.id, investedPaise, valuePaise, stale: state.priced.get(node.id)?.stale ?? false }
+    })
+    const point = portfolioPoint(perNode)
+    const single = chosen !== null
+    const valued = !single || point.covered === 1
+    return {
+      bucket: toBucketView(bucket),
+      asOf: bucket.to,
+      investedPaise: serialisePaise(point.investedPaise),
+      valuePaise: valued ? serialisePaise(point.valuePaise) : null,
+      gainPaise: valued ? serialisePaise(point.gainPaise) : null,
+      realisedPaise: serialisePaise(realisedIn(bucket.key)),
+      stale: point.stale,
+      covered: single ? null : { covered: point.covered, total: point.total },
+      unvaluedNames: sortedByName(point.unvaluedNodeIds, nameById).map(nameById),
+      drill: { node: nodes.map((node) => node.id), from: bucket.from, to: bucket.to },
+    }
+  })
+  return { range, empty: false, investments, selected, points }
 }
