@@ -91,6 +91,39 @@ describe("formatTick", () => {
     expect(formatTick(-2_000_000_000)).toBe("-₹2Cr")
   })
 
+  it("prints a 2.5 step exactly, never rounded to one decimal", () => {
+    expect(formatTick(12_500_000)).toBe("₹1.25L")
+    expect(formatTick(17_500_000)).toBe("₹1.75L")
+    expect(formatTick(125_000)).toBe("₹1.25K")
+    expect(formatTick(-375_000)).toBe("-₹3.75K")
+    expect(formatTick(1_250_000_000)).toBe("₹1.25Cr")
+    expect(formatTick(2_250_000_000)).toBe("₹2.25Cr")
+    expect(formatTick(75_000_000)).toBe("₹7.5L")
+    expect(formatTick(25)).toBe("₹0.25")
+  })
+
+  // Every tick niceDomain can produce, over spans from a rupee to a lakh crore, reads back as exactly its value.
+  it("labels every tick niceDomain produces with its exact value", () => {
+    const UNITS: Record<string, number> = { "": 1, K: 1e3, L: 1e5, Cr: 1e7 }
+    const readBack = (label: string) => {
+      const match = /^(-?)₹([\d,.]+)(K|L|Cr)?$/.exec(label)
+      expect(match, label).not.toBeNull()
+      const [, sign, digits, unit = ""] = match as RegExpExecArray
+      return (sign ? -1 : 1) * Number(digits.replaceAll(",", "")) * UNITS[unit] * 100
+    }
+    for (let exponent = 2; exponent <= 15; exponent += 1) {
+      for (const mantissa of [1, 1.3, 1.7, 2.2, 3.1, 4.4, 6.5, 8.2, 9.9]) {
+        for (const negative of [0, 0.3, 1]) {
+          const max = mantissa * 10 ** exponent
+          for (const tick of niceDomain(-max * negative, max).ticks) {
+            const back = readBack(formatTick(tick))
+            expect(Math.abs(back - tick), `${tick} -> ${formatTick(tick)}`).toBeLessThanOrEqual(Math.abs(tick) * 1e-9)
+          }
+        }
+      }
+    }
+  })
+
   it("never prints an exponent for a huge tick", () => {
     expect(formatTick(1e23)).not.toMatch(/e|NaN/)
   })

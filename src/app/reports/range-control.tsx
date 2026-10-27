@@ -23,6 +23,8 @@ export interface RangeOptions {
   months: { year: number; month: number }[]
   /** Start years of financial years. */
   fys: number[]
+  /** The month (1–12) the user's financial year starts in; 4 (April) when not given. */
+  fyStartMonth?: number
 }
 
 type Kind = RangeChoice["kind"]
@@ -37,9 +39,9 @@ const KINDS: readonly Choice<Kind>[] = [
 const pad = (n: number) => String(n).padStart(2, "0")
 const monthValue = ({ year, month }: { year: number; month: number }) => `${year}-${pad(month)}`
 
-/** "FY 2025–26" for the financial year starting in 2025. */
-export function fyLabel(startYear: number): string {
-  return `FY ${startYear}–${pad((startYear + 1) % 100)}`
+/** "FY 2025–26" for the financial year starting in 2025; "FY 2025" when financial years are calendar years. */
+export function fyLabel(startYear: number, startMonth = 4): string {
+  return startMonth === 1 ? `FY ${startYear}` : `FY ${startYear}–${pad((startYear + 1) % 100)}`
 }
 
 interface Props {
@@ -139,7 +141,7 @@ export function RangeControl({ current, choice, range, options, rangeError }: Pr
             {fys.length === 0 && <option value="">No entries yet</option>}
             {fys.map((year) => (
               <option key={year} value={year}>
-                {fyLabel(year)}
+                {fyLabel(year, options.fyStartMonth)}
               </option>
             ))}
           </select>
@@ -184,6 +186,7 @@ export function RangeControl({ current, choice, range, options, rangeError }: Pr
         <p id={errorId} className="mt-3 text-sm font-medium text-negative">
           {/* The server's messages carry no full stop of their own. */}
           {problem.replace(/\.?$/, ".")}
+          {/* Holds only because the report page falls back to last12 whenever it passes a rangeError: keep the two in step. */}
           {rangeError && !missing && " Showing the last 12 months instead."}
         </p>
       )}

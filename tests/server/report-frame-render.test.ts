@@ -63,6 +63,26 @@ describe("RangeControl", () => {
     expect(html).toContain(`aria-describedby="${id}"`)
   })
 
+  it("names a financial year by its two calendar years, or by one when it starts in January", () => {
+    const render = (fyStartMonth?: number) =>
+      visibleText(
+        renderToStaticMarkup(
+          createElement(RangeControl, {
+            current: "income",
+            choice: { kind: "fy", startYear: 2025 },
+            range: range(),
+            options: { ...options, fyStartMonth },
+            rangeError: null,
+          }),
+        ),
+      )
+    expect(render()).toContain("FY 2025–26")
+    expect(render(4)).toContain("FY 2026–27")
+    expect(render(1)).toContain("FY 2025")
+    expect(render(1)).not.toMatch(/FY 2025–/)
+    expect(render(1)).not.toMatch(/FY 2026–/)
+  })
+
   it("starts on the month that was asked for", () => {
     const html = renderToStaticMarkup(
       createElement(RangeControl, { current: "income", choice: { kind: "month", year: 2026, month: 9 }, range: range(), options, rangeError: null }),

@@ -10,7 +10,9 @@ import { cn } from "@/lib/utils"
 // One link per report, the current one marked for a screen reader (aria-current) and to the eye (a filled pill). Moving to
 // another report keeps the range, so comparing two reports over the same months is one click. A highlight slides under the
 // pointer from tab to tab, as the navigation rail does; it only draws, it is not what is selected. On a narrow screen the
-// row scrolls sideways within itself (never the page), starting with the current tab in view.
+// row scrolls sideways within itself (never the page), starting with the current tab in view. A scrolling row clips what
+// overflows it, focus outlines included, so the row is padded on every side (more than the outline's 2px plus its 2px
+// offset) and a matching negative margin puts it back where it was.
 
 export function ReportTabs({ current, choice }: { current: ReportSlug; choice: RangeChoice }) {
   const reduce = useReducedMotion()
@@ -30,7 +32,7 @@ export function ReportTabs({ current, choice }: { current: ReportSlug; choice: R
       <ul
         ref={row}
         onPointerLeave={() => setOver(null)}
-        className="flex gap-1 overflow-x-auto px-4 pb-1 [scrollbar-width:none] sm:flex-wrap sm:px-0 [&::-webkit-scrollbar]:hidden"
+        className="-my-1.5 flex gap-1 overflow-x-auto px-4 py-1.5 [scrollbar-width:none] sm:-mx-1.5 sm:flex-wrap sm:px-1.5 [&::-webkit-scrollbar]:hidden"
       >
         {REPORTS.map((report) => {
           const active = report.slug === current

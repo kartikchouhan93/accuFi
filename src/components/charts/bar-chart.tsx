@@ -59,7 +59,7 @@ export function BarChart({ title, summary, labels, series, table }: Props) {
   const numbers = series.flatMap((s) => s.values.map(paiseToNumber))
   const lo = numbers.length ? Math.min(...numbers) : 0
   const hi = numbers.length ? Math.max(...numbers) : 0
-  const domain = niceDomain(lo, hi === lo ? lo + 100 : hi)
+  const domain = niceDomain(lo, Math.max(hi, lo + 100)) // a span of at least a rupee, so every tick label is exact (formatTick)
   const tickLabels = domain.ticks.map(formatTick)
   const left = Math.max(...tickLabels.map((label) => label.length)) * 6.6 + 14
   const plotRight = width - RIGHT

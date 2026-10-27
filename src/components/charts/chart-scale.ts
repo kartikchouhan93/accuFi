@@ -71,11 +71,16 @@ export function linePath(points: ({ x: number; y: number } | null)[]): string {
   return path
 }
 
-const COMPACT = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 1, useGrouping: true })
+// Two fraction digits are always enough for a tick, so no tick is ever rounded. A tick is a whole multiple n of a step
+// m × 10^k (m in 1, 2, 2.5, 5) with |n| at most 6, so a tick shown in a unit U (a thousand, a lakh, a crore, or one
+// rupee) is at least U and its step at least U/6: the step in that unit is then 0.2, 0.25, 0.5 or more, and n of those
+// needs at most two decimals (1.25L, 7.5K). For rupees, the charts give every axis a span of at least a rupee, so the step
+// is at least 20 paise (₹0.2, ₹0.25). chart-scale.test.ts reads every label back against its tick.
+const COMPACT = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2, useGrouping: true })
 
 /**
- * An axis tick, given in paise, as compact rupees the Indian way: "₹500", "₹2.5K", "₹1L" (a lakh), "₹2Cr" (a crore). A tick
- * is a round number niceDomain chose, so the rounding here never misstates anybody's figure.
+ * An axis tick, given in paise, as compact rupees the Indian way: "₹500", "₹2.5K", "₹1.25L" (a lakh), "₹2Cr" (a crore).
+ * A tick is a round number niceDomain chose, and it is printed exactly (see COMPACT).
  */
 export function formatTick(paise: number): string {
   const rupees = Math.abs(paise) / 100
