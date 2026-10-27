@@ -97,3 +97,23 @@ export function PricesSkeleton() {
     </Shell>
   )
 }
+
+export function ReportsSkeleton() {
+  return (
+    <Shell label="the report">
+      <Skeleton className="h-10 w-40" />
+      <div className="mt-6 flex gap-2 overflow-hidden">
+        {Array.from({ length: 6 }, (_, i) => (
+          <Skeleton key={i} className="h-10 w-28 shrink-0 rounded-xl" />
+        ))}
+      </div>
+      <Skeleton className="mt-4 h-32 rounded-3xl lg:h-24" />
+      <Skeleton className="mt-8 h-[24rem] rounded-3xl" />
+      <div className="mt-6 space-y-3">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-14 rounded-2xl" />
+        ))}
+      </div>
+    </Shell>
+  )
+}

@@ -62,6 +62,11 @@ const PAIRS: [string, string, number, string][] = [
   ["focus", "panel", EDGE, "the focus ring on a panel"],
   ["focus", "canvas", EDGE, "the focus ring on the page"],
   ["accent-edge", "panel", EDGE, "marigold used as a control's edge"],
+  // Chart marks, which sit on a panel: a line, a bar or a point is a non-text mark and needs 3:1 against it. `positive` and
+  // `negative` (income, spending) and `line-strong` (the zero line) are held to that or more by the pairs above; the accent
+  // series and the muted series (`fg-soft`) are not otherwise checked as marks.
+  ["accent", "panel", EDGE, "an accent chart line, bar or point on a panel"],
+  ["fg-soft", "panel", EDGE, "a muted chart line on a panel"],
 ]
 
 describe.each([
