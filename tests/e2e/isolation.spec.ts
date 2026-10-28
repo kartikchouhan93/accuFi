@@ -747,3 +747,139 @@ test.describe("a request B's browser sends, aimed at A's gold", () => {
     await expect(netWorth(b.page).locator("p").first()).toHaveText(B_NET_WORTH)
   })
 })
+
+// Reports (M3). Every report is a sum over one user's entries, so a sum that forgot the owner would not show A's rows: it
+// would show B a figure with A's money in it. So A's own reports are read first and every figure they print becomes a secret
+// too, beside A's names, ids and amounts. The range is named in the URL and A's entries in it are dated in 2026, so the
+// figures do not move with the day the suite runs: A is both the Zephyr ledger and the gold investor above (whose entries
+// dated today fall after the range), with a February salary and a March spend added.
+
+const REPORT_RANGE = "range=custom&from=2026-01-01&to=2026-04-30"
+const REPORT_SLUGS = ["net-worth", "cash-flow", "spending", "income", "accounts", "investments"] as const
+
+/**
+ * A for the reports. In the range, in rupees: Zephyr Vault Savings takes 2,34,567.89 from Zephyr Employer on 10 Feb and pays
+ * 3,456.78 to Zephyr Hobby on 12 Mar, closing April at 2,34,567.89 - 3,456.78 = 2,31,111.11. Zephyr Gold Bank pays 73,456.78
+ * and 31,987.65 for the gold and takes 52,345.67 for the part sold: -73,456.78 - 31,987.65 + 52,345.67 = -53,098.76. In
+ * accounts at the end of April, 2,31,111.11 - 53,098.76 = 1,78,012.35. The gold has no price before 1 Mar.
+ */
+async function seedAReports(userId: string) {
+  await seedA(userId)
+  await seedAInvestor(userId)
+  await post(userId, EMPLOYER, VAULT, "2,34,567.89", { date: "2026-02-10", note: "Zephyr February pay" })
+  await post(userId, VAULT, HOBBY, "3,456.78", { date: "2026-03-12", note: "Zephyr paddles" })
+}
+
+/** B for the reports: the silver investor, with ₹2,000 of pay on 1 Feb and a ₹250 bus pass on 3 Feb. */
+async function seedBReports(userId: string) {
+  await seedBInvestor(userId)
+  await incomeSource(userId, "Plain Salary")
+  await post(userId, "Plain Salary", SILVER_WALLET, "2,000", { date: "2026-02-01" })
+  await post(userId, SILVER_WALLET, "Transport", "250", { date: "2026-02-03" })
+}
+
+/**
+ * Open a report and wait for the real page (its range control), not the loading skeleton. The range shown ends where the
+ * URL's does; where it starts depends on the report (the balance and cash flow reports begin with the user's history).
+ */
+async function openReport(page: Page, slug: string, extra = "") {
+  await page.goto(`/reports/${slug}?${REPORT_RANGE}${extra}`)
+  await expect(page.getByRole("heading", { level: 1, name: "Reports" })).toBeVisible()
+  await expect(page.getByRole("form", { name: "Report range" })).toContainText(/Showing 1 (Jan|Feb) 2026 to 30 Apr 2026\./)
+}
+
+/** A drill link's name: the figure, then what it is of (read by a screen reader only, after a space the browser puts in). */
+const drillName = (figure: string, context: string) => ({ name: new RegExp(`^${figure.replace(/[.]/g, "\\.")}\\s*${context}$`) })
+
+/** What each report shows its owner, by hand: something of A's on A's screen, something of B's own on B's. */
+const shows: Record<(typeof REPORT_SLUGS)[number], { a: (page: Page) => Promise<void>; b: (page: Page) => Promise<void> }> = {
+  "net-worth": {
+    a: (page) => expect(page.getByRole("region", { name: "Net worth on 30 Apr 2026" })).toContainText("₹1,78,012.35 in accounts"),
+    b: (page) => expect(page.getByRole("region", { name: "Net worth on 30 Apr 2026" })).toBeVisible(),
+  },
+  "cash-flow": {
+    a: async (page) => {
+      await expect(page.getByRole("link", drillName("₹2,34,567.89", ", income, Feb 2026"))).toBeVisible()
+      await expect(page.getByRole("link", drillName("₹3,456.78", ", spending, Mar 2026"))).toBeVisible()
+    },
+    b: async (page) => {
+      await expect(page.getByRole("link", drillName("₹2,000.00", ", total income")).first()).toBeVisible()
+      await expect(page.getByRole("link", drillName("₹250.00", ", total spending")).first()).toBeVisible()
+    },
+  },
+  spending: {
+    a: (page) => expect(page.getByRole("listitem").filter({ hasText: HOBBY })).toContainText("₹3,456.78"),
+    b: (page) => expect(page.getByRole("listitem").filter({ hasText: "Transport" })).toContainText("₹250.00"),
+  },
+  income: {
+    a: (page) => expect(page.getByRole("listitem").filter({ hasText: EMPLOYER })).toContainText("₹2,34,567.89"),
+    b: (page) => expect(page.getByRole("listitem").filter({ hasText: "Plain Salary" })).toContainText("₹2,000.00"),
+  },
+  accounts: {
+    a: (page) => expect(page.getByRole("img", { name: new RegExp(`^${VAULT}: balance at the end of each month\\..*closed at ₹2,31,111\\.11 on 30 Apr 2026\\.$`) })).toBeVisible(),
+    b: (page) => expect(page.getByRole("img", { name: new RegExp(`^${SILVER_WALLET}: balance at the end of each month\\.`) })).toBeVisible(),
+  },
+  investments: {
+    a: async (page) => {
+      const months = page.getByRole("table", { name: /invested, value, gain and realised by month/ }).getByRole("rowgroup")
+      await expect(months.filter({ hasText: "Jan 2026" }).getByRole("row").first()).toContainText("₹73,456.78")
+      await expect(months.filter({ hasText: "Feb 2026" }).getByRole("row").first()).toContainText("₹1,05,444.43")
+    },
+    b: async (page) => {
+      const months = page.getByRole("table", { name: /invested, value, gain and realised by month/ }).getByRole("rowgroup")
+      await expect(months.filter({ hasText: "Mar 2026" }).getByRole("row").first()).toContainText("₹4,000.00")
+    },
+  },
+}
+
+test("shows B none of A's money on any report, and A's own reports all of it", async ({ pair: { a, b } }) => {
+  await seedAReports(a.userId)
+  await seedBReports(b.userId)
+  const secrets = [...(await secretsOfA(a.userId)), ...(await secretsOfAInvestor(a.userId))]
+
+  // A's reports show A's figures, and every figure they print is A's: none of them may reach B either.
+  for (const slug of REPORT_SLUGS) {
+    await openReport(a.page, slug)
+    await shows[slug].a(a.page)
+    // Not only the sidebar's email: A's amounts are on the page.
+    expect((await leaksOn(a.page, secrets)).filter((secret) => /^[\d.,]+$/.test(secret)).length, slug).toBeGreaterThan(0)
+    // As printed and as the paise a view would carry them in ("1,78,012.35" and "17801235"). Only the figures of ₹1,000 and
+    // more: a short one ("1.25", "125") is nobody's in particular, and turns up in any page's styles and timings.
+    const printed = [...(await a.page.getByRole("main").innerText()).matchAll(/₹([\d,]+\.\d\d)/g)].map((match) => match[1])
+    for (const figure of printed.filter((figure) => figure.includes(","))) secrets.push(figure, figure.replace(/[,.]/g, ""))
+  }
+  expect(secrets).toEqual(expect.arrayContaining(["1,78,012.35", "2,31,111.11", "1,05,444.43"]))
+
+  for (const slug of REPORT_SLUGS) {
+    await openReport(b.page, slug)
+    await shows[slug].b(b.page)
+    expect(await leaksOn(b.page, secrets), slug).toEqual([])
+  }
+})
+
+test("answers B's report of A's account or investment as not found, exactly as for an id that is nobody's", async ({ pair: { a, b } }) => {
+  await seedAReports(a.userId)
+  await seedBReports(b.userId)
+  const secrets = [...new Set([...(await secretsOfA(a.userId)), ...(await secretsOfAInvestor(a.userId))])]
+  const GHOST = "cm0000000000000000000ghost"
+
+  /** What B gets for a report of `node`: the not-found page, with nothing of A's in it. */
+  const reportFor = async (slug: string, node: string) => {
+    await b.page.goto(`/reports/${slug}?${REPORT_RANGE}&node=${node}`)
+    await expect(b.page.getByText("This page could not be found.")).toBeVisible()
+    await expect(b.page.getByRole("form", { name: "Report range" })).toHaveCount(0)
+    expect(await leaksOn(b.page, secrets, [node]), `${slug} node=${node}`).toEqual([])
+    return b.page.locator("body").innerText()
+  }
+  const ghostAccount = await reportFor("accounts", GHOST)
+  for (const name of [VAULT, GOLD_BANK, PLATINUM]) expect(await reportFor("accounts", await nodeId(a.userId, name)), name).toBe(ghostAccount)
+  expect(await reportFor("investments", await nodeId(a.userId, GOLD)), GOLD).toBe(await reportFor("investments", GHOST))
+
+  // A, with the same URL, gets A's account: it is the owner that makes the difference, not the URL.
+  await openReport(a.page, "accounts", `&node=${await nodeId(a.userId, VAULT)}`)
+  await shows.accounts.a(a.page)
+  // And B's own account, by its id, is B's report.
+  await openReport(b.page, "accounts", `&node=${await nodeId(b.userId, SILVER_WALLET)}`)
+  await shows.accounts.b(b.page)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+})

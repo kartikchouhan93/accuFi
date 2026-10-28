@@ -298,6 +298,8 @@ Price entry is a small dedicated screen: pick a node, enter a price and a date, 
 
 ### 8.3 M3 — Reports
 
+**Status:** built on `feat/m3-reports`, 2026-10-28: the six reports at `/reports/<report>`, the dashboard's month strip and trend, and the Transactions screen's multi-node and `flow` filters with a filtered total. Design: `docs/superpowers/specs/2026-10-27-accufi-m3-reports-design.md`; decisions: `docs/superpowers/decisions/2026-10-27-m3-rulings.md`.
+
 - **Net worth over time** — a line per month, split into assets, investments at valuation, and liabilities.
 - **Income vs expense** — monthly bars over a selectable range, with transfers excluded by construction (§4.2).
 - **Spending by ledger** — ranked breakdown for a period, drillable to the transactions behind each figure.
