@@ -7,6 +7,7 @@ import { NotFoundError, UserNotFoundError } from "@/server/repositories/errors"
 import * as lotRepo from "@/server/repositories/lot-repository"
 import * as nodeRepo from "@/server/repositories/node-repository"
 import * as priceRepo from "@/server/repositories/price-repository"
+import * as recurringRepo from "@/server/repositories/recurring-repository"
 import * as txRepo from "@/server/repositories/transaction-repository"
 import * as reportRepo from "@/server/repositories/report-repository"
 import { findFinancialYearStartMonth, findStalePriceDays, findUserTimezone } from "@/server/repositories/user-repository"
@@ -743,6 +744,192 @@ describe("unit of work", () => {
   })
 })
 
+describe("recurring repository", () => {
+  const snapshotRules = (userId: string) => prisma.recurringRule.findMany({ where: { userId }, orderBy: { id: "asc" } })
+  const snapshotOccurrences = (userId: string) =>
+    prisma.recurringOccurrence.findMany({ where: { userId }, orderBy: { id: "asc" } })
+
+  // B owns a rule due on 2026-04-01 with a pending, a posted and a dismissed occurrence, and a second, deleted rule.
+  let bRule: Awaited<ReturnType<typeof registry.makeRule>>
+  let bPending: Awaited<ReturnType<typeof registry.makeOccurrence>>
+  let bPosted: Awaited<ReturnType<typeof registry.makeOccurrence>>
+  let bDismissed: Awaited<ReturnType<typeof registry.makeOccurrence>>
+  let aRule: Awaited<ReturnType<typeof registry.makeRule>>
+
+  beforeAll(async () => {
+    bRule = await registry.makeRule(b.user.id, b.bank.id, b.food.id, { name: "B rent", nextDueOn: "2026-04-01" })
+    bPending = await registry.makeOccurrence(b.user.id, bRule.id, "2026-04-01")
+    bPosted = await registry.makeOccurrence(b.user.id, bRule.id, "2026-03-01", {
+      status: "POSTED",
+      transactionId: b.tx.id,
+      resolvedAt: new Date(),
+    })
+    bDismissed = await registry.makeOccurrence(b.user.id, bRule.id, "2026-02-01", { status: "DISMISSED", resolvedAt: new Date() })
+    aRule = await registry.makeRule(a.user.id, a.bank.id, a.food.id, { name: "A rent", nextDueOn: "2026-04-01" })
+  })
+
+  const ruleData = (over: Partial<recurringRepo.RuleData> = {}): recurringRepo.RuleData => ({
+    name: "Mine",
+    fromNodeId: a.bank.id,
+    toNodeId: a.food.id,
+    amountPaise: 100n,
+    note: null,
+    tags: [],
+    frequency: "MONTHLY",
+    interval: 1,
+    dayOfMonth: 1,
+    dayOfWeek: null,
+    startDate: day,
+    endDate: null,
+    occurrenceLimit: null,
+    autoPost: false,
+    ...over,
+  })
+
+  isolation("insertRule", "refuses a node that is another user's and writes nothing", async () => {
+    const aRules = await snapshotRules(a.user.id)
+    const bRules = await snapshotRules(b.user.id)
+    await expectNotFound(recurringRepo.insertRule(a.user.id, { ...ruleData({ toNodeId: b.food.id }), nextDueOn: day }))
+    await expectNotFound(recurringRepo.insertRule(a.user.id, { ...ruleData({ fromNodeId: b.bank.id }), nextDueOn: day }))
+    await expectNotFound(
+      inTransaction((uow) => recurringRepo.insertRule(a.user.id, { ...ruleData({ toNodeId: b.food.id }), nextDueOn: day }, uow)),
+    )
+    expect(await snapshotRules(a.user.id)).toEqual(aRules)
+    expect(await snapshotRules(b.user.id)).toEqual(bRules)
+  })
+
+  isolation("insertRule", "does not let another user's idempotency key reveal or return their rule", async () => {
+    const key = `shared-key-${bRule.id}`
+    await prisma.recurringRule.update({ where: { id: bRule.id }, data: { idempotencyKey: key } })
+    const mine = await recurringRepo.insertRule(a.user.id, { ...ruleData(), nextDueOn: day, idempotencyKey: key })
+    expect(mine.userId).toBe(a.user.id)
+    expect(mine.id).not.toBe(bRule.id)
+  })
+
+  isolation("findRuleById", "returns null for another user's rule", async () => {
+    expect(await recurringRepo.findRuleById(a.user.id, bRule.id)).toBeNull()
+    expect(await inTransaction((uow) => recurringRepo.findRuleById(a.user.id, bRule.id, uow))).toBeNull()
+    expect(await recurringRepo.findRuleById(a.user.id, aRule.id)).not.toBeNull()
+  })
+
+  isolation("findRules", "never includes another user's rules", async () => {
+    const mine = await recurringRepo.findRules(a.user.id)
+    expect(mine.length).toBeGreaterThan(0)
+    expect(mine.every((r) => r.userId === a.user.id)).toBe(true)
+    expect(mine.some((r) => r.id === bRule.id)).toBe(false)
+  })
+
+  isolation("updateRule", "is not-found for another user's rule, never a conflict, and changes nothing", async () => {
+    const before = await snapshotRules(b.user.id)
+    await expectNotFound(recurringRepo.updateRule(a.user.id, bRule.id, bRule.version, { name: "pwned" }))
+    await expectNotFound(recurringRepo.updateRule(a.user.id, bRule.id, bRule.version + 7, { name: "pwned" }))
+    await expectNotFound(inTransaction((uow) => recurringRepo.updateRule(a.user.id, bRule.id, bRule.version, { amountPaise: 1n }, uow)))
+    // and pointing my own rule at B's node is refused too
+    await expectNotFound(recurringRepo.updateRule(a.user.id, aRule.id, aRule.version, { toNodeId: b.food.id }))
+    expect(await snapshotRules(b.user.id)).toEqual(before)
+    expect((await prisma.recurringRule.findUniqueOrThrow({ where: { id: aRule.id } })).version).toBe(aRule.version)
+  })
+
+  isolation("softDeleteRule", "is not-found for another user's rule and keeps its occurrences", async () => {
+    const rules = await snapshotRules(b.user.id)
+    const occurrences = await snapshotOccurrences(b.user.id)
+    await expectNotFound(inTransaction((uow) => recurringRepo.softDeleteRule(a.user.id, bRule.id, uow)))
+    expect(await snapshotRules(b.user.id)).toEqual(rules)
+    expect(await snapshotOccurrences(b.user.id)).toEqual(occurrences)
+  })
+
+  isolation("lockRule", "returns null for another user's rule", async () => {
+    expect(await inTransaction((uow) => recurringRepo.lockRule(a.user.id, bRule.id, uow))).toBeNull()
+    expect(await inTransaction((uow) => recurringRepo.lockRule(a.user.id, aRule.id, uow))).not.toBeNull()
+  })
+
+  isolation("findDueRules", "never includes another user's due rules", async () => {
+    const due = await recurringRepo.findDueRules(a.user.id, calendarDate("2099-01-01"))
+    expect(due.map((r) => r.id)).toContain(aRule.id)
+    expect(due.every((r) => r.userId === a.user.id)).toBe(true)
+    expect(await inTransaction((uow) => recurringRepo.findDueRules(a.user.id, calendarDate("2099-01-01"), uow))).toEqual(due)
+  })
+
+  isolation("findUsersWithRulesDueBy", "lists only user ids, and only users that really have a rule due", async () => {
+    // The one deliberately cross-user query: it names users, never rows, and a user with nothing due is absent.
+    const none = await registry.makeUser()
+    const users = await recurringRepo.findUsersWithRulesDueBy(calendarDate("2026-04-01"))
+    expect(users).toContain(a.user.id)
+    expect(users).toContain(b.user.id)
+    expect(users).not.toContain(none.id)
+    expect(users.every((id) => typeof id === "string")).toBe(true)
+    expect(await recurringRepo.findUsersWithRulesDueBy(calendarDate("2000-01-01"))).not.toContain(a.user.id)
+  })
+
+  isolation("insertOccurrences", "is not-found for another user's rule and inserts nothing", async () => {
+    const before = await snapshotOccurrences(b.user.id)
+    await expectNotFound(
+      inTransaction((uow) => recurringRepo.insertOccurrences(a.user.id, bRule.id, [calendarDate("2030-01-01")], uow)),
+    )
+    expect(await snapshotOccurrences(b.user.id)).toEqual(before)
+    expect(await prisma.recurringOccurrence.count({ where: { ruleId: bRule.id, userId: a.user.id } })).toBe(0)
+  })
+
+  isolation("countOccurrences", "counts nothing for another user's rule", async () => {
+    expect(await recurringRepo.countOccurrences(a.user.id, bRule.id)).toBe(0)
+    expect(await inTransaction((uow) => recurringRepo.countOccurrences(a.user.id, bRule.id, uow))).toBe(0)
+    expect(await recurringRepo.countOccurrences(b.user.id, bRule.id)).toBe(3)
+  })
+
+  isolation("findOccurrenceById", "returns null for another user's occurrence, whatever its state", async () => {
+    for (const o of [bPending, bPosted, bDismissed]) {
+      expect(await recurringRepo.findOccurrenceById(a.user.id, o.id)).toBeNull()
+      expect(await inTransaction((uow) => recurringRepo.findOccurrenceById(a.user.id, o.id, uow))).toBeNull()
+    }
+    expect(await recurringRepo.findOccurrenceById(b.user.id, bPending.id)).not.toBeNull()
+  })
+
+  isolation("findPending", "never includes another user's pending occurrences", async () => {
+    const mine = await recurringRepo.findPending(a.user.id)
+    expect(mine).toEqual([])
+    expect((await recurringRepo.findPending(b.user.id)).map((o) => o.id)).toEqual([bPending.id])
+  })
+
+  isolation("countPending", "counts only the caller's own", async () => {
+    expect(await recurringRepo.countPending(a.user.id)).toBe(0)
+    expect(await recurringRepo.countPending(b.user.id)).toBe(1)
+  })
+
+  isolation("findRecentlyHandled", "never includes another user's posted or dismissed occurrences", async () => {
+    expect(await recurringRepo.findRecentlyHandled(a.user.id, 50)).toEqual([])
+    expect((await recurringRepo.findRecentlyHandled(b.user.id, 50)).map((o) => o.id).sort()).toEqual([bPosted.id, bDismissed.id].sort())
+  })
+
+  isolation("markPosted", "returns null for another user's occurrence and changes nothing", async () => {
+    const before = await snapshotOccurrences(b.user.id)
+    const mine = await registry.makeTransaction(a.user.id, a.bank.id, a.food.id)
+    expect(await recurringRepo.markPosted(a.user.id, bPending.id, mine.id)).toBeNull()
+    expect(await snapshotOccurrences(b.user.id)).toEqual(before)
+    // linking my occurrence to B's transaction is refused too
+    const own = await registry.makeOccurrence(a.user.id, aRule.id, "2026-09-01")
+    await expectNotFound(recurringRepo.markPosted(a.user.id, own.id, b.tx.id))
+    expect((await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: own.id } })).status).toBe("PENDING")
+  })
+
+  isolation("markDismissed", "returns null for another user's occurrence and changes nothing", async () => {
+    const before = await snapshotOccurrences(b.user.id)
+    expect(await recurringRepo.markDismissed(a.user.id, bPending.id)).toBeNull()
+    expect(await snapshotOccurrences(b.user.id)).toEqual(before)
+  })
+
+  isolation("markPending", "returns null for another user's occurrence and changes nothing", async () => {
+    const before = await snapshotOccurrences(b.user.id)
+    expect(await recurringRepo.markPending(a.user.id, bDismissed.id)).toBeNull()
+    expect(await snapshotOccurrences(b.user.id)).toEqual(before)
+  })
+
+  isolation("setPostFailure", "does not touch another user's occurrence", async () => {
+    const before = await snapshotOccurrences(b.user.id)
+    await recurringRepo.setPostFailure(a.user.id, bPending.id, "pwned")
+    expect(await snapshotOccurrences(b.user.id)).toEqual(before)
+  })
+})
+
 describe("coverage", () => {
   // Every module in src/server/repositories is read from the directory, not from a hand-kept import list.
   const files = readdirSync(new URL("../../../src/server/repositories/", import.meta.url)).filter((f) => f.endsWith(".ts")).map((f) => f.slice(0, -".ts".length))
@@ -770,6 +957,7 @@ describe("coverage", () => {
       "lot-repository.ts",
       "node-repository.ts",
       "price-repository.ts",
+      "recurring-repository.ts",
       "report-repository.ts",
       "transaction-repository.ts",
       "unit-of-work.ts",

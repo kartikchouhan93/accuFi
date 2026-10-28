@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { LedgerKind, Prisma } from "@prisma/client"
+import type { LedgerKind, OccurrenceStatus, Prisma } from "@prisma/client"
 import { calendarDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 
@@ -48,6 +48,45 @@ export function createRegistry() {
     })
   }
 
+  /** A live monthly rule from `fromNodeId` to `toNodeId`. `over` sets any other column, e.g. `{ nextDueOn, pausedAt }`. */
+  async function makeRule(
+    userId: string,
+    fromNodeId: string,
+    toNodeId: string,
+    over: Partial<Omit<Prisma.RecurringRuleUncheckedCreateInput, "userId" | "fromNodeId" | "toNodeId" | "startDate" | "nextDueOn">> & {
+      startDate?: string
+      nextDueOn?: string | null
+    } = {},
+  ) {
+    const { startDate, nextDueOn, ...rest } = over
+    return prisma.recurringRule.create({
+      data: {
+        name: "Rent",
+        amountPaise: 1_000n,
+        frequency: "MONTHLY",
+        dayOfMonth: 1,
+        ...rest,
+        userId,
+        fromNodeId,
+        toNodeId,
+        startDate: toDbDate(calendarDate(startDate ?? "2026-04-01")),
+        nextDueOn: nextDueOn === null ? null : toDbDate(calendarDate(nextDueOn ?? startDate ?? "2026-04-01")),
+      },
+    })
+  }
+
+  /** One occurrence of `ruleId`, PENDING unless `over.status` says otherwise. */
+  async function makeOccurrence(
+    userId: string,
+    ruleId: string,
+    dueOn: string,
+    over: { status?: OccurrenceStatus; resolvedAt?: Date; transactionId?: string; postFailure?: string } = {},
+  ) {
+    return prisma.recurringOccurrence.create({
+      data: { ...over, userId, ruleId, dueOn: toDbDate(calendarDate(dueOn)) },
+    })
+  }
+
   /** A user with an income source, a bank account and an expense node, and one live transaction bank -> expense. */
   async function makeWorld() {
     const user = await makeUser()
@@ -74,5 +113,5 @@ export function createRegistry() {
     await prisma.$disconnect()
   }
 
-  return { makeUser, makeNode, makeTransaction, makeWorld, cleanup }
+  return { makeUser, makeNode, makeTransaction, makeRule, makeOccurrence, makeWorld, cleanup }
 }
