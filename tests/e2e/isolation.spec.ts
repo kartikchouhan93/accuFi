@@ -1022,11 +1022,11 @@ test.describe("a request B's browser sends, aimed at A's rule and entries", () =
     const attempts: Record<string, (target: string) => Promise<string>> = {
       post: async (target) => {
         await b.page.goto("/recurring")
-        return aimed(b.page, bOccurrence.id, target, () => ownCard(b.page).getByRole("button", { name: "Post", exact: true }).click())
+        return aimed(b.page, bOccurrence.id, target, () => ownCard(b.page).getByRole("button", { name: `Post ${B_RULE}`, exact: true }).click())
       },
       skip: async (target) => {
         await b.page.goto("/recurring")
-        return aimed(b.page, bOccurrence.id, target, () => ownCard(b.page).getByRole("button", { name: "Skip", exact: true }).click())
+        return aimed(b.page, bOccurrence.id, target, () => ownCard(b.page).getByRole("button", { name: `Skip ${B_RULE}`, exact: true }).click())
       },
       pause: async (target) => {
         await b.page.goto("/recurring")

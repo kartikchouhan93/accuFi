@@ -125,31 +125,42 @@ describe("an inbox card", () => {
 
   it("posts with one tap as proposed, edits and posts, or skips", () => {
     const html = card()
-    expect(buttonNamed(html, "Post")).toMatchObject({ disabled: false })
-    expect(buttonNamed(html, "Post")?.attrs).not.toContain("aria-expanded")
-    expect(buttonNamed(html, "Edit and post")).toMatchObject({ disabled: false })
-    expect(buttonNamed(html, "Skip")).toMatchObject({ disabled: false })
+    expect(buttonNamed(html, "Post Rent")).toMatchObject({ disabled: false })
+    expect(buttonNamed(html, "Post Rent")?.attrs).not.toContain("aria-expanded")
+    expect(buttonNamed(html, "Edit and post Rent")).toMatchObject({ disabled: false })
+    expect(buttonNamed(html, "Skip Rent")).toMatchObject({ disabled: false })
+  })
+
+  it("names every button after its rule, so a screen reader's list of buttons tells the cards apart", () => {
+    const names = (html: string) => buttons(html).map((b) => b.name).filter((name) => /^(Post|Edit and post|Skip)\b/.test(name))
+    expect(names(card({ ruleName: "Rent" }))).toEqual(["Post Rent", "Edit and post Rent", "Skip Rent"])
+    expect(names(card({ ruleName: "Gym" }))).toEqual(["Post Gym", "Edit and post Gym", "Skip Gym"])
+    // The rule's name is read, not shown twice: on screen the buttons still say Post, Edit and post and Skip.
+    const html = card({ ruleName: "Gym" })
+    expect(html).toMatch(/Post<span class="sr-only"> Gym<\/span>/)
+    expect(html).toMatch(/Skip<span class="sr-only"> Gym<\/span>/)
+    expect(html).toMatch(/Edit and post<span class="sr-only"> Gym<\/span>/)
   })
 
   it("has no one-tap Post when the entry needs a quantity: Post opens the form, and says why", () => {
     const html = card({ needsQuantity: true, unitLabel: "g", toName: "Gold" })
-    const post = buttonNamed(html, "Post")
+    const post = buttonNamed(html, "Post Rent")
     expect(post).toBeDefined()
     // A disclosure of the form, not a send: it says it is collapsed.
     expect(post?.attrs).toContain('aria-expanded="false"')
     expect(visibleText(html)).toMatch(/quantity/i)
     expect(visibleText(html)).toContain("g")
-    expect(buttonNamed(html, "Skip")).toMatchObject({ disabled: false })
+    expect(buttonNamed(html, "Skip Rent")).toMatchObject({ disabled: false })
   })
 
   it("disables Post for an archived account and says why, leaving Skip enabled", () => {
     const html = card({ nodeArchived: true })
-    expect(buttonNamed(html, "Post")).toMatchObject({ disabled: true })
-    expect(buttonNamed(html, "Edit and post")).toMatchObject({ disabled: true })
-    expect(buttonNamed(html, "Skip")).toMatchObject({ disabled: false })
+    expect(buttonNamed(html, "Post Rent")).toMatchObject({ disabled: true })
+    expect(buttonNamed(html, "Edit and post Rent")).toMatchObject({ disabled: true })
+    expect(buttonNamed(html, "Skip Rent")).toMatchObject({ disabled: false })
     expect(visibleText(html)).toMatch(/archived/i)
     // The reason is tied to the button, so it is read with it.
-    expect(buttonNamed(html, "Post")?.attrs).toContain("aria-describedby")
+    expect(buttonNamed(html, "Post Rent")?.attrs).toContain("aria-describedby")
   })
 
   it("prints a very large amount to the paisa: paise text never becomes a JS number", () => {

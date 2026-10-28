@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { postPayload } from "@/app/recurring/rule-fields"
 import { calendarDate } from "@/domain/calendar-date"
 import { datesDue } from "@/domain/recurrence"
 import { scheduleOfRule } from "@/lib/recurring-view"
@@ -537,6 +538,40 @@ describe("loadNewRule", () => {
     expect(loaded.nodes.length).toBe(4)
     expect(loaded.today).toBe("2026-04-01")
     expectNoBigint(loaded)
+  })
+})
+
+describe("posting what a card showed", () => {
+  it("records the amount and note the card displayed, even though the rule was edited in another tab since", async () => {
+    const w = await signedInWorld()
+    const { rule, occurrence } = await w.pending({ amountPaise: 100_00n, note: "monthly" })
+    // What the card in this browser showed: the rule as it was when the page loaded.
+    const shown = { id: occurrence.id, amountPaise: "10000", note: "monthly", dueOn: "2026-03-05" }
+    // Another tab edits the rule.
+    await prisma.recurringRule.update({ where: { id: rule.id }, data: { amountPaise: 250_00n, note: "raised", version: { increment: 1 } } })
+
+    const result = await actions.postOccurrenceAction(postPayload(shown))
+    expect(result).toMatchObject({ ok: true, data: { amountPaise: "10000", note: "monthly" } })
+    const tx = await prisma.transaction.findFirstOrThrow({ where: { userId: w.user.id, idempotencyKey: `recurring:${occurrence.id}` } })
+    expect(tx.amountPaise).toBe(100_00n)
+    expect(tx.note).toBe("monthly")
+  })
+
+  it("a bare id still records the rule's current template (what a client that sends no overrides gets)", async () => {
+    const w = await signedInWorld()
+    const { rule, occurrence } = await w.pending({ amountPaise: 100_00n, note: "monthly" })
+    await prisma.recurringRule.update({ where: { id: rule.id }, data: { amountPaise: 250_00n, note: "raised" } })
+    expect(await actions.postOccurrenceAction({ id: occurrence.id })).toMatchObject({ ok: true, data: { amountPaise: "25000", note: "raised" } })
+  })
+
+  it("an empty note from a card with no note clears the note the rule has gained since", async () => {
+    const w = await signedInWorld()
+    const { rule, occurrence } = await w.pending({ amountPaise: 100_00n, note: null })
+    await prisma.recurringRule.update({ where: { id: rule.id }, data: { note: "added later" } })
+    const result = await actions.postOccurrenceAction(postPayload({ id: occurrence.id, amountPaise: "10000", note: null, dueOn: "2026-03-05" }))
+    expect(result).toMatchObject({ ok: true })
+    const tx = await prisma.transaction.findFirstOrThrow({ where: { userId: w.user.id, idempotencyKey: `recurring:${occurrence.id}` } })
+    expect(tx.note).toBeNull()
   })
 })
 

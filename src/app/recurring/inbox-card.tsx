@@ -21,6 +21,7 @@ import type { ActionFailure } from "@/server/action-support"
 import { dismissOccurrenceAction, postOccurrenceAction } from "./actions"
 import { attempt, couldNot, figure } from "./feedback"
 import { putBack } from "./recent-list"
+import { postPayload } from "./rule-fields"
 
 // One entry waiting to be posted: what posting it would record (the rule's amount, ends and note), and three choices.
 //  - Post records it as shown, in one press.
@@ -126,14 +127,15 @@ export function InboxCard({ occurrence, index, announce }: Props) {
     if (failure !== null && failure.error.code === "not_found") router.refresh() // handled elsewhere: this card is stale
   }
 
-  // One press, the entry as proposed.
+  // One press, the entry as the card shows it: the amount and note are sent, so a rule edited elsewhere since this card
+  // was drawn does not change what is recorded.
   function postAsProposed() {
     if (needsQuantity) return open("quantity")
     if (inFlight.current) return
     inFlight.current = true
     startTransition(async () => {
       try {
-        const result = await attempt(() => postOccurrenceAction({ id: occurrence.id }))
+        const result = await attempt(() => postOccurrenceAction(postPayload(occurrence)))
         if (result?.ok) posted(result.data)
         else refused(result)
       } finally {
@@ -142,15 +144,12 @@ export function InboxCard({ occurrence, index, announce }: Props) {
     })
   }
 
-  // The form: only what differs from the proposal is sent, so an untouched field stays as the rule has it.
+  // The form: the amount and note it holds are sent as they stand (an untouched one is the card's own), and the day only
+  // when it was changed, so what is recorded is what the form showed and not what the rule says by now.
   function submit() {
     if (inFlight.current) return
     inFlight.current = true
-    const input: Record<string, string> = { id: occurrence.id }
-    if (values.amount.trim() !== paiseTextToRupees(occurrence.amountPaise)) input.amount = values.amount.trim()
-    if (values.date !== occurrence.dueOn) input.occurredAt = values.date
-    if (values.note.trim() !== (occurrence.note ?? "")) input.note = values.note.trim()
-    if (needsQuantity) input.quantity = values.quantity.trim()
+    const input = postPayload(occurrence, { ...values, quantity: needsQuantity ? values.quantity : "" })
     startTransition(async () => {
       try {
         const result = await attempt(() => postOccurrenceAction(input))
@@ -269,7 +268,7 @@ export function InboxCard({ occurrence, index, announce }: Props) {
           className={buttonClass({ size: "sm" })}
         >
           {pending && !editing && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
-          Post
+          Post<span className="sr-only"> {occurrence.ruleName}</span>
         </button>
         {!needsQuantity && (
           <button
@@ -282,11 +281,11 @@ export function InboxCard({ occurrence, index, announce }: Props) {
             onClick={() => (editing ? close() : open("amount"))}
             className={buttonClass({ variant: "secondary", size: "sm" })}
           >
-            Edit and post
+            Edit and post<span className="sr-only"> {occurrence.ruleName}</span>
           </button>
         )}
         <button type="button" disabled={pending} onClick={skip} className={buttonClass({ variant: "ghost", size: "sm" })}>
-          Skip
+          Skip<span className="sr-only"> {occurrence.ruleName}</span>
         </button>
       </div>
 

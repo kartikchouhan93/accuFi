@@ -1,6 +1,6 @@
 import { calendarDate, CalendarDateError, compareDates, type CalendarDate } from "@/domain/calendar-date"
 import { datesDue, MAX_DUE_PER_RUN, normaliseSchedule, scheduleViolations, type RecurrenceFrequency, type Schedule } from "@/domain/recurrence"
-import type { RuleDraft, RuleView } from "@/lib/recurring-view"
+import type { OccurrenceView, RuleDraft, RuleView } from "@/lib/recurring-view"
 import type { PickerNode } from "@/lib/transaction-list-view"
 import { paiseTextToRupees } from "@/lib/transaction-text"
 import type { TransactionView } from "@/lib/transaction-view"
@@ -208,3 +208,30 @@ export const valuesOfRule = (rule: RuleView, today: CalendarDate): RuleFormValue
   endDate: rule.endDate ?? "",
   occurrenceLimit: rule.occurrenceLimit === null ? "" : String(rule.occurrenceLimit),
 })
+
+/** What the "Edit and post" form holds, as text. */
+export interface PostForm {
+  amount: string
+  date: string
+  note: string
+  /** "" when the destination takes no quantity. */
+  quantity: string
+}
+
+/**
+ * What a post sends for a card. The amount and the note are ALWAYS the ones the card (or the form opened from it) showed,
+ * never left for the server to fill in from the rule: a card can be minutes old, and a rule edited in another tab since
+ * would otherwise make Post record something the person never saw. A card with no note sends an empty note, which records
+ * none. The amount is the card's paise as rupee text, never through a number. The day is sent only when the form changed
+ * it (an untouched one is the due day, which is the occurrence's own and cannot go stale); the quantity only when given.
+ */
+export function postPayload(
+  occurrence: Pick<OccurrenceView, "id" | "amountPaise" | "note" | "dueOn">,
+  form?: PostForm,
+): Record<string, string> {
+  if (!form) return { id: occurrence.id, amount: paiseTextToRupees(occurrence.amountPaise), note: occurrence.note ?? "" }
+  const payload: Record<string, string> = { id: occurrence.id, amount: form.amount.trim(), note: form.note.trim() }
+  if (form.date !== occurrence.dueOn) payload.occurredAt = form.date
+  if (form.quantity.trim() !== "") payload.quantity = form.quantity.trim()
+  return payload
+}

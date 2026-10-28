@@ -12,6 +12,7 @@ import {
   entriesNowLine,
   makeRecurringHref,
   NOW_DISPLAY_CAP,
+  postPayload,
   scheduleOfFields,
   valuesOfDraft,
   valuesOfRule,
@@ -260,5 +261,38 @@ describe("the values a form starts from", () => {
       occurrenceLimit: "10",
     })
     expect(valuesOfRule({ ...rule, nextDueOn: null }, today).anchor).toBe("2026-10-28")
+  })
+})
+
+describe("what posting sends", () => {
+  const shown = { id: "o1", amountPaise: "1500050", note: "Flat 4B", dueOn: "2026-11-01" }
+
+  it("sends the amount and the note the card showed, not only the id: a rule edited since must not change what is recorded", () => {
+    expect(postPayload(shown)).toEqual({ id: "o1", amount: "15000.50", note: "Flat 4B" })
+  })
+
+  it("sends a card with no note as an empty note, so a note added to the rule since is not recorded either", () => {
+    expect(postPayload({ ...shown, note: null })).toEqual({ id: "o1", amount: "15000.50", note: "" })
+  })
+
+  it("turns paise into rupee text exactly, never through a JS number", () => {
+    expect(postPayload({ ...shown, amountPaise: "123456789012345678" }).amount).toBe("1234567890123456.78")
+    expect(postPayload({ ...shown, amountPaise: "5" }).amount).toBe("0.05")
+  })
+
+  it("sends the form's amount and note as typed, the day only when it is not the due day, and the quantity when given", () => {
+    const form = { amount: " 950.50 ", date: "2026-11-01", note: " late fee ", quantity: "" }
+    expect(postPayload(shown, form)).toEqual({ id: "o1", amount: "950.50", note: "late fee" })
+    expect(postPayload(shown, { ...form, date: "2026-11-03", quantity: " 0.75 " })).toEqual({
+      id: "o1",
+      amount: "950.50",
+      note: "late fee",
+      occurredAt: "2026-11-03",
+      quantity: "0.75",
+    })
+  })
+
+  it("sends the card's own amount from an untouched form, so an edit-and-post is as exact as a one-tap post", () => {
+    expect(postPayload(shown, { amount: "15000.50", date: "2026-11-01", note: "Flat 4B", quantity: "" })).toEqual(postPayload(shown))
   })
 })

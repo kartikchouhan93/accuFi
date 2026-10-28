@@ -51,7 +51,7 @@ test("exit criterion: a rule three weeks behind proposes three entries, and only
   for (const [index, date] of dates.entries()) await expect(cards(page).nth(index)).toContainText(`Due ${printed(date)}`)
   await expect(navLink(page)).toHaveAccessibleName(waiting(3))
 
-  await cards(page).first().getByRole("button", { name: "Post", exact: true }).click()
+  await cards(page).first().getByRole("button", { name: "Post Gym", exact: true }).click()
   await expect(page.getByRole("status")).toContainText("Posted Gym: ₹1,500.00 from Bank to Health.")
   await expect(cards(page)).toHaveCount(2)
   await expect(cards(page).first()).toContainText(`Due ${printed(dates[1])}`) // the one posted was the oldest
@@ -103,7 +103,7 @@ test("edit and post: the amount and the day changed on a card are the ones the t
 
   await openRecurring(page)
   const card = cardOf(page, "Internet")
-  await card.getByRole("button", { name: "Edit and post" }).click()
+  await card.getByRole("button", { name: "Edit and post Internet", exact: true }).click()
   const form = page.getByRole("form", { name: "Edit and post Internet" })
   await expect(form.getByLabel("Amount (₹)")).toBeFocused()
   await expect(form.getByLabel("Amount (₹)")).toHaveValue("800.00")
@@ -131,7 +131,7 @@ test("skip: the entry leaves the inbox and counts nowhere, and Recently handled 
 
   await openRecurring(page)
   await expect(navLink(page)).toHaveAccessibleName(waiting(1))
-  await cardOf(page, "Magazine").getByRole("button", { name: "Skip", exact: true }).click()
+  await cardOf(page, "Magazine").getByRole("button", { name: "Skip Magazine", exact: true }).click()
   await expect(page.getByRole("status")).toContainText(`Skipped Magazine, due ${printed(due)}.`)
   await expect(cards(page)).toHaveCount(0)
   await expect(inbox(page)).toContainText("Nothing is waiting.")
@@ -316,8 +316,8 @@ test("a quantity SIP cannot be posted blind: Post asks for the quantity, and the
   await openRecurring(page)
   const card = cardOf(page, "Gold every month")
   await expect(card).toContainText("valued by quantity")
-  await expect(card.getByRole("button", { name: "Edit and post" })).toHaveCount(0) // the one form is what Post opens
-  await card.getByRole("button", { name: "Post", exact: true }).click()
+  await expect(card.getByRole("button", { name: /^Edit and post/ })).toHaveCount(0) // the one form is what Post opens
+  await card.getByRole("button", { name: "Post Gold every month", exact: true }).click()
   const form = page.getByRole("form", { name: "Edit and post Gold every month" })
   await expect(form.getByLabel("Quantity (gram)")).toBeFocused()
   await expect(cards(page)).toHaveCount(1) // nothing was posted by the press
@@ -398,17 +398,17 @@ test("the inbox is worked entirely by keyboard, reads in both themes, and keeps 
 
   // Edit and post, by keyboard: Tab to the button, Enter opens the form with the amount focused, Escape closes it and
   // hands the focus back to the button that opened it.
-  const edit = cardOf(page, "Alpha").getByRole("button", { name: "Edit and post" })
+  const edit = cardOf(page, "Alpha").getByRole("button", { name: "Edit and post Alpha", exact: true })
   await page.locator("body").focus()
   await tabTo(page, edit)
-  expect(await focusedControl(page)).toBe("Alpha|BUTTON|Edit and post")
+  expect(await focusedControl(page)).toBe("Alpha|BUTTON|Edit and post Alpha")
   await page.keyboard.press("Enter")
   await expect(page.getByRole("form", { name: "Edit and post Alpha" }).getByLabel("Amount (₹)")).toBeFocused()
   await page.keyboard.press("Escape")
   await expect(edit).toBeFocused()
 
   // Post the first by keyboard: it leaves the inbox and the message takes the focus the card had.
-  await tabTo(page, cardOf(page, "Alpha").getByRole("button", { name: "Post", exact: true }))
+  await tabTo(page, cardOf(page, "Alpha").getByRole("button", { name: "Post Alpha", exact: true }))
   await page.keyboard.press("Enter")
   await expect(page.getByRole("status")).toContainText("Posted Alpha")
   await expect(cards(page)).toHaveCount(2)
@@ -416,7 +416,7 @@ test("the inbox is worked entirely by keyboard, reads in both themes, and keeps 
 
   // Skip the next by keyboard, then put it back from Recently handled by keyboard.
   await page.locator("body").focus()
-  await tabTo(page, cardOf(page, "Bravo").getByRole("button", { name: "Skip", exact: true }))
+  await tabTo(page, cardOf(page, "Bravo").getByRole("button", { name: "Skip Bravo", exact: true }))
   await page.keyboard.press("Enter")
   await expect(page.getByRole("status")).toContainText("Skipped Bravo")
   await expect(cards(page)).toHaveCount(1)
