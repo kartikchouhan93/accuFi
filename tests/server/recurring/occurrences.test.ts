@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
@@ -14,6 +14,7 @@ import {
   postOccurrence,
   restoreOccurrence,
 } from "@/server/services/occurrence-service"
+import * as transactionService from "@/server/services/transaction-service"
 import { InvalidTransactionError, OverdraftBlockedError } from "@/server/services/transaction-service"
 import { createRegistry } from "../repositories/fixtures"
 
@@ -22,6 +23,7 @@ import { createRegistry } from "../repositories/fixtures"
 
 const registry = createRegistry()
 afterAll(registry.cleanup)
+afterEach(() => vi.restoreAllMocks())
 
 const UNIT = 1_000_000n
 
@@ -371,5 +373,67 @@ describe("an occurrence of a deleted rule is gone", () => {
 
     await expectNotFound(restoreOccurrence(w.user.id, occurrence.id))
     expect((await stored(occurrence.id)).status).toBe("DISMISSED")
+  })
+})
+
+// The post is two writes: the transaction, then the mark on the occurrence. A skip or a delete that lands between them
+// leaves a transaction that WAS recorded, so what the user is told must say so (not "skipped, put it back to post it",
+// which reads as though nothing happened). The window is a few milliseconds wide, so it is opened on purpose: the real
+// `recordTransaction` runs, and the other tab's write is made right after it commits.
+describe("a post that loses a race with a skip or a delete", () => {
+  const afterRecording = (then: () => Promise<unknown>) => {
+    const record = transactionService.recordTransaction
+    vi.spyOn(transactionService, "recordTransaction").mockImplementationOnce(async (...args) => {
+      const recorded = await record(...args)
+      await then()
+      return recorded
+    })
+  }
+
+  it("says the transaction was recorded when a skip landed first, and posting again after a put back does not record it twice", async () => {
+    const w = await setup()
+    const { occurrence } = await pendingOccurrence(w)
+    afterRecording(() => dismissOccurrence(w.user.id, occurrence.id))
+
+    const error = await rejection(postOccurrence(w.user.id, occurrence.id))
+    expect(error).toBeInstanceOf(OccurrenceStateError)
+    expect((error as Error).message).toBe(
+      "It was recorded before the skip landed: check Transactions. Putting it back and posting again will not record it twice.",
+    )
+    expect((await stored(occurrence.id)).status).toBe("DISMISSED")
+    expect(await transactionsFor(occurrence.id)).toHaveLength(1)
+    expect(await balanceOf(w.user.id, w.food.id)).toBe(100_00n)
+
+    // The promise in the message: the key replays the same transaction and the occurrence is linked to it.
+    await restoreOccurrence(w.user.id, occurrence.id)
+    const posted = await postOccurrence(w.user.id, occurrence.id)
+    expect(posted.status).toBe("POSTED")
+    expect(await transactionsFor(occurrence.id)).toHaveLength(1)
+    expect(await balanceOf(w.user.id, w.food.id)).toBe(100_00n)
+    expect((await stored(occurrence.id)).transactionId).toBe((await transactionsFor(occurrence.id))[0].id)
+  })
+
+  it("says the transaction was recorded when the rule was deleted first, not that the entry no longer exists", async () => {
+    const w = await setup()
+    const { rule, occurrence } = await pendingOccurrence(w)
+    afterRecording(() => inTransaction((uow) => softDeleteRule(w.user.id, rule.id, uow)))
+
+    const error = await rejection(postOccurrence(w.user.id, occurrence.id))
+    expect(error).toBeInstanceOf(OccurrenceStateError)
+    expect((error as Error).message).toBe(
+      "It was recorded before the rule was deleted: check Transactions. The entry itself is gone.",
+    )
+    expect(await transactionsFor(occurrence.id)).toHaveLength(1)
+  })
+
+  it("still answers with the first result when the other tab posted it, however the race fell", async () => {
+    const w = await setup()
+    const { occurrence } = await pendingOccurrence(w)
+    afterRecording(async () => {
+      await postOccurrence(w.user.id, occurrence.id) // the other tab: the key replays this transaction
+    })
+    const view = await postOccurrence(w.user.id, occurrence.id)
+    expect(view.status).toBe("POSTED")
+    expect(await transactionsFor(occurrence.id)).toHaveLength(1)
   })
 })

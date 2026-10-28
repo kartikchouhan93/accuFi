@@ -43,6 +43,9 @@ export interface PostOverrides {
 }
 
 const POSTED_AFTER_SKIP = "Put it back before posting it."
+const RECORDED_BEFORE_SKIP =
+  "It was recorded before the skip landed: check Transactions. Putting it back and posting again will not record it twice."
+const RECORDED_BEFORE_DELETE = "It was recorded before the rule was deleted: check Transactions. The entry itself is gone."
 
 /** The occurrence and its rule, or NotFoundError if it is not the user's or its rule has been deleted. */
 async function load(userId: string, id: string): Promise<OccurrenceWithRule> {
@@ -82,7 +85,8 @@ async function viewOf(
  * due day) and mark it posted. An occurrence already posted answers with its posted view, so a retry is a replay. Whatever
  * `recordTransaction` refuses (archived node, overdraft, a missing quantity) is thrown as it is and leaves the occurrence
  * PENDING with nothing written. Throws OccurrenceStateError for a skipped one, NotFoundError for one that is not the
- * user's or belongs to a deleted rule.
+ * user's or belongs to a deleted rule. A skip or a delete that lands after the transaction was recorded but before the
+ * occurrence was marked is an OccurrenceStateError that says the transaction WAS recorded.
  *
  * First write wins: a replay (an occurrence already POSTED, or a key that already has a transaction) returns the FIRST
  * result and ignores the overrides it was given. The view of a posted occurrence is the recorded transaction's.
@@ -107,11 +111,16 @@ export async function postOccurrence(userId: string, id: string, overrides: Post
 
   const marked = await markPosted(userId, found.id, transaction.id)
   if (marked) return viewOf(userId, marked, found, transaction)
-  // Not pending any more: someone else posted it first (they hold the same transaction, the key replayed), or it was
-  // skipped or its rule deleted while this call was recording. The first is the answer; the others are told.
-  const current = await load(userId, found.id)
+  // Not pending any more, and the transaction above is already committed. Someone else posted it first (they hold the same
+  // transaction, the key replayed): that is the answer. Or it was skipped, or its rule deleted, while this call was
+  // recording: the transaction EXISTS either way, so the user is told it was recorded and where to look, never that
+  // nothing happened. Putting a skipped one back and posting again replays the same key, so it is not recorded twice.
+  const current = await load(userId, found.id).catch((error: unknown) => {
+    if (error instanceof NotFoundError) throw new OccurrenceStateError(RECORDED_BEFORE_DELETE)
+    throw error
+  })
   if (current.status === "POSTED") return viewOf(userId, current, current)
-  throw new OccurrenceStateError("This entry was skipped while you were posting it. Put it back to post it again.")
+  throw new OccurrenceStateError(RECORDED_BEFORE_SKIP)
 }
 
 /** Skip: PENDING to DISMISSED. Already skipped answers with itself; a posted one throws OccurrenceStateError. */
