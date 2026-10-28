@@ -335,10 +335,12 @@ describe("AccountHistoryReport", () => {
 // -- Investment growth ---------------------------------------------------------------------------------------------------
 
 const INVESTMENTS: InvestmentGrowthView["investments"] = [
-  { id: "gold", name: "Gold", archived: false },
-  { id: "fund", name: "Fund", archived: true },
+  { id: "gold", name: "Gold", archived: false, valuedAtCost: false },
+  // Scenario N's Fund has no prices (CONTRIBUTION_ONLY): it is worth what went into it.
+  { id: "fund", name: "Fund", archived: true, valuedAtCost: true },
 ]
-const growthPoint = (bucket: typeof JAN, node: string[], over: Partial<GrowthPointView>): GrowthPointView => ({
+/** A point whose drill is `node`'s entries (one investment) or, with no node given, every investment's by kind. */
+const growthPoint = (bucket: typeof JAN, node: string[] | null, over: Partial<GrowthPointView>): GrowthPointView => ({
   bucket,
   asOf: bucket.to,
   investedPaise: "0",
@@ -348,21 +350,30 @@ const growthPoint = (bucket: typeof JAN, node: string[], over: Partial<GrowthPoi
   stale: false,
   covered: null,
   unvaluedNames: [],
-  drill: { node, from: bucket.from, to: bucket.to },
+  drill: node ? { node, from: bucket.from, to: bucket.to } : { kind: "INVESTMENT", from: bucket.from, to: bucket.to },
   ...over,
+  // As the server sends it: what went into the valued investments, which is all of it unless the point says otherwise.
+  investedCoveredPaise: over.investedCoveredPaise ?? over.investedPaise ?? "0",
 })
 
-// Task 6's Scenario N growth, as loadInvestmentGrowth returns it, for the whole portfolio and for Gold.
-const BOTH = ["gold", "fund"]
+// Task 6's Scenario N growth, as loadInvestmentGrowth returns it, for the whole portfolio and for Gold. January values
+// Fund only: ₹80,000 is in the two, ₹10,000 of it in Fund, which is worth ₹10,000.
 const portfolio: InvestmentGrowthView = {
   range: Q1,
   empty: false,
   investments: INVESTMENTS,
   selected: null,
   points: [
-    growthPoint(JAN, BOTH, { investedPaise: "8000000", valuePaise: "1000000", gainPaise: "0", covered: { covered: 1, total: 2 }, unvaluedNames: ["Gold"] }),
-    growthPoint(FEB, BOTH, { investedPaise: "11700000", valuePaise: "12250000", gainPaise: "550000", covered: { covered: 2, total: 2 } }),
-    growthPoint(MAR, BOTH, { investedPaise: "6100000", valuePaise: "6320000", gainPaise: "220000", realisedPaise: "480000", covered: { covered: 2, total: 2 } }),
+    growthPoint(JAN, null, {
+      investedPaise: "8000000",
+      investedCoveredPaise: "1000000",
+      valuePaise: "1000000",
+      gainPaise: "0",
+      covered: { covered: 1, total: 2 },
+      unvaluedNames: ["Gold"],
+    }),
+    growthPoint(FEB, null, { investedPaise: "11700000", valuePaise: "12250000", gainPaise: "550000", covered: { covered: 2, total: 2 } }),
+    growthPoint(MAR, null, { investedPaise: "6100000", valuePaise: "6320000", gainPaise: "220000", realisedPaise: "480000", covered: { covered: 2, total: 2 } }),
   ],
 }
 const gold: InvestmentGrowthView = {
@@ -388,7 +399,11 @@ describe("InvestmentGrowthReport, the whole portfolio", () => {
   it("says January's value covers only one of the two investments, and which is left out", () => {
     const jan = rowText(html, "Jan 2026")
     // The gain is over the valued investments only, so it says so beside the figure and in the note under the row.
-    expect(jan).toBe("Jan 2026 ₹80,000.00 ₹10,000.00 ₹0.00 covers 1 of 2 ₹0.00 Value and gain cover 1 of 2 investments (Gold not valued).")
+    // The table keeps all that went in (₹80,000.00) and says the chart compares the valued investments only.
+    expect(jan).toBe(
+      "Jan 2026 ₹80,000.00 ₹10,000.00 ₹0.00 covers 1 of 2 ₹0.00 Value and gain cover 1 of 2 investments (Gold not valued). " +
+        "Invested includes Gold; the chart's lines compare the valued investments only.",
+    )
     expect(rowText(html, "Feb 2026")).toBe("Feb 2026 ₹1,17,000.00 ₹1,22,500.00 ₹5,500.00 ₹0.00")
     expect(rowText(html, "Feb 2026")).not.toContain("cover")
   })
@@ -403,17 +418,41 @@ describe("InvestmentGrowthReport, the whole portfolio", () => {
     expect(rowText(html, "Mar 2026")).toBe("Mar 2026 ₹61,000.00 ₹63,200.00 ₹2,200.00 ₹4,800.00")
   })
 
-  it("draws Invested and Value as two lines, January's partial value hollow", () => {
+  it("draws Invested and Value as two lines, January's partial points hollow on both", () => {
     expect(seriesPath(html, "invested")).toMatch(/^M[^M]*$/)
     expect(seriesPath(html, "value")).toMatch(/^M[^M]*$/)
-    expect(count(html, /data-point="hollow"/g)).toBe(1)
+    expect(count(html, /data-point="hollow"/g)).toBe(2)
     expect(html).toMatch(/<circle[^>]*data-point="hollow"[^>]*><title>Jan 2026, Value: ₹10,000\.00, covers 1 of 2<\/title>/)
     expect(visibleText(html)).toMatch(/Invested[\s\S]*Value/)
   })
 
-  it("links each month to the entries of the investments in it", () => {
-    expect(textOf(html, "/transactions?node=gold%2Cfund&from=2026-01-01&to=2026-01-31")).toEqual(["Jan 2026"])
-    expect(namesOf(html, "/transactions?node=gold%2Cfund&from=2026-03-01&to=2026-03-31")).toEqual(["Mar 2026, entries of every investment"])
+  it("compares like with like on the chart: January's Invested is what went into the valued investment only", () => {
+    // Fund's ₹10,000.00 against Fund's ₹10,000.00, not ₹80,000.00 against ₹10,000.00.
+    expect(html).toMatch(/<circle[^>]*data-point="hollow"[^>]*><title>Jan 2026, Invested: ₹10,000\.00, covers 1 of 2<\/title>/)
+    expect(html).not.toMatch(/<title>Jan 2026, Invested: ₹80,000\.00/)
+    expect(html).toMatch(/<title>Feb 2026, Invested: ₹1,17,000\.00<\/title>/)
+    // The chart's View as table has what is drawn, qualified; the report's table keeps the whole ₹80,000.00.
+    expect(html).toContain("<td class=\"py-2 pl-4 text-right\">₹10,000.00, covers 1 of 2</td>")
+    expect(rowText(html, "Jan 2026")).toMatch(/^Jan 2026 ₹80,000\.00 /)
+    expect(html).toContain("An outlined point is a month that values only some of the investments: there both lines cover the valued ones only.")
+  })
+
+  it("links each month to the entries of every investment, by kind", () => {
+    expect(textOf(html, "/transactions?kind=INVESTMENT&from=2026-01-01&to=2026-01-31")).toEqual(["Jan 2026"])
+    expect(namesOf(html, "/transactions?kind=INVESTMENT&from=2026-03-01&to=2026-03-31")).toEqual(["Mar 2026, entries of every investment"])
+  })
+
+  it("links to the Investments screen, where the lots and prices are", () => {
+    expect(textOf(html, "/investments")).toEqual(["Open Investments"])
+    expect(namesOf(html, "/investments")).toEqual(["Open Investments, where the lots and prices are listed"])
+  })
+
+  it("says which investments are valued at what was put in", () => {
+    expect(visibleText(html)).toContain("Fund is valued at what was put in (no prices), so it shows no gain.")
+    const two = renderGrowth({ ...portfolio, investments: INVESTMENTS.map((investment) => ({ ...investment, valuedAtCost: true })) })
+    expect(visibleText(two)).toContain("Gold and Fund are valued at what was put in (no prices), so they show no gain.")
+    const none = renderGrowth({ ...portfolio, investments: INVESTMENTS.map((investment) => ({ ...investment, valuedAtCost: false })) })
+    expect(visibleText(none)).not.toContain("valued at what was put in")
   })
 
   it("offers All investments first, then each investment, archived ones marked", () => {
@@ -443,8 +482,55 @@ describe("InvestmentGrowthReport, the whole portfolio", () => {
   })
 })
 
+describe("InvestmentGrowthReport, a portfolio month that values none of its investments", () => {
+  // Gold alone, first priced in February: January has nothing valued, so there is no value and nothing to compare.
+  const only: InvestmentGrowthView = {
+    ...portfolio,
+    investments: [INVESTMENTS[0]],
+    points: [
+      growthPoint(JAN, null, { investedPaise: "7000000", valuePaise: null, gainPaise: null, covered: { covered: 0, total: 1 }, unvaluedNames: ["Gold"] }),
+      growthPoint(FEB, null, { investedPaise: "7000000", valuePaise: "7200000", gainPaise: "200000", covered: { covered: 1, total: 1 } }),
+    ],
+  }
+  const html = renderGrowth(only)
+
+  it("says the investment is not valued in that month, not that value covers 0 of 1", () => {
+    expect(rowText(html, "Jan 2026")).toBe("Jan 2026 ₹70,000.00 Not valued — ₹0.00 Gold not valued in this month.")
+    expect(html).not.toContain("cover 0 of")
+  })
+
+  it("keeps the whole Invested on the line, with a gap in Value and no outlined point", () => {
+    expect(html).toMatch(/<title>Jan 2026, Invested: ₹70,000\.00<\/title>/)
+    expect(count(html, /data-point="hollow"/g)).toBe(0)
+    expect(html).toContain("A gap in Value is a month it could not be valued.")
+    expect(html).not.toContain("outlined point")
+    expectClean(html)
+  })
+})
+
 describe("InvestmentGrowthReport, one investment", () => {
   const html = renderGrowth(gold)
+
+  it("draws what went into it on the Invested line, unchanged by the portfolio's like-with-like rule", () => {
+    expect(html).toMatch(/<title>Jan 2026, Invested: ₹70,000\.00<\/title>/)
+    expect(html).toMatch(/<title>Feb 2026, Invested: ₹1,07,000\.00<\/title>/)
+    expect(count(html, /data-point="hollow"/g)).toBe(0)
+    expect(html).not.toContain("covers")
+    expect(html).not.toContain("Invested includes")
+  })
+
+  it("links to its own card on the Investments screen", () => {
+    expect(textOf(html, "/investments#holding-gold")).toEqual(["Open Gold in Investments"])
+    expect(namesOf(html, "/investments#holding-gold")).toEqual(["Open Gold in Investments, where the lots and prices are listed"])
+    expect(hrefs(html)).not.toContain("/investments")
+  })
+
+  it("has no valued-at-cost note for an investment with prices, and one for an investment without", () => {
+    expect(visibleText(html)).not.toContain("valued at what was put in")
+    const fund = renderGrowth({ ...portfolio, selected: { id: "fund", name: "Fund" }, points: gold.points.map((point) => ({ ...point, drill: { node: ["fund"], from: point.bucket.from, to: point.bucket.to } })) })
+    expect(visibleText(fund)).toContain("Fund is valued at what was put in (no prices), so it shows no gain.")
+    expect(hrefs(fund)).toContain("/investments#holding-fund")
+  })
 
   it("says Not valued for a month it cannot be valued in, never ₹0 or its cost", () => {
     const jan = rowText(html, "Jan 2026")

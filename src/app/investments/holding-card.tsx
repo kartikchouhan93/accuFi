@@ -107,10 +107,12 @@ export function HoldingCard({ holding, destinations, today, index, announce }: P
   return (
     <SpotlightCard
       as="section"
+      // The investment growth report links here (`/investments#holding-<id>`): node ids are unique, so the anchor is too.
+      id={`holding-${holding.nodeId}`}
       aria-labelledby={headingId}
       // Opened, a card takes the full width of the grid, so its holding and the Sell form sit side by side on a wide screen
       // rather than stretching one column far below its neighbour.
-      className={cn("surface rise rounded-3xl p-5 sm:p-6", (open || selling) && "lg:col-span-2")}
+      className={cn("surface rise scroll-mt-6 rounded-3xl p-5 sm:p-6", (open || selling) && "lg:col-span-2")}
       style={{ "--i": index + 1 } as React.CSSProperties}
       radius={360}
       strength={10}

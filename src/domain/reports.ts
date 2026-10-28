@@ -246,7 +246,10 @@ export interface GrowthNodePoint {
 }
 
 export interface PortfolioPoint {
+  /** What was put into every node, valued or not. */
   investedPaise: Paise
+  /** What was put into the valued nodes only: the like-with-like figure `valuePaise` is set against. */
+  investedValuedPaise: Paise
   valuePaise: Paise
   /** Value minus invested over the valued nodes only: an unvalued node's cost is not set against a missing value. */
   gainPaise: Paise
@@ -256,9 +259,13 @@ export interface PortfolioPoint {
   stale: boolean
 }
 
-/** One day of the portfolio: what was put in (every node) against what it is worth (the nodes that could be valued). */
+/**
+ * One day of the portfolio: what was put in (every node, and the valued nodes alone) against what it is worth (the nodes
+ * that could be valued). `investedValuedPaise` equals `investedPaise` whenever every node is valued.
+ */
 export function portfolioPoint(nodes: readonly GrowthNodePoint[]): PortfolioPoint {
   let investedPaise = 0n
+  let investedValuedPaise = 0n
   let valuePaise = 0n
   let gainPaise = 0n
   let covered = 0
@@ -271,11 +278,12 @@ export function portfolioPoint(nodes: readonly GrowthNodePoint[]): PortfolioPoin
       unvaluedNodeIds.push(node.nodeId)
       continue
     }
+    investedValuedPaise += node.investedPaise
     valuePaise += node.valuePaise
     gainPaise += node.valuePaise - node.investedPaise
     covered += 1
     if (node.stale) stale = true
   }
 
-  return { investedPaise, valuePaise, gainPaise, covered, total: nodes.length, unvaluedNodeIds, stale }
+  return { investedPaise, investedValuedPaise, valuePaise, gainPaise, covered, total: nodes.length, unvaluedNodeIds, stale }
 }

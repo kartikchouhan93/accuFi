@@ -347,11 +347,20 @@ export function buildAccountHistoryView(input: {
 export interface GrowthPointView {
   bucket: BucketView
   asOf: CalendarDate
-  /** What is in the investments on `asOf`: their balance. */
+  /** What is in the investments on `asOf`: their balance, every investment counted, valued or not. */
   investedPaise: string
-  /** What they are worth on `asOf`, over the ones that can be valued; null for a single investment that cannot be (a gap). */
+  /**
+   * What is in the investments that are valued on `asOf`: the figure the chart sets against `valuePaise`, so a partial
+   * portfolio month compares like with like. Equal to `investedPaise` when nothing is left out, for a single investment,
+   * and for a month that values none of them (there is no value to compare it with, so the line keeps the whole figure).
+   */
+  investedCoveredPaise: string
+  /**
+   * What they are worth on `asOf`, over the ones that can be valued. Null when none of them can be: a single investment
+   * that is not valued, or a portfolio month that values none of its investments (a gap, never ₹0).
+   */
   valuePaise: string | null
-  /** Value minus invested over the same valued investments; null with `valuePaise`. */
+  /** Value minus invested over the same valued investments; null whenever `valuePaise` is. */
   gainPaise: string | null
   /** Gain minus loss realised by sales in the bucket. */
   realisedPaise: string
@@ -366,8 +375,11 @@ export interface GrowthPointView {
 export interface InvestmentGrowthView {
   range: RangeView
   empty: boolean
-  /** Every investment of the user, archived ones included, oldest first. */
-  investments: { id: string; name: string; archived: boolean }[]
+  /**
+   * Every investment of the user, archived ones included, oldest first. `valuedAtCost` is an investment with no prices
+   * (`CONTRIBUTION_ONLY`): it is worth what was put in, so it is at cost on both lines and never shows a gain.
+   */
+  investments: { id: string; name: string; archived: boolean; valuedAtCost: boolean }[]
   /** Null for the whole portfolio. */
   selected: { id: string; name: string } | null
   points: GrowthPointView[]
@@ -390,7 +402,12 @@ export function buildInvestmentGrowthView(input: {
   realised: readonly { nodeId: string; bucket: string; gainPaise: Paise; lossPaise: Paise }[]
 }): InvestmentGrowthView {
   const { range, buckets } = input
-  const investments = input.investments.map((node) => ({ id: node.id, name: node.name, archived: node.archivedAt !== null }))
+  const investments = input.investments.map((node) => ({
+    id: node.id,
+    name: node.name,
+    archived: node.archivedAt !== null,
+    valuedAtCost: node.valuationMode === "CONTRIBUTION_ONLY",
+  }))
   const chosen = input.selectedId === null ? null : investments.find((node) => node.id === input.selectedId) ?? null
   const selected = chosen && { id: chosen.id, name: chosen.name }
   if (input.empty) return { range, empty: true, investments, selected, points: [] }
@@ -420,18 +437,16 @@ export function buildInvestmentGrowthView(input: {
       bucket: toBucketView(bucket),
       asOf: bucket.to,
       investedPaise: serialisePaise(point.investedPaise),
+      investedCoveredPaise: serialisePaise(valued ? point.investedValuedPaise : point.investedPaise),
       valuePaise: valued ? serialisePaise(point.valuePaise) : null,
       gainPaise: valued ? serialisePaise(point.gainPaise) : null,
       realisedPaise: serialisePaise(realisedIn(bucket.key)),
       stale: point.stale,
       covered: single ? null : { covered: point.covered, total: point.total },
       unvaluedNames: sortedByName(point.unvaluedNodeIds, nameById).map(nameById),
-      // An empty node list is no filter at all (transactionsHref leaves it out), so a user with no investment would be
-      // sent to every entry of the month; the investment kind is what the figure is of, and has none of theirs.
-      drill:
-        nodes.length > 0
-          ? { node: nodes.map((node) => node.id), from: bucket.from, to: bucket.to }
-          : { kind: "INVESTMENT", from: bucket.from, to: bucket.to },
+      // One investment: its own entries. The portfolio: every investment's, by kind, which is the same set as listing
+      // them all and has no 50-id cap (a node list past it would be refused); with no investment it lists nothing either.
+      drill: chosen ? { node: [chosen.id], from: bucket.from, to: bucket.to } : { kind: "INVESTMENT", from: bucket.from, to: bucket.to },
     }
   })
   return { range, empty: false, investments, selected, points }

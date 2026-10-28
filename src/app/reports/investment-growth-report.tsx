@@ -1,4 +1,4 @@
-import { TrendingUp } from "lucide-react"
+import { ArrowUpRight, TrendingUp } from "lucide-react"
 import Link from "next/link"
 import { staleText } from "@/app/stale-note"
 import { LineChart } from "@/components/charts/line-chart"
@@ -19,16 +19,26 @@ import { NoteRow, STICKY_CELL, type RowNote } from "./report-table"
 // (InvestmentGrowthView; the server did every sum), for the whole portfolio or for one investment. Invested is dashed and
 // Value solid, so the two lines differ without colour. A month an investment could not be valued in is "Not valued" and
 // a gap in the Value line, never ₹0 or its cost, since either would pass for a real figure. For the portfolio a month
-// that values only some of the investments is an outlined point and says which it covers; a month counted at a stale
-// price says so too. Each month opens the entries of the investments in it.
+// that values only some of the investments compares like with like: both lines are over the valued ones (the chart's
+// Invested is `investedCoveredPaise`), both points are outlined, and the table, which keeps everything put in, says so.
+// A month counted at a stale price says so too. Each month opens the entries of the investments in it; the lots and
+// prices behind a value are on the Investments screen, which the report links to.
 
 const COLUMNS = ["Month", "Invested", "Value", "Gain", "Realised"] as const
 
 const isPartial = (point: GrowthPointView) => point.covered !== null && point.covered.covered < point.covered.total
 
+/** A portfolio month that values some of the investments but not all: drawn as outlined points. */
+const isOutlined = (point: GrowthPointView) => isPartial(point) && point.covered!.covered > 0
+
 /** "covers 1 of 2" for a portfolio month that values only some of the investments; null when it values them all. */
 const coverage = (point: GrowthPointView): string | null =>
   point.covered && isPartial(point) ? `covers ${point.covered.covered} of ${point.covered.total}` : null
+
+/** "Gold", "Gold and Fund", "Gold, Fund and Silver". */
+function listed(names: readonly string[]): string {
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
 
 function valueText(point: GrowthPointView): string {
   if (point.valuePaise === null) return "Not valued"
@@ -36,12 +46,26 @@ function valueText(point: GrowthPointView): string {
   return `${formatPaiseText(point.valuePaise)}${covered}${point.stale ? ", at an old price" : ""}`
 }
 
+/** What the chart's Invested point says: on an outlined month, what went into the valued investments only. */
+function investedText(point: GrowthPointView): string {
+  return `${formatPaiseText(point.investedCoveredPaise)}${isOutlined(point) ? `, ${coverage(point)}` : ""}`
+}
+
 function notesOf(point: GrowthPointView, name: string | null): RowNote[] {
   const notes: RowNote[] = []
   if (point.covered && isPartial(point)) {
     const names = point.unvaluedNames
-    const left = names.length > 0 ? ` (${names.join(", ")} not valued)` : ""
-    notes.push({ key: "partial", kind: "partial", text: `Value and gain cover ${point.covered.covered} of ${point.covered.total} investments${left}.` })
+    if (point.covered.covered === 0) {
+      notes.push({ key: "partial", kind: "partial", text: `${listed(names)} not valued in this month.` })
+    } else {
+      const left = names.length > 0 ? ` (${names.join(", ")} not valued)` : ""
+      const invested = names.length > 0 ? ` Invested includes ${listed(names)}; the chart's lines compare the valued investments only.` : ""
+      notes.push({
+        key: "partial",
+        kind: "partial",
+        text: `Value and gain cover ${point.covered.covered} of ${point.covered.total} investments${left}.${invested}`,
+      })
+    }
   }
   if (point.stale) {
     notes.push({
@@ -56,11 +80,37 @@ function notesOf(point: GrowthPointView, name: string | null): RowNote[] {
 function summaryOf(view: InvestmentGrowthView): string {
   const last = view.points[view.points.length - 1]
   const who = view.selected?.name ?? "your investments"
-  const worth = last.valuePaise === null ? "it could not be valued" : `worth ${formatPaiseText(last.valuePaise)}`
-  const lead = `On ${formatDay(last.asOf)}, ${formatPaiseText(last.investedPaise)} was in ${who}, ${worth}.`
-  const outlined = view.points.some(isPartial) ? " An outlined point values only some of the investments." : ""
+  let lead: string
+  if (last.valuePaise === null) {
+    lead = `On ${formatDay(last.asOf)}, ${formatPaiseText(last.investedPaise)} was in ${who}, which could not be valued.`
+  } else if (isOutlined(last)) {
+    const { covered, total } = last.covered!
+    lead =
+      `On ${formatDay(last.asOf)}, ${formatPaiseText(last.investedPaise)} was in ${who}. The ${covered} of ${total} that could be valued had ` +
+      `${formatPaiseText(last.investedCoveredPaise)} in them and were worth ${formatPaiseText(last.valuePaise)}.`
+  } else {
+    lead = `On ${formatDay(last.asOf)}, ${formatPaiseText(last.investedPaise)} was in ${who}, worth ${formatPaiseText(last.valuePaise)}.`
+  }
+  const outlined = view.points.some(isOutlined)
+    ? " An outlined point is a month that values only some of the investments: there both lines cover the valued ones only."
+    : ""
   const gap = view.points.some((point) => point.valuePaise === null) ? " A gap in Value is a month it could not be valued." : ""
   return lead + outlined + gap
+}
+
+/** The investments in the view that have no prices: worth what was put in, so at cost on both lines. */
+function atCostNote(view: InvestmentGrowthView): string | null {
+  const inView = view.selected ? view.investments.filter((investment) => investment.id === view.selected!.id) : view.investments
+  const names = inView.filter((investment) => investment.valuedAtCost).map((investment) => investment.name)
+  if (names.length === 0) return null
+  return names.length === 1
+    ? `${names[0]} is valued at what was put in (no prices), so it shows no gain.`
+    : `${listed(names)} are valued at what was put in (no prices), so they show no gain.`
+}
+
+/** The Investments screen, at the selected investment's card: where the lots and prices behind a value are listed. */
+export function investmentsHref(selected: { id: string } | null): string {
+  return selected ? `/investments#holding-${selected.id}` : "/investments"
 }
 
 function Signed({ paise }: { paise: string | null }) {
@@ -87,10 +137,18 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
     ...view.investments.map((investment) => ({ value: investment.id, label: investment.name, archived: investment.archived })),
   ]
   const entriesOf = selected ? `, entries of ${selected.name}` : ", entries of every investment"
+  const atCost = atCostNote(view)
 
   return (
     <div className="space-y-6">
-      <NodePicker key={selected?.id ?? ""} slug="investments" choice={choice} label="Investment" value={selected?.id ?? ""} groups={[{ options }]} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <NodePicker key={selected?.id ?? ""} slug="investments" choice={choice} label="Investment" value={selected?.id ?? ""} groups={[{ options }]} />
+        <Link href={investmentsHref(selected)} className={buttonClass({ variant: "secondary", className: "self-start sm:self-auto" })}>
+          {selected ? `Open ${selected.name} in Investments` : "Open Investments"}
+          <span className="sr-only">, where the lots and prices are listed</span>
+          <ArrowUpRight aria-hidden className="size-4" />
+        </Link>
+      </div>
 
       <div className="rise">
         <LineChart
@@ -98,13 +156,21 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
           summary={summaryOf(view)}
           labels={labels}
           series={[
-            { key: "invested", label: "Invested", tone: "muted", values: points.map((point) => point.investedPaise) },
+            {
+              key: "invested",
+              label: "Invested",
+              tone: "muted",
+              // Like with like: on a month that values only some of the investments, what went into those.
+              values: points.map((point) => point.investedCoveredPaise),
+              hollow: points.map(isOutlined),
+              texts: points.map(investedText),
+            },
             {
               key: "value",
               label: "Value",
               tone: "accent",
               values: points.map((point) => point.valuePaise),
-              hollow: points.map(isPartial),
+              hollow: points.map(isOutlined),
               texts: points.map(valueText),
             },
           ]}
@@ -113,7 +179,7 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
             rows: points.map((point, index) => ({
               label: labels[index],
               cells: [
-                formatPaiseText(point.investedPaise),
+                investedText(point),
                 valueText(point),
                 point.gainPaise === null ? "Not valued" : `${formatPaiseText(point.gainPaise)}${coverage(point) ? `, ${coverage(point)}` : ""}`,
                 formatPaiseText(point.realisedPaise),
@@ -192,6 +258,11 @@ export function InvestmentGrowthReport({ view, choice }: { view: InvestmentGrowt
             ))}
           </table>
         </div>
+        {atCost && (
+          <p role="note" className="mt-4 max-w-xl text-sm text-fg-soft">
+            {atCost}
+          </p>
+        )}
       </SpotlightCard>
     </div>
   )

@@ -134,6 +134,18 @@ describe("loadNetWorthReport, Scenario N, January to March 2026", () => {
     expect(view.points[2]).toMatchObject({ assetsPaise: "13380000", investmentsPaise: "6320000", totalPaise: "17700000", partial: true, unvalued: [silverGap] })
   })
 
+  it("starts from the balances the day before a range that opens in February (non-zero openings)", async () => {
+    // On 31 Jan the bank, the card and both investments already hold money, so the first point here opens on them, not on
+    // zero; February and March are still Scenario N's figures.
+    const view = await loadNetWorthReport(holdings.user.id, custom("2026-02-01", "2026-03-31"))
+    expect(view.range).toMatchObject({ from: "2026-02-01", to: "2026-03-31", historyBegins: null })
+    expect(view.points.map((p) => p.bucket.key)).toEqual(["2026-02", "2026-03"])
+    expect(view.points.map((p) => [p.assetsPaise, p.investmentsPaise, p.liabilitiesPaise, p.totalPaise, p.partial])).toEqual([
+      ["8300000", "12250000", "2000000", "18550000", false],
+      ["14380000", "6320000", "2000000", "18700000", false],
+    ])
+  })
+
   it("says empty, with no points, for a user with no transactions", async () => {
     const user = await emptyUser()
     const view = await loadNetWorthReport(user.id, { kind: "last12" })
@@ -256,7 +268,7 @@ describe("loadInvestmentGrowth, Scenario N, January to March 2026", () => {
     points.map((p) => [p.investedPaise, p.valuePaise, p.gainPaise, p.realisedPaise])
 
   it("sets what the portfolio is worth against what went into it, over the investments it can value", async () => {
-    const { user, nodes } = holdings
+    const { user } = holdings
     const view = await loadInvestmentGrowth(user.id, Q1, undefined)
     expect(view.empty).toBe(false)
     expect(view.selected).toBeNull()
@@ -274,8 +286,31 @@ describe("loadInvestmentGrowth, Scenario N, January to March 2026", () => {
     ])
     expect(view.points.map((p) => p.unvaluedNames)).toEqual([["Gold"], [], []])
     expect(view.points.map((p) => p.stale)).toEqual([false, false, false])
-    expect(new Set(view.points[1].drill.node)).toEqual(new Set([nodes.Gold.id, nodes.Fund.id]))
-    expect(view.points[1].drill).toMatchObject({ from: "2026-02-01", to: "2026-02-28" })
+    // Like with like: January values Fund only, so the chart sets Fund's ₹10,000 against its ₹10,000; February and March
+    // value both, so the covered figure is all that went in.
+    expect(view.points.map((p) => p.investedCoveredPaise)).toEqual(["1000000", "11700000", "6100000"])
+    // Fund has no prices: it is worth what went into it, and the report says so.
+    expect(view.investments.map((i) => [i.name, i.valuedAtCost]).sort()).toEqual([
+      ["Fund", true],
+      ["Gold", false],
+    ])
+    // Every investment's entries, by kind: the same set as listing them, without the 50-id cap.
+    expect(view.points[1].drill).toEqual({ kind: "INVESTMENT", from: "2026-02-01", to: "2026-02-28" })
+  })
+
+  it("starts from what is already in the investments for a range that opens in February (non-zero openings)", async () => {
+    // ₹80,000 is in the two by 31 Jan; February and March are Scenario N's figures, both valued, so covered = invested.
+    const view = await loadInvestmentGrowth(holdings.user.id, custom("2026-02-01", "2026-03-31"), undefined)
+    expect(view.points.map((p) => p.bucket.key)).toEqual(["2026-02", "2026-03"])
+    expect(figures(view.points)).toEqual([
+      ["11700000", "12250000", "550000", "0"],
+      ["6100000", "6320000", "220000", "480000"],
+    ])
+    expect(view.points.map((p) => p.investedCoveredPaise)).toEqual(["11700000", "6100000"])
+    expect(view.points.map((p) => p.covered)).toEqual([
+      { covered: 2, total: 2 },
+      { covered: 2, total: 2 },
+    ])
   })
 
   it("follows one investment, with a gap where it cannot be valued", async () => {
@@ -288,6 +323,8 @@ describe("loadInvestmentGrowth, Scenario N, January to March 2026", () => {
       ["5100000", "5320000", "220000", "480000"],
     ])
     expect(gold.points.map((p) => p.covered)).toEqual([null, null, null])
+    // One investment is compared with itself: the covered figure is what went into it, valued or not.
+    expect(gold.points.map((p) => p.investedCoveredPaise)).toEqual(["7000000", "10700000", "5100000"])
     expect(gold.points[2].drill).toEqual({ node: [nodes.Gold.id], from: "2026-03-01", to: "2026-03-31" })
     expect(gold.points[2].valuePaise).toBe(String((await loadValuations(user.id, calendarDate("2026-03-31"))).get(nodes.Gold.id)))
 
@@ -344,6 +381,8 @@ describe("loadInvestmentGrowth, Scenario N, January to March 2026", () => {
       ])
     }
     const portfolio = await loadInvestmentGrowth(user.id, Q1, undefined)
+    // Nothing valued, nothing to compare: the Invested line keeps the whole figure rather than dropping to ₹0.
+    expect(portfolio.points.map((p) => p.investedCoveredPaise)).toEqual(["7000000", "7000000", "7000000"])
     expect(portfolio.points[0].covered).toEqual({ covered: 0, total: 1 })
     expect(portfolio.points[0].unvaluedNames).toEqual(["Gold"])
   })

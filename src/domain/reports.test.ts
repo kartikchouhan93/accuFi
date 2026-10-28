@@ -375,6 +375,8 @@ describe("portfolioPoint", () => {
       { nodeId: "fund", investedPaise: 1000000n, valuePaise: 1000000n, stale: false },
     ])
     expect(point.investedPaise).toBe(8000000n)
+    // Like with like: what went into the valued nodes only, the figure a partial point's value is set against.
+    expect(point.investedValuedPaise).toBe(1000000n)
     expect(point.valuePaise).toBe(1000000n)
     expect(point.gainPaise).toBe(0n)
     expect(point.covered).toBe(1)
@@ -389,6 +391,7 @@ describe("portfolioPoint", () => {
       { nodeId: "fund", investedPaise: 1000000n, valuePaise: 1000000n, stale: false },
     ])
     expect(point.investedPaise).toBe(6100000n)
+    expect(point.investedValuedPaise).toBe(6100000n)
     expect(point.valuePaise).toBe(6320000n)
     expect(point.gainPaise).toBe(220000n)
     expect(point.covered).toBe(2)
@@ -408,6 +411,7 @@ describe("portfolioPoint", () => {
   it("is all zeros for an empty list", () => {
     expect(portfolioPoint([])).toEqual({
       investedPaise: 0n,
+      investedValuedPaise: 0n,
       valuePaise: 0n,
       gainPaise: 0n,
       covered: 0,

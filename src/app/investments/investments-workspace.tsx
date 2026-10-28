@@ -2,7 +2,7 @@
 
 import { ChevronDown, LineChart, Plus } from "lucide-react"
 import Link from "next/link"
-import { useId, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Collapse } from "@/components/ui/collapse"
 import { NoticeToast, type ToastNotice } from "@/components/ui/notice-toast"
 import { buttonClass } from "@/components/ui/styles"
@@ -34,6 +34,25 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
   // An archived investment that cannot be valued is in no total, so it is never said to be included.
   const archivedUnvalued = portfolio.holdings.filter((holding) => holding.archived && holding.notValued !== null).length
   const visible = showArchived ? portfolio.holdings : portfolio.holdings.filter((holding) => !holding.archived)
+
+  // The investment growth report links to one card (`#holding-<id>`). An archived one is not drawn until asked for, so
+  // the browser has nothing to scroll to: show the archived cards, then bring that one into view once they are drawn.
+  // Only on arrival: a later refresh (after a sale) leaves the page where it is.
+  const anchor = useRef<string | null>(null)
+  useEffect(() => {
+    const hash = window.location.hash
+    if (!hash.startsWith("#holding-")) return
+    const target = portfolio.holdings.find((holding) => `#holding-${holding.nodeId}` === hash)
+    if (!target?.archived) return
+    anchor.current = hash.slice(1)
+    requestAnimationFrame(() => setShowArchived(true))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- on arrival only, not when a sale refreshes the holdings
+  }, [])
+  useEffect(() => {
+    if (!showArchived || anchor.current === null) return
+    document.getElementById(anchor.current)?.scrollIntoView()
+    anchor.current = null
+  }, [showArchived])
 
   // A sale closes the form that had the keyboard's focus; the message is where focus lands, as on the other screens.
   function announce(lines: string[], moveFocus = false) {
