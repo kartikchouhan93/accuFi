@@ -18,6 +18,28 @@ function rangeWords(view: CashFlowView) {
   return `${formatDay(view.range.from)} to ${formatDay(view.range.to)}`
 }
 
+/**
+ * A spending figure and the entries it opens. Below zero, more was refunded than spent (EC-20): it says "net refund"
+ * beside the figure, and in the link's name, so a minus sign alone never has to carry it.
+ */
+function Spending({ paise, drill, context }: { paise: string; drill: CashFlowView["totals"]["spendingDrill"]; context: string }) {
+  const refund = isNegative(paise)
+  return (
+    <>
+      <DrillLink drill={drill} context={refund ? `${context}, net refund` : context}>
+        {formatPaiseText(paise)}
+      </DrillLink>
+      {refund && (
+        <span aria-hidden className="ml-1.5 font-sans text-sm font-normal tracking-normal text-fg-soft">
+          net refund
+        </span>
+      )}
+    </>
+  )
+}
+
+const spendingText = (paise: string) => `${formatPaiseText(paise)}${isNegative(paise) ? " net refund" : ""}`
+
 function summaryOf(view: CashFlowView): string {
   const { totals, buckets } = view
   const span = `${buckets.length} ${buckets.length === 1 ? "month" : "months"}`
@@ -60,7 +82,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
               Spending
             </dt>
             <dd className="figures mt-1 font-display text-3xl font-semibold tracking-tight">
-              <DrillLink drill={totals.spendingDrill} context=", total spending">{formatPaiseText(totals.spendingPaise)}</DrillLink>
+              <Spending paise={totals.spendingPaise} drill={totals.spendingDrill} context=", total spending" />
             </dd>
           </div>
           <div className="sm:border-l sm:border-line sm:pl-6">
@@ -90,7 +112,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
             columns: ["Period", "Income", "Spending", "Net saved"],
             rows: buckets.map((row, index) => ({
               label: labels[index],
-              cells: [formatPaiseText(row.incomePaise), formatPaiseText(row.spendingPaise), formatPaiseText(row.savedPaise)],
+              cells: [formatPaiseText(row.incomePaise), spendingText(row.spendingPaise), formatPaiseText(row.savedPaise)],
             })),
           }}
         />
@@ -138,7 +160,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
                     <DrillLink drill={row.incomeDrill} context={`, income, ${labels[index]}`}>{formatPaiseText(row.incomePaise)}</DrillLink>
                   </td>
                   <td className="py-2.5 pl-3 sm:pl-4 text-right">
-                    <DrillLink drill={row.spendingDrill} context={`, spending, ${labels[index]}`}>{formatPaiseText(row.spendingPaise)}</DrillLink>
+                    <Spending paise={row.spendingPaise} drill={row.spendingDrill} context={`, spending, ${labels[index]}`} />
                   </td>
                   <td className={cn("py-2.5 pl-3 sm:pl-4 text-right", isNegative(row.savedPaise) ? "text-negative" : "text-fg-soft")}>
                     {formatPaiseText(row.savedPaise)}
@@ -155,7 +177,7 @@ export function CashFlowReport({ view }: { view: CashFlowView }) {
                   <DrillLink drill={totals.incomeDrill} context=", total income">{formatPaiseText(totals.incomePaise)}</DrillLink>
                 </td>
                 <td className="py-3 pl-3 sm:pl-4 text-right">
-                  <DrillLink drill={totals.spendingDrill} context=", total spending">{formatPaiseText(totals.spendingPaise)}</DrillLink>
+                  <Spending paise={totals.spendingPaise} drill={totals.spendingDrill} context=", total spending" />
                 </td>
                 <td className={cn("py-3 pl-3 sm:pl-4 text-right", isNegative(totals.savedPaise) && "text-negative")}>{formatPaiseText(totals.savedPaise)}</td>
               </tr>

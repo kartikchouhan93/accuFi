@@ -42,9 +42,6 @@ const first = (value: string | string[] | undefined) => (Array.isArray(value) ? 
 
 const LAST_12: RangeChoice = { kind: "last12" }
 
-/** The reports this page serves; any other is not found. */
-const BUILT: ReadonlySet<ReportSlug> = new Set(["net-worth", "cash-flow", "spending", "income", "accounts", "investments"])
-
 /** `load`, with a node that is not the user's (or not of the report's kind) answered as not found. */
 async function orNotFound<T>(load: Promise<T>): Promise<T> {
   try {
@@ -104,7 +101,8 @@ async function loadWithFallback(slug: ReportSlug, userId: string, choice: RangeC
 
 export default async function ReportPage({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
   const { report } = await params
-  if (!isReportSlug(report) || !BUILT.has(report)) notFound()
+  // Every slug in REPORTS is served; any other is not found.
+  if (!isReportSlug(report)) notFound()
   const query = await searchParams
 
   let choice: RangeChoice

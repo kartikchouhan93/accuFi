@@ -23,8 +23,23 @@ import { NothingToReport } from "./report-notes"
 // entry of the range, so it is the ranked rows less the net refunds, and it opens those entries too.
 
 const WORDS = {
-  EXPENSE: { title: "Where the money went", column: "Expense", total: "Total spending", verb: "spent", nothing: "Nothing was spent" },
-  INCOME_SOURCE: { title: "Where the money came from", column: "Income source", total: "Total income", verb: "came in", nothing: "Nothing came in" },
+  EXPENSE: {
+    title: "Where the money went",
+    column: "Expense",
+    total: "Total spending",
+    verb: "spent",
+    nothing: "Nothing was spent",
+    // Nothing to rank, but something came back: there was spending, refunded and more.
+    allBack: "More was refunded than spent in this range.",
+  },
+  INCOME_SOURCE: {
+    title: "Where the money came from",
+    column: "Income source",
+    total: "Total income",
+    verb: "came in",
+    nothing: "Nothing came in",
+    allBack: "More was paid back than came in during this range.",
+  },
 } as const
 
 function Marks({ row }: { row: Pick<RankedRowView, "fromSales" | "archived"> }) {
@@ -171,7 +186,7 @@ export function RankedReport({ view }: { view: RankedView }) {
             <RankedBars rows={ranked} />
           </div>
         ) : (
-          <p className="text-sm text-fg-soft">{words.nothing} in this range.</p>
+          <p className="text-sm text-fg-soft">{view.refunds.length > 0 ? words.allBack : `${words.nothing} in this range.`}</p>
         )}
         {/* One link for the whole line: the total and the entries it is made of. */}
         <div className="mt-4 border-t-2 border-line-strong pt-3">

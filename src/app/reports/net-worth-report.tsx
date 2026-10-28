@@ -100,7 +100,7 @@ export function NetWorthReport({ view }: { view: NetWorthReportView }) {
               label: labels[index],
               cells: [
                 formatPaiseText(point.assetsPaise),
-                formatPaiseText(point.investmentsPaise),
+                `${formatPaiseText(point.investmentsPaise)}${point.partial ? ", partial" : ""}`,
                 formatPaiseText(point.liabilitiesPaise),
                 pointText(point),
               ],
@@ -160,7 +160,8 @@ export function NetWorthReport({ view }: { view: NetWorthReportView }) {
                       </DrillLink>
                     </td>
                     <td className="whitespace-nowrap py-2.5 pl-3 text-right sm:pl-4">
-                      <DrillLink drill={point.investmentsDrill} context={`, investments, ${label}`}>
+                      {/* A partial month leaves an investment out of this figure (it can read ₹0.00), as of the total beside it. */}
+                      <DrillLink drill={point.investmentsDrill} context={`, investments, ${label}${point.partial ? ", partial" : ""}`}>
                         {formatPaiseText(point.investmentsPaise)}
                       </DrillLink>
                     </td>

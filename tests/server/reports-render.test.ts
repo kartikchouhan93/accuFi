@@ -162,6 +162,26 @@ describe("CashFlowReport", () => {
     expect(out).toMatch(/Jan 2026\s*₹1,000\.00\s*₹2,500\.50\s*-₹1,500\.50/)
   })
 
+  it("labels a month that took more back than it spent as a net refund, on screen and for a screen reader (EC-20)", () => {
+    // Only a refund of ₹500.00 in March, nothing spent: spending is -₹500.00.
+    const refunded = { ...cashFlow.buckets[2], spendingPaise: "-50000", savedPaise: "5250000" }
+    const out = renderCashFlow({ ...cashFlow, buckets: [cashFlow.buckets[0], cashFlow.buckets[1], refunded] })
+    expect(visibleText(out)).toMatch(/Mar 2026\s*₹52,000\.00\s*-₹500\.00\s*net refund\s*₹52,500\.00/)
+    expect(namesOf(out, "/transactions?flow=spending&from=2026-03-01&to=2026-03-31")).toEqual(["-₹500.00, spending, Mar 2026, net refund"])
+    // The visible label is not read twice: the link's name already says it.
+    expect(out).toMatch(/<span aria-hidden="true"[^>]*>net refund<\/span>/)
+    // A month that spent is not labelled.
+    expect(namesOf(out, "/transactions?flow=spending&from=2026-01-01&to=2026-01-31")).toEqual(["₹21,500.00, spending, Jan 2026"])
+    expect(visibleText(html)).not.toContain("net refund")
+    // The same for the range's total, in the headline and the table's foot.
+    const total = renderCashFlow({ ...cashFlow, buckets: [refunded], totals: { ...cashFlow.totals, spendingPaise: "-50000", savedPaise: "5250000" } })
+    expect(namesOf(total, "/transactions?flow=spending&from=2026-01-01&to=2026-03-31")).toEqual([
+      "-₹500.00, total spending, net refund",
+      "-₹500.00, total spending, net refund",
+    ])
+    expectClean(total)
+  })
+
   it("offers a way to start, and no chart, when nothing has been recorded", () => {
     const zero = { incomePaise: "0", spendingPaise: "0", savedPaise: "0", gainPaise: "0", lossPaise: "0", ...flows("2025-11-01", "2026-10-28") }
     const out = renderCashFlow({ range: { ...Q1, from: calendarDate("2025-11-01"), to: calendarDate("2026-10-28") }, empty: true, buckets: [], totals: zero })
@@ -331,6 +351,19 @@ describe("RankedReport, nothing to rank", () => {
       expect(visibleText(html)).not.toContain("%")
       expect(visibleText(html)).toContain("₹0.00")
     }
+  })
+
+  it("says nothing was spent only when nothing was, not when everything spent was refunded and more", () => {
+    const empty = visibleText(renderRanked({ ...spending, rows: [], refunds: [], totalPaise: "0" }))
+    expect(empty).toContain("Nothing was spent in this range.")
+    const onlyRefunds = renderRanked({ ...spending, rows: [], totalPaise: "-150000" })
+    expect(visibleText(onlyRefunds)).toContain("More was refunded than spent in this range.")
+    expect(visibleText(onlyRefunds)).not.toContain("Nothing was spent")
+    expect(visibleText(refundsBlock(onlyRefunds))).toContain("Dining")
+    const incomeBack = visibleText(renderRanked({ ...income, rows: [], refunds: [row({ id: "salary", name: "Salary", paise: "-10000" })], totalPaise: "-10000" }))
+    expect(incomeBack).toContain("More was paid back than came in during this range.")
+    expect(incomeBack).not.toContain("Nothing came in")
+    expect(visibleText(renderRanked({ ...income, rows: [], refunds: [], totalPaise: "0" }))).toContain("Nothing came in in this range.")
   })
 
   it("offers a way to start when nothing has been recorded", () => {

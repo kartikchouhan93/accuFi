@@ -116,6 +116,16 @@ describe("NetWorthReport", () => {
     expect(rowText(html, "Feb 2026")).not.toContain("Excludes")
   })
 
+  it("marks a partial month's Investments figure as partial for a screen reader, as it does the total", () => {
+    // January's ₹10,000.00 of investments leaves Gold out: the link says so, February's whole figure does not.
+    expect(namesOf(html, "/transactions?kind=INVESTMENT&from=2026-01-01&to=2026-01-31")).toEqual(["₹10,000.00, investments, Jan 2026, partial"])
+    expect(namesOf(html, "/transactions?kind=INVESTMENT&from=2026-02-01&to=2026-02-28")).toEqual(["₹1,22,500.00, investments, Feb 2026"])
+    // And when nothing of it could be valued, ₹0.00 is not read as a whole figure either.
+    const none = renderWorth({ ...netWorth, points: [{ ...netWorth.points[0], investmentsPaise: "0", totalPaise: "10000000" }] })
+    expect(namesOf(none, "/transactions?kind=INVESTMENT&from=2026-01-01&to=2026-01-31")).toEqual(["₹0.00, investments, Jan 2026, partial"])
+    expect(namesOf(none, "/transactions?kind=ASSET&from=2026-01-01&to=2026-01-31")).toEqual(["₹1,20,000.00, assets, Jan 2026"])
+  })
+
   it("prints February and March whole", () => {
     expect(rowText(html, "Feb 2026")).toMatch(/Feb 2026 ₹83,000\.00 ₹1,22,500\.00 ₹20,000\.00 ₹1,85,500\.00/)
     expect(rowText(html, "Mar 2026")).toMatch(/Mar 2026 ₹1,43,800\.00 ₹63,200\.00 ₹20,000\.00 ₹1,87,000\.00/)
