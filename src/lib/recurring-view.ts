@@ -116,6 +116,23 @@ export interface RuleView {
   version: number
 }
 
+/**
+ * The initial values of the rule form when it is opened from a transaction ("Make recurring"): the transaction's own
+ * ends, amount, note and tags, repeating monthly from the same day next month. Plain data like the views.
+ */
+export interface RuleDraft {
+  fromNodeId: string
+  toNodeId: string
+  /** Paise, as a decimal string. */
+  amountPaise: string
+  note: string | null
+  tags: string[]
+  frequency: "MONTHLY"
+  interval: 1
+  startDate: string
+  autoPost: false
+}
+
 /** The stored rule's schedule, as the domain functions take it. Pure. */
 export function scheduleOfRule(rule: RecurringRule): Schedule {
   return {

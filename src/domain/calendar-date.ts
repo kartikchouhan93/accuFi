@@ -85,6 +85,17 @@ export function addDays(date: CalendarDate, days: number): CalendarDate {
   return fromDbDate(moved)
 }
 
+/**
+ * The same day of the month in the month after `date`, clamped to that month's length (31 Jan gives 28 Feb, or 29 in a
+ * leap year; 31 Dec gives 31 Jan of the next year). UTC maths, so no timezone effect.
+ */
+export function sameDayNextMonth(date: CalendarDate): CalendarDate {
+  const [, year, month, day] = DATE_PATTERN.exec(date)!.map(Number)
+  // Month index `month` (zero-based) is the next calendar month; Date.UTC carries December into January of the next year.
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+  return fromDbDate(new Date(Date.UTC(year, month, Math.min(day, lastDay))))
+}
+
 /** ISO weekday of a date: Monday 1 through Sunday 7. getUTCDay counts Sunday as 0, so that is mapped to 7. */
 export function isoWeekday(date: CalendarDate): number {
   return toDbDate(date).getUTCDay() || 7

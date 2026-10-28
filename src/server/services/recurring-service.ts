@@ -1,5 +1,5 @@
 import type { LedgerNode, RecurringRule } from "@prisma/client"
-import { addDays, type CalendarDate } from "@/domain/calendar-date"
+import { addDays, fromDbDate, sameDayNextMonth, type CalendarDate } from "@/domain/calendar-date"
 import type { Paise } from "@/domain/money"
 import {
   datesDue,
@@ -12,21 +12,39 @@ import {
 } from "@/domain/recurrence"
 import { validateTransaction, type ViolationCode } from "@/domain/transaction-rules"
 import { RULE_NAME_MAX_LENGTH } from "@/lib/schemas/recurring"
-import { scheduleOfRule, toRuleView, type RuleView } from "@/lib/recurring-view"
+import {
+  scheduleOfRule,
+  toOccurrenceView,
+  toRuleView,
+  type OccurrenceView,
+  type PostedSnapshot,
+  type RuleDraft,
+  type RuleView,
+} from "@/lib/recurring-view"
+import { serialisePaise } from "@/lib/serialise"
+import { toPickerNode, type PickerNode } from "@/lib/transaction-list-view"
+import { toTransactionView } from "@/lib/transaction-view"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
   countOccurrences,
+  countPending,
   DuplicateRuleKeyError,
+  findPending,
+  findRecentlyHandled,
   findRuleById,
+  findRules,
   insertRule,
   RuleVersionConflictError,
   softDeleteRule,
   updateRule,
+  type OccurrenceWithRule,
   type RuleData,
 } from "@/server/repositories/recurring-repository"
+import { findTransactionById, findTransactionsByIdempotencyKeys } from "@/server/repositories/transaction-repository"
 import { inTransaction } from "@/server/repositories/unit-of-work"
 import { todayFor } from "@/server/services/clock"
 import { lotModeOf } from "@/server/services/lot-rules"
+import { listAllNodes } from "@/server/services/node-service"
 import { generateDue } from "@/server/services/recurring-generation"
 import { cleanNote, cleanTags, requireNode } from "@/server/services/transaction-service"
 
@@ -256,4 +274,119 @@ async function nextDueAfterToday(userId: string, rule: RecurringRule): Promise<C
  */
 export async function deleteRule(userId: string, id: string): Promise<void> {
   await inTransaction((uow) => softDeleteRule(userId, id, uow))
+}
+
+// What the recurring screen and its forms read. Plain data (views, "YYYY-MM-DD" days, paise as text), so a page can hand
+// it to a client component as it is.
+
+/** How many handled entries the "Recently handled" disclosure keeps. */
+export const RECENT_HANDLED = 20
+
+export interface RecurringScreen {
+  /** Pending entries of live rules, oldest due day first. */
+  inbox: OccurrenceView[]
+  rules: RuleView[]
+  /** The last `RECENT_HANDLED` posted or skipped entries of live rules, most recently handled first. */
+  recent: OccurrenceView[]
+  /** Every node, archived included: history still names them. The form narrows these itself. */
+  nodes: PickerNode[]
+  today: CalendarDate
+}
+
+/** The user's nodes by id, archived ones included, and the lookup of one of them. */
+function nodeLookup(nodes: readonly LedgerNode[]): (id: string) => LedgerNode {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  return (id) => {
+    const node = byId.get(id)
+    if (!node) throw new NotFoundError("node")
+    return node
+  }
+}
+
+/**
+ * The screen: the inbox, the rules, and what was handled lately, read together with the nodes they name and today in the
+ * user's own zone. A deleted rule contributes nothing, its history included. A posted entry shows what was recorded, not
+ * what the rule says now (one read finds those transactions by their keys, a deleted one included).
+ */
+export async function loadRecurringScreen(userId: string): Promise<RecurringScreen> {
+  const [today, nodes, pending, rules, handled] = await Promise.all([
+    todayFor(userId),
+    listAllNodes(userId),
+    findPending(userId),
+    findRules(userId),
+    findRecentlyHandled(userId, RECENT_HANDLED, true),
+  ])
+  const node = nodeLookup(nodes)
+
+  const postedKeys = handled.filter((o) => o.status === "POSTED").map((o) => `recurring:${o.id}`)
+  const recorded = new Map(
+    (await findTransactionsByIdempotencyKeys(userId, postedKeys)).map((row) => [row.idempotencyKey, toTransactionView(row)]),
+  )
+  const viewOfOccurrence = (occurrence: OccurrenceWithRule): OccurrenceView => {
+    const snapshot: PostedSnapshot | undefined = recorded.get(`recurring:${occurrence.id}`)
+    return toOccurrenceView(
+      occurrence,
+      occurrence.rule,
+      node(snapshot?.fromNodeId ?? occurrence.rule.fromNodeId),
+      node(snapshot?.toNodeId ?? occurrence.rule.toNodeId),
+      snapshot,
+    )
+  }
+
+  return {
+    inbox: pending.map(viewOfOccurrence),
+    rules: rules.map((rule) => toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId))),
+    recent: handled.map(viewOfOccurrence),
+    nodes: nodes.map(toPickerNode),
+    today,
+  }
+}
+
+/** The number of entries waiting in the inbox (live rules only), for the nav badge and the notice. */
+export function countPendingFor(userId: string): Promise<number> {
+  return countPending(userId)
+}
+
+/** The rule as the edit form opens it, with the nodes and today. NotFoundError if it is not the user's or is deleted. */
+export async function loadRuleForEdit(
+  userId: string,
+  id: string,
+): Promise<{ rule: RuleView; nodes: PickerNode[]; today: CalendarDate }> {
+  const [rule, nodes, today] = await Promise.all([findRuleById(userId, id), listAllNodes(userId), todayFor(userId)])
+  if (!rule) throw new NotFoundError("rule")
+  const node = nodeLookup(nodes)
+  return { rule: toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId)), nodes: nodes.map(toPickerNode), today }
+}
+
+/**
+ * The form's starting values for "Make recurring" on a transaction: its ends, amount, note and tags, monthly, from the
+ * same day of the month next month (clamped to that month's length). Nothing is stored. NotFoundError for a transaction
+ * that is not the user's or is deleted, one in a split (a rule repeats one movement, not a division), and one touching an
+ * application node (an opening balance or a realised gain is not something a person repeats).
+ */
+export async function templateFromTransaction(
+  userId: string,
+  transactionId: string,
+): Promise<{ draft: RuleDraft; nodes: PickerNode[]; today: CalendarDate }> {
+  const [transaction, nodes, today] = await Promise.all([findTransactionById(userId, transactionId), listAllNodes(userId), todayFor(userId)])
+  if (!transaction || transaction.groupId !== null) throw new NotFoundError("transaction")
+  const node = nodeLookup(nodes)
+  if (node(transaction.fromNodeId).systemRole !== null || node(transaction.toNodeId).systemRole !== null) {
+    throw new NotFoundError("transaction")
+  }
+  return {
+    draft: {
+      fromNodeId: transaction.fromNodeId,
+      toNodeId: transaction.toNodeId,
+      amountPaise: serialisePaise(transaction.amountPaise),
+      note: transaction.note,
+      tags: [...transaction.tags],
+      frequency: "MONTHLY",
+      interval: 1,
+      startDate: sameDayNextMonth(fromDbDate(transaction.occurredAt)),
+      autoPost: false,
+    },
+    nodes: nodes.map(toPickerNode),
+    today,
+  }
 }

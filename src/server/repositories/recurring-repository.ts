@@ -272,11 +272,14 @@ export function countPending(userId: string): Promise<number> {
   return prisma.recurringOccurrence.count({ where: { userId, status: "PENDING", rule: { is: { userId, deletedAt: null } } } })
 }
 
-/** Posted and dismissed occurrences, the most recently resolved first. */
-export function findRecentlyHandled(userId: string, limit: number): Promise<OccurrenceWithRule[]> {
+/**
+ * Posted and dismissed occurrences, the most recently resolved first. Those of a deleted rule are history and are
+ * included, unless `liveRulesOnly` (the screen lists only what can still be acted on).
+ */
+export function findRecentlyHandled(userId: string, limit: number, liveRulesOnly = false): Promise<OccurrenceWithRule[]> {
   const take = Number.isFinite(limit) ? Math.max(Math.trunc(limit), 1) : 1
   return prisma.recurringOccurrence.findMany({
-    where: { userId, status: { in: ["POSTED", "DISMISSED"] } },
+    where: { userId, status: { in: ["POSTED", "DISMISSED"] }, ...(liveRulesOnly ? { rule: { is: { userId, deletedAt: null } } } : {}) },
     include: { rule: true },
     orderBy: [{ resolvedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }],
     take,

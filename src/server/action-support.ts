@@ -1,9 +1,12 @@
 import { revalidatePath } from "next/cache"
 import { redirect } from "next/navigation"
+import type { z } from "zod"
+import { fieldErrorsOf } from "@/lib/field-errors"
 import type { TransactionView } from "@/lib/transaction-view"
 import { auth, UnauthenticatedError } from "@/server/auth"
 import { UserNotFoundError } from "@/server/repositories/errors"
 import { findUserTimezone } from "@/server/repositories/user-repository"
+import type { TransactionViolation, TransactionViolationCode } from "@/server/services/transaction-errors"
 
 // Shared by every Server Action file. It cannot live in one: a "use server" module may export only async functions.
 
@@ -80,8 +83,59 @@ export function wrote(): void {
   revalidatePath("/nodes")
   revalidatePath("/investments")
   revalidatePath("/investments/prices")
+  revalidatePath("/recurring")
   revalidatePath("/")
 }
 
+/** Parse an action's `unknown` input: the data, or the `invalid_input` failure carrying the field errors. */
+export function parseInput<S extends z.ZodType>(schema: S, input: unknown): { data: z.output<S> } | ActionFailure {
+  const parsed = schema.safeParse(input)
+  if (parsed.success) return { data: parsed.data }
+  return failed("invalid_input", "Check the highlighted fields", fieldErrorsOf(parsed.error))
+}
+
+// The form field a broken transaction rule belongs to (shared by the transaction and recurring actions, which both
+// surface the transaction rules). A rule about the pair of nodes or the flow is filed under the destination:
+// that is the control a user changes to fix it (the source is what they chose first), and the message names both. An
+// archived end is filed under its own control. The source is shared by every leg of a split, so its field has no leg.
+// The lot rules go under the field they are about: the quantity, the amount, the day, or the source that money cannot
+// leave this way; a switch, a split leg, a second purchase of a lump or a sold purchase being moved is fixed by choosing
+// another destination.
+const FIELD_OF_VIOLATION: Record<TransactionViolationCode, string> = {
+  SAME_NODE: "toNodeId",
+  ILLEGAL_FLOW: "toNodeId",
+  ARCHIVED_SOURCE: "fromNodeId",
+  ARCHIVED_TARGET: "toNodeId",
+  NON_POSITIVE_AMOUNT: "amount",
+  QUANTITY_REQUIRED: "quantity",
+  QUANTITY_NOT_APPLICABLE: "quantity",
+  QUANTITY_OUT_OF_RANGE: "quantity",
+  LUMP_QUANTITY: "quantity",
+  LUMP_ALREADY_BOUGHT: "toNodeId",
+  QUANTITY_BELOW_SOLD: "quantity",
+  AMOUNT_BELOW_SOLD: "amount",
+  SOLD_COST_CHANGED: "amount",
+  DATE_AFTER_SALE: "occurredAt",
+  LOT_SOURCE: "fromNodeId",
+  LOT_SWITCH: "toNodeId",
+  LOT_SPLIT_LEG: "toNodeId",
+  LOT_SOLD: "toNodeId",
+  // Only a sale (investment-service.ts) breaks these; they are here because the record is total over the codes.
+  NOT_SOLD_BY_LOT: "fromNodeId",
+  SALE_DESTINATION: "toNodeId",
+  QUANTITY_TOO_SMALL: "quantity",
+}
+
+/** Violations as `{ field: [messages] }`, a split's under `legs.<index>.<field>` so a form can find the leg's row. */
+export function violationFieldErrors(violations: readonly TransactionViolation[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const violation of violations) {
+    const field = FIELD_OF_VIOLATION[violation.code]
+    const key = violation.leg === undefined || field === "fromNodeId" ? field : `legs.${violation.leg}.${field}`
+    ;(out[key] ??= []).push(violation.message)
+  }
+  return out
+}
+
 // Lives in src/lib so a service can use it without importing the session; every action file still gets it from here.
-export { fieldErrorsOf } from "@/lib/field-errors"
+export { fieldErrorsOf }

@@ -298,7 +298,7 @@ describe("archiveNodeAction, restoreNodeAction and removeNodeAction", () => {
 
 describe("cache invalidation", () => {
   const revalidated = () => revalidatePath.mock.calls.map(([path]) => path).sort()
-  const everywhere = ["/", "/investments", "/investments/prices", "/nodes", "/transactions"]
+  const everywhere = ["/", "/investments", "/investments/prices", "/nodes", "/recurring", "/transactions"]
 
   // A node write changes what other screens show: net worth on "/" and the balances and pickers on "/transactions" move
   // with an opening balance, an archive or a rename. router.refresh() renews only the page the user is on.

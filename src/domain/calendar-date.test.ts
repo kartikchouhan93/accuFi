@@ -9,6 +9,7 @@ import {
   fromDbDate,
   isoWeekday,
   monthRange,
+  sameDayNextMonth,
   toDbDate,
   todayIn,
 } from "./calendar-date"
@@ -236,5 +237,27 @@ describe("isoWeekday", () => {
     expect(isoWeekday(calendarDate("2026-10-28"))).toBe(3) // Wednesday
     expect(isoWeekday(calendarDate("2026-11-02"))).toBe(1) // Monday
     expect(isoWeekday(calendarDate("2026-11-01"))).toBe(7) // Sunday: JS getUTCDay gives 0, ISO gives 7
+  })
+})
+
+describe("sameDayNextMonth", () => {
+  it("keeps the day of the month in the month after", () => {
+    expect(sameDayNextMonth(calendarDate("2026-10-15"))).toBe("2026-11-15")
+    expect(sameDayNextMonth(calendarDate("2026-01-01"))).toBe("2026-02-01")
+  })
+
+  it("clamps to the length of that month", () => {
+    expect(sameDayNextMonth(calendarDate("2026-01-31"))).toBe("2026-02-28")
+    expect(sameDayNextMonth(calendarDate("2028-01-31"))).toBe("2028-02-29")
+    expect(sameDayNextMonth(calendarDate("2026-03-31"))).toBe("2026-04-30")
+  })
+
+  it("rolls the year over after December", () => {
+    expect(sameDayNextMonth(calendarDate("2026-12-31"))).toBe("2027-01-31")
+    expect(sameDayNextMonth(calendarDate("2026-12-15"))).toBe("2027-01-15")
+  })
+
+  it("lets a leap day through into a month that has it", () => {
+    expect(sameDayNextMonth(calendarDate("2028-02-29"))).toBe("2028-03-29")
   })
 })
