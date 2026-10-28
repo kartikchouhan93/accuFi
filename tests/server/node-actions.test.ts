@@ -279,6 +279,25 @@ describe("archiveNodeAction, restoreNodeAction and removeNodeAction", () => {
     expect(result.ok === false && result.error.message).toMatch(/archive/i)
   })
 
+  it("answers a refusal, not an exception, for a node a recurring rule names, even one with no transactions", async () => {
+    const user = await signedInUser()
+    const bank = await registry.makeNode(user.id, "ASSET", "Bank")
+    const food = await registry.makeNode(user.id, "EXPENSE", "Food")
+    await registry.makeRule(user.id, bank.id, food.id)
+    const result = await actions.removeNodeAction({ nodeId: food.id })
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid", message: "A recurring rule uses this account. Archive it instead." } })
+    expect(await prisma.ledgerNode.count({ where: { id: food.id } })).toBe(1)
+  })
+
+  it("still refuses when the rule naming the node is soft-deleted", async () => {
+    const user = await signedInUser()
+    const bank = await registry.makeNode(user.id, "ASSET", "Bank")
+    const food = await registry.makeNode(user.id, "EXPENSE", "Food")
+    await registry.makeRule(user.id, bank.id, food.id, { deletedAt: new Date() })
+    expect(await actions.removeNodeAction({ nodeId: bank.id })).toMatchObject({ ok: false, error: { message: expect.stringMatching(/recurring rule/i) } })
+    expect(await prisma.ledgerNode.count({ where: { id: bank.id } })).toBe(1)
+  })
+
   it("refuses to archive or remove a system node", async () => {
     const user = await signedInSeededUser()
     const opening = await prisma.ledgerNode.findFirstOrThrow({ where: { userId: user.id, systemRole: "OPENING_BALANCE" } })

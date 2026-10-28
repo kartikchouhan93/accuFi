@@ -110,6 +110,14 @@ export function findRuleById(userId: string, id: string, uow?: UnitOfWork): Prom
   return dbOf(uow).recurringRule.findFirst({ where: { id, userId, deletedAt: null } })
 }
 
+/**
+ * How many rules name the node at either end, the user's own, soft-deleted ones included: a deleted rule stays in the
+ * table and its foreign keys to the node are RESTRICT, so it blocks a hard delete of the node as much as a live one.
+ */
+export function countRulesNaming(userId: string, nodeId: string): Promise<number> {
+  return prisma.recurringRule.count({ where: { userId, OR: [{ fromNodeId: nodeId }, { toNodeId: nodeId }] } })
+}
+
 /** Live rules: the soonest next due first, finished ones (no next due day) last, then by name. */
 export function findRules(userId: string): Promise<RecurringRule[]> {
   return prisma.recurringRule.findMany({

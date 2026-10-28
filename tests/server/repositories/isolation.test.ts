@@ -806,6 +806,15 @@ describe("recurring repository", () => {
     expect(mine.id).not.toBe(bRule.id)
   })
 
+  isolation("countRulesNaming", "counts nothing for another user's node, and counts only the caller's own rules", async () => {
+    // B's rule names B's nodes: A asking about them learns nothing.
+    expect(await recurringRepo.countRulesNaming(a.user.id, b.bank.id)).toBe(0)
+    expect(await recurringRepo.countRulesNaming(a.user.id, b.food.id)).toBe(0)
+    expect(await recurringRepo.countRulesNaming(b.user.id, b.food.id)).toBeGreaterThan(0)
+    // A node of A's that only B could (not) name is simply uncounted for B.
+    expect(await recurringRepo.countRulesNaming(b.user.id, a.food.id)).toBe(0)
+  })
+
   isolation("findRuleById", "returns null for another user's rule", async () => {
     expect(await recurringRepo.findRuleById(a.user.id, bRule.id)).toBeNull()
     expect(await inTransaction((uow) => recurringRepo.findRuleById(a.user.id, bRule.id, uow))).toBeNull()

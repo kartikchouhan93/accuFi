@@ -17,6 +17,7 @@ import {
   listAllNodes,
   listNodesForPicker,
   NodeHasHistoryError,
+  NodeInRecurringRuleError,
   NodeKindChangeError,
   removeLedgerNode,
   renameLedgerNode,
@@ -393,6 +394,46 @@ describe("system nodes", () => {
     expect((await renameLedgerNode(user.id, groceries.id, "Food")).name).toBe("Food")
     await removeLedgerNode(user.id, groceries.id)
     expect(await findNodeById(user.id, groceries.id)).toBeNull()
+  })
+})
+
+describe("removeLedgerNode and recurring rules", () => {
+  /** A user with a bank and a food ledger and no transactions at all, so only a rule could stop a delete. */
+  async function setup() {
+    const user = await registry.makeUser()
+    const bank = await createLedgerNode(user.id, bankInput)
+    const food = await createLedgerNode(user.id, { kind: "EXPENSE", name: "Food" })
+    return { user, bank, food }
+  }
+
+  it("refuses to delete a node a rule names, at either end, and leaves it in place", async () => {
+    const { user, bank, food } = await setup()
+    await registry.makeRule(user.id, bank.id, food.id)
+    await expect(removeLedgerNode(user.id, bank.id)).rejects.toThrow(NodeInRecurringRuleError)
+    await expect(removeLedgerNode(user.id, food.id)).rejects.toThrow(NodeInRecurringRuleError)
+    expect(await findNodeById(user.id, bank.id)).not.toBeNull()
+    expect(await findNodeById(user.id, food.id)).not.toBeNull()
+  })
+
+  it("still refuses when the only rule naming the node was deleted: the row stays and keeps the foreign key", async () => {
+    const { user, bank, food } = await setup()
+    await registry.makeRule(user.id, bank.id, food.id, { deletedAt: new Date() })
+    await expect(removeLedgerNode(user.id, food.id)).rejects.toThrow(NodeInRecurringRuleError)
+    expect(await findNodeById(user.id, food.id)).not.toBeNull()
+  })
+
+  it("words the refusal for the user and points at archiving", async () => {
+    const { user, bank, food } = await setup()
+    await registry.makeRule(user.id, bank.id, food.id)
+    await expect(removeLedgerNode(user.id, bank.id)).rejects.toThrow("A recurring rule uses this account. Archive it instead.")
+  })
+
+  it("does not let another user's rules block a delete", async () => {
+    const { user, bank } = await setup()
+    const other = await setup()
+    await registry.makeRule(other.user.id, other.bank.id, other.food.id)
+    await removeLedgerNode(user.id, bank.id)
+    expect(await findNodeById(user.id, bank.id)).toBeNull()
   })
 })
 

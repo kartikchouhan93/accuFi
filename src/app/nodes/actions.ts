@@ -15,6 +15,7 @@ import {
   HierarchyDepthError,
   InvalidNodeError,
   NodeHasHistoryError,
+  NodeInRecurringRuleError,
   NodeKindChangeError,
   removeLedgerNode,
   renameLedgerNode,
@@ -46,6 +47,8 @@ function toFailure(error: unknown): Failure {
   redirectIfUnauthenticated(error) // throws a redirect, so nothing below runs for a lapsed session
   if (error instanceof SystemNodeError) return failed("system_node", error.message)
   if (error instanceof NodeHasHistoryError) return failed("has_history", error.message)
+  // Worded by the service for the user, like the other "invalid" refusals: the screen shows the message as it is.
+  if (error instanceof NodeInRecurringRuleError) return failed("invalid", error.message)
   if (error instanceof HierarchyDepthError) return failed("hierarchy_depth", error.message)
   if (error instanceof NodeKindChangeError) return failed("kind_immutable", error.message)
   if (error instanceof InvalidNodeError) return failed("invalid", error.message)

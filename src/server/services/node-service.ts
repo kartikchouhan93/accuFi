@@ -14,6 +14,7 @@ import {
   updateNode,
 } from "@/server/repositories/node-repository"
 import { deletePricesOfNode } from "@/server/repositories/price-repository"
+import { countRulesNaming } from "@/server/repositories/recurring-repository"
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
 import { todayFor } from "@/server/services/clock"
 import { inTransaction } from "@/server/repositories/unit-of-work"
@@ -37,6 +38,14 @@ export class NodeHasHistoryError extends Error {
   constructor() {
     super("This node has transactions, so it cannot be deleted. Archive it instead.")
     this.name = "NodeHasHistoryError"
+  }
+}
+
+/** A recurring rule (live or deleted) still names the node, and the database keeps the node while a rule does. */
+export class NodeInRecurringRuleError extends Error {
+  constructor() {
+    super("A recurring rule uses this account. Archive it instead.")
+    this.name = "NodeInRecurringRuleError"
   }
 }
 
@@ -279,13 +288,16 @@ export async function restoreLedgerNode(userId: string, nodeId: string): Promise
 }
 
 /**
- * Only a node with no transactions can be deleted (EC-29, EC-33). Anything with history is archived instead. Its price
+ * Only a node with no transactions and no recurring rule can be deleted (EC-29, EC-33). Anything with history is archived
+ * instead, and so is a node a rule names: a deleted rule stays in the table and its foreign keys to the node are RESTRICT,
+ * so it counts as much as a live one. Its price
  * snapshots are not history in that sense (they move no money), but their foreign key to the node is RESTRICT, so they
  * are deleted with it, in one transaction: a failure leaves both.
  */
 export async function removeLedgerNode(userId: string, nodeId: string): Promise<void> {
   await requireMutableNode(userId, nodeId)
   if ((await countTransactionsForNode(userId, nodeId)) > 0) throw new NodeHasHistoryError()
+  if ((await countRulesNaming(userId, nodeId)) > 0) throw new NodeInRecurringRuleError()
   await inTransaction(async (uow) => {
     await deletePricesOfNode(userId, nodeId, uow)
     await deleteNode(userId, nodeId, uow)

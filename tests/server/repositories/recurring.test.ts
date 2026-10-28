@@ -433,3 +433,20 @@ describe("occurrence reads and state changes", () => {
     expect((await repo.findRecentlyHandled(w.user.id, 2)).map((o) => o.id)).toEqual([newest.id, middle.id])
   })
 })
+
+describe("countRulesNaming", () => {
+  it("counts the rules that name a node at either end, soft-deleted ones included, and no one else's", async () => {
+    const w = await registry.makeWorld()
+    const other = await registry.makeWorld()
+    expect(await repo.countRulesNaming(w.user.id, w.food.id)).toBe(0)
+    await repo.insertRule(w.user.id, withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }))
+    expect(await repo.countRulesNaming(w.user.id, w.food.id)).toBe(1) // as the destination
+    expect(await repo.countRulesNaming(w.user.id, w.bank.id)).toBe(1) // as the source
+    const second = await repo.insertRule(w.user.id, withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }))
+    expect(await repo.countRulesNaming(w.user.id, w.food.id)).toBe(2)
+    await inTransaction((uow) => repo.softDeleteRule(w.user.id, second.id, uow))
+    expect(await repo.countRulesNaming(w.user.id, w.food.id)).toBe(2) // deleted rules still hold the foreign key
+    await repo.insertRule(other.user.id, withDue({ fromNodeId: other.bank.id, toNodeId: other.food.id }))
+    expect(await repo.countRulesNaming(w.user.id, other.food.id)).toBe(0)
+  })
+})
