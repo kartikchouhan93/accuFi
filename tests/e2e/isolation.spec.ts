@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { Page } from "@playwright/test"
-import { calendarDate } from "@/domain/calendar-date"
+import { addDays, calendarDate } from "@/domain/calendar-date"
 import { parseQuantity } from "@/domain/quantity"
 import { parseRupees } from "@/domain/money"
 import { formatPaiseText } from "@/lib/node-money"
@@ -9,7 +9,7 @@ import { sellInvestment } from "@/server/services/investment-service"
 import { editTransaction } from "@/server/services/transaction-service"
 import { expect, section, test } from "./fixtures"
 import { balanceOf, editForm, entries, form, optionsOf, record, watchActions } from "./screens"
-import { account, addExpense, buy, card, incomeSource, investment, nodeId, post, price, today } from "./seed"
+import { account, addExpense, buy, card, incomeSource, investment, nodeId, post, price, recurringRule, today } from "./seed"
 
 // Cross-user isolation, proven through a browser. The repository layer is tested exhaustively for it; this is the same
 // claim made where a user could actually break it: two people, two sessions, one server. Each test gets user A and user B
@@ -882,4 +882,183 @@ test("answers B's report of A's account or investment as not found, exactly as f
   await openReport(b.page, "accounts", `&node=${await nodeId(b.userId, SILVER_WALLET)}`)
   await shows.accounts.b(b.page)
   expect(await leaksOn(b.page, secrets)).toEqual([])
+})
+
+// Recurring entries (M4). A rule and the entries it proposes are one user's, and every way in is by an id: a page names a rule
+// in its URL, a button sends an entry's id to a Server Action. So B is shown none of A's rules or entries, and an id of A's
+// in B's hands is answered as not found, exactly as an id that is nobody's, with A's rows as they were. A's rule is a daily one
+// that started two days ago, so it has three entries waiting (A's nav badge says 3); B's has one.
+
+const A_RULE = "Zephyr Subscription"
+const A_NOTE = "Zephyr recurring note"
+const B_RULE = "Plain Rule"
+
+/** A's rule: ₹5,432.10 a day from Zephyr Vault Savings to Zephyr Hobby, three entries waiting. */
+async function seedARecurring(userId: string) {
+  await seedA(userId)
+  const start = addDays(await today(userId), -2)
+  return recurringRule(userId, { name: A_RULE, from: VAULT, to: HOBBY, rupees: "5,432.10", frequency: "DAILY", startDate: start, note: A_NOTE })
+}
+
+/** B's rule: ₹75 a day from Plain Wallet to Transport from today, one entry waiting. */
+async function seedBRecurring(userId: string) {
+  await seedB(userId)
+  return recurringRule(userId, { name: B_RULE, from: "Plain Wallet", to: "Transport", rupees: "75", frequency: "DAILY", startDate: await today(userId) })
+}
+
+/** What identifies A's recurring rows: the rule and entry ids, and the amount as printed and as paise. */
+async function recurringSecretsOfA(userId: string): Promise<string[]> {
+  const rules = await prisma.recurringRule.findMany({ where: { userId } })
+  const occurrences = await prisma.recurringOccurrence.findMany({ where: { userId } })
+  return [...(await secretsOfA(userId)), ...rules.map((rule) => rule.id), ...occurrences.map((occurrence) => occurrence.id), "5,432.10", "543210", A_NOTE]
+}
+
+/** Every recurring row of a user as stored, in a fixed order, so "nothing changed" is a comparison of two reads. */
+async function recurringRowsOf(userId: string) {
+  return {
+    rules: await prisma.recurringRule.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+    occurrences: await prisma.recurringOccurrence.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+    transactions: await prisma.transaction.count({ where: { userId } }),
+  }
+}
+
+const recurringNav = (page: Page) => page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^Recurring/ }).first()
+const waiting = (count: number) => new RegExp(`^Recurring\\s*,\\s*${count} waiting$`)
+const inboxCards = (page: Page) => page.getByRole("region", { name: "Inbox", exact: true }).getByRole("listitem")
+
+test("shows B none of A's rules or entries, and A's own screen all of them", async ({ pair: { a, b } }) => {
+  await seedARecurring(a.userId)
+  await seedBRecurring(b.userId)
+  const secrets = await recurringSecretsOfA(a.userId)
+
+  // A's own screen shows the rule and its three entries, so a search that finds nothing on B's is not looking for the wrong thing.
+  await a.page.goto("/recurring")
+  await expect(inboxCards(a.page)).toHaveCount(3)
+  await expect(a.page.getByRole("region", { name: "Rules", exact: true })).toContainText(A_RULE)
+  await expect(recurringNav(a.page)).toHaveAccessibleName(waiting(3))
+  expect((await leaksOn(a.page, secrets)).filter((secret) => /^[\d.,]+$/.test(secret)).length).toBeGreaterThan(0)
+
+  // B's screen has B's own one entry, its own badge, and nothing of A's, on the screen, in the HTML, on the other pages too.
+  await b.page.goto("/recurring")
+  await expect(inboxCards(b.page)).toHaveCount(1)
+  await expect(b.page.getByRole("region", { name: "Rules", exact: true })).toContainText(B_RULE)
+  await expect(b.page.getByRole("region", { name: "Rules", exact: true }).getByRole("listitem")).toHaveCount(1)
+  await expect(recurringNav(b.page)).toHaveAccessibleName(waiting(1))
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  for (const path of ["/", "/transactions", "/recurring/new"]) {
+    await b.page.goto(path)
+    await expect(recurringNav(b.page)).toHaveAccessibleName(waiting(1))
+    expect(await leaksOn(b.page, secrets), path).toEqual([])
+  }
+  // B's own net worth (₹1,000 less the ₹250 bus pass) has no pending entry in it either: not A's ₹5,432.10, nor B's own ₹75.
+  await b.page.goto("/")
+  await expect(netWorth(b.page).locator("p").first()).toHaveText("₹750.00")
+})
+
+test("answers B's visit to A's rule, or to a form made from A's transaction, as not found, exactly as for an id that is nobody's", async ({ pair: { a, b } }) => {
+  const rule = await seedARecurring(a.userId)
+  await seedBRecurring(b.userId)
+  const secrets = await recurringSecretsOfA(a.userId)
+  const GHOST = "cm0000000000000000000ghost"
+  const aTransaction = await prisma.transaction.findFirstOrThrow({ where: { userId: a.userId, note: "Zephyr kayak, paid" } })
+
+  /** What B gets at `path`: the not-found page, with nothing of A's in it (apart from the id B typed). */
+  const visit = async (path: string, typed: string) => {
+    await b.page.goto(path)
+    await expect(b.page.getByText("This page could not be found.")).toBeVisible()
+    await expect(b.page.getByRole("form")).toHaveCount(0)
+    expect(await leaksOn(b.page, secrets, [typed]), path).toEqual([])
+    return b.page.locator("body").innerText()
+  }
+  const ghostEdit = await visit(`/recurring/${GHOST}/edit`, GHOST)
+  expect(await visit(`/recurring/${rule.id}/edit`, rule.id)).toBe(ghostEdit)
+  const ghostNew = await visit(`/recurring/new?from=${GHOST}`, GHOST)
+  expect(await visit(`/recurring/new?from=${aTransaction.id}`, aTransaction.id)).toBe(ghostNew)
+
+  // A, at the same URLs, is let in: it is the owner that makes the difference.
+  await a.page.goto(`/recurring/${rule.id}/edit`)
+  await expect(a.page.getByRole("form", { name: "Edit rule" }).getByLabel("Name")).toHaveValue(A_RULE)
+  await a.page.goto(`/recurring/new?from=${aTransaction.id}`)
+  await expect(a.page.getByRole("form", { name: "New rule" }).getByLabel("Amount (₹)")).toHaveValue("7654.32")
+})
+
+test.describe("a request B's browser sends, aimed at A's rule and entries", () => {
+  const GHOST = "cm0000000000000000000ghost"
+
+  /**
+   * B presses an ordinary button on its own screen, but the request the page sends has B's id swapped for `target`. The answer
+   * must be a plain "not found" with nothing of A's in it, and the same for an id that exists nowhere (the caller compares).
+   */
+  async function aimed(page: Page, own: string, target: string, act: () => Promise<void>) {
+    let swapped = 0
+    const replies = await watchActions(page, (body) => {
+      if (!body.includes(own)) return body
+      swapped += 1
+      return body.replaceAll(own, target)
+    })
+    await act()
+    await expect.poll(() => replies.length, "the answer that came back").toBe(1)
+    expect(swapped, "the request that was sent did carry B's own id, so it was really aimed").toBe(1)
+    await page.unroute("**/*")
+    const [reply] = replies
+    expect(reply.status).toBe(200)
+    expect(reply.body).toContain('"code":"not_found"')
+    expect(reply.body).not.toContain('"ok":true')
+    return reply.body
+  }
+
+  test("Post, Skip, Pause and Delete on A's ids are refused as not found, and change nothing", async ({ pair: { a, b } }) => {
+    const aRule = await seedARecurring(a.userId)
+    const bRule = await seedBRecurring(b.userId)
+    const secrets = await recurringSecretsOfA(a.userId)
+    const aOccurrence = await prisma.recurringOccurrence.findFirstOrThrow({ where: { userId: a.userId }, orderBy: { dueOn: "asc" } })
+    const bOccurrence = await prisma.recurringOccurrence.findFirstOrThrow({ where: { userId: b.userId } })
+    const aBefore = await recurringRowsOf(a.userId)
+    const bBefore = await recurringRowsOf(b.userId)
+    expect(aBefore.occurrences).toHaveLength(3)
+
+    const ownCard = (page: Page) => inboxCards(page).filter({ hasText: B_RULE })
+    const ownRule = (page: Page) => page.getByRole("region", { name: "Rules", exact: true }).getByRole("listitem").filter({ hasText: B_RULE })
+    const attempts: Record<string, (target: string) => Promise<string>> = {
+      post: async (target) => {
+        await b.page.goto("/recurring")
+        return aimed(b.page, bOccurrence.id, target, () => ownCard(b.page).getByRole("button", { name: "Post", exact: true }).click())
+      },
+      skip: async (target) => {
+        await b.page.goto("/recurring")
+        return aimed(b.page, bOccurrence.id, target, () => ownCard(b.page).getByRole("button", { name: "Skip", exact: true }).click())
+      },
+      pause: async (target) => {
+        await b.page.goto("/recurring")
+        return aimed(b.page, bRule.id, target, () => ownRule(b.page).getByRole("button", { name: /^Pause/ }).click())
+      },
+      delete: async (target) => {
+        await b.page.goto("/recurring")
+        return aimed(b.page, bRule.id, target, async () => {
+          await ownRule(b.page).getByRole("button", { name: /^Delete/ }).click()
+          await ownRule(b.page).getByRole("button", { name: "Delete rule" }).click()
+        })
+      },
+    }
+    const targets = { post: aOccurrence.id, skip: aOccurrence.id, pause: aRule.id, delete: aRule.id }
+
+    for (const [name, attempt] of Object.entries(attempts)) {
+      const toA = await attempt(targets[name as keyof typeof targets])
+      expect(await leaksOn(b.page, secrets), `${name} aimed at A`).toEqual([])
+      expect(toA, `${name}: A's id is answered as an id that is nobody's is`).toEqual(await attempt(GHOST))
+      expect(await leaksOn(b.page, secrets), `${name} aimed at nothing`).toEqual([])
+    }
+
+    // A's rule, its three entries and its ledger are exactly as they were, and so is B's: its own entry still waits, its rule lives.
+    expect(await recurringRowsOf(a.userId)).toEqual(aBefore)
+    expect(await recurringRowsOf(b.userId)).toEqual(bBefore)
+    await a.page.goto("/recurring")
+    await expect(inboxCards(a.page)).toHaveCount(3)
+    await expect(recurringNav(a.page)).toHaveAccessibleName(waiting(3))
+    await a.page.goto("/")
+    await expect(netWorth(a.page).locator("p").first()).toHaveText(A_NET_WORTH)
+    await b.page.goto("/recurring")
+    await expect(ownCard(b.page)).toHaveCount(1)
+    await expect(ownRule(b.page)).toHaveCount(1)
+  })
 })
