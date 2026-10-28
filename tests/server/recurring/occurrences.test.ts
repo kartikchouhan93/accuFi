@@ -126,6 +126,65 @@ describe("posting as proposed", () => {
   })
 })
 
+describe("a posted view shows what was posted, not the rule as it is now", () => {
+  it("shows the typed amount, note and day of a post with overrides, against the stored transaction", async () => {
+    const w = await setup()
+    const { occurrence } = await pendingOccurrence(w)
+
+    const view = await postOccurrence(w.user.id, occurrence.id, {
+      amount: 123_45n,
+      occurredAt: calendarDate("2026-03-07"),
+      note: "paid late",
+    })
+
+    const [tx] = await transactionsFor(occurrence.id)
+    expect(view.transactionId).toBe(tx.id)
+    expect(view.amountPaise).toBe(tx.amountPaise.toString())
+    expect(view.amountPaise).toBe("12345")
+    expect(view.note).toBe(tx.note)
+    expect(view.note).toBe("paid late")
+    expect(view.tags).toEqual(tx.tags)
+    expect(view.fromNodeId).toBe(tx.fromNodeId)
+    expect(view.toNodeId).toBe(tx.toNodeId)
+  })
+
+  it("keeps showing the posted amount and note after the rule is edited, on a replay", async () => {
+    const w = await setup()
+    const { rule, occurrence } = await pendingOccurrence(w)
+    await postOccurrence(w.user.id, occurrence.id)
+    await prisma.recurringRule.update({ where: { id: rule.id }, data: { amountPaise: 150_00n, note: "raised", tags: ["new"] } })
+
+    const view = await postOccurrence(w.user.id, occurrence.id)
+
+    const [tx] = await transactionsFor(occurrence.id)
+    expect(view.status).toBe("POSTED")
+    expect(view.amountPaise).toBe(tx.amountPaise.toString())
+    expect(view.amountPaise).toBe("10000")
+    expect(view.note).toBe("monthly")
+    expect(view.tags).toEqual(["home", "fixed"])
+  })
+
+  it("keeps naming the accounts it was posted to after the rule is pointed elsewhere", async () => {
+    const w = await setup()
+    const other = await registry.makeNode(w.user.id, "EXPENSE", "Travel")
+    const { rule, occurrence } = await pendingOccurrence(w)
+    await postOccurrence(w.user.id, occurrence.id)
+    await prisma.recurringRule.update({ where: { id: rule.id }, data: { toNodeId: other.id } })
+
+    const view = await postOccurrence(w.user.id, occurrence.id)
+
+    expect(view).toMatchObject({ toNodeId: w.food.id, toName: "Food", fromNodeId: w.bank.id, fromName: "Bank" })
+    expect(view.toNodeId).not.toBe(other.id)
+  })
+
+  it("still shows the rule's current template while pending or skipped", async () => {
+    const w = await setup()
+    const { rule, occurrence } = await pendingOccurrence(w)
+    await prisma.recurringRule.update({ where: { id: rule.id }, data: { amountPaise: 150_00n } })
+    expect((await dismissOccurrence(w.user.id, occurrence.id)).amountPaise).toBe("15000")
+  })
+})
+
 describe("what is pending is not money (EC-47)", () => {
   it("leaves the balances and net worth alone until one is posted, then moves them by exactly that amount", async () => {
     const w = await setup()

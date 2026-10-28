@@ -3,7 +3,8 @@ import type { CalendarDate } from "@/domain/calendar-date"
 import { fromDbDate } from "@/domain/calendar-date"
 import type { Paise } from "@/domain/money"
 import type { Quantity } from "@/domain/quantity"
-import { toOccurrenceView, type OccurrenceView } from "@/lib/recurring-view"
+import { toOccurrenceView, type OccurrenceView, type PostedSnapshot } from "@/lib/recurring-view"
+import { toTransactionView } from "@/lib/transaction-view"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
   findOccurrenceById,
@@ -12,6 +13,7 @@ import {
   markPosted,
   type OccurrenceWithRule,
 } from "@/server/repositories/recurring-repository"
+import { findTransactionById, findTransactionsByIdempotencyKeys } from "@/server/repositories/transaction-repository"
 import { recordTransaction, requireNode } from "@/server/services/transaction-service"
 
 // Confirm, skip and put back an occurrence (spec §7). An occurrence is a proposal, never money: posting is what turns it
@@ -49,9 +51,30 @@ async function load(userId: string, id: string): Promise<OccurrenceWithRule> {
   return found
 }
 
-async function viewOf(userId: string, occurrence: RecurringOccurrence, found: OccurrenceWithRule): Promise<OccurrenceView> {
-  const [from, to] = await Promise.all([requireNode(userId, found.rule.fromNodeId), requireNode(userId, found.rule.toNodeId)])
-  return toOccurrenceView(occurrence, found.rule, from, to)
+/**
+ * The view of `occurrence`. A PENDING or DISMISSED one shows the rule's current template and ends. A POSTED one shows what
+ * was recorded: `posted` when the caller has the transaction it just made, otherwise the stored transaction (found by id,
+ * or, if it has since been deleted, by its key, which a deleted row keeps), so a later edit of the rule never rewrites
+ * what the card says was posted. Only an occurrence whose transaction cannot be found at all falls back to the rule.
+ */
+async function viewOf(
+  userId: string,
+  occurrence: RecurringOccurrence,
+  found: OccurrenceWithRule,
+  posted?: PostedSnapshot,
+): Promise<OccurrenceView> {
+  let snapshot = posted
+  if (!snapshot && occurrence.status === "POSTED") {
+    const row =
+      (occurrence.transactionId ? await findTransactionById(userId, occurrence.transactionId) : null) ??
+      (await findTransactionsByIdempotencyKeys(userId, [`recurring:${occurrence.id}`]))[0]
+    if (row) snapshot = toTransactionView(row)
+  }
+  const [from, to] = await Promise.all([
+    requireNode(userId, snapshot?.fromNodeId ?? found.rule.fromNodeId),
+    requireNode(userId, snapshot?.toNodeId ?? found.rule.toNodeId),
+  ])
+  return toOccurrenceView(occurrence, found.rule, from, to, snapshot)
 }
 
 /**
@@ -60,6 +83,9 @@ async function viewOf(userId: string, occurrence: RecurringOccurrence, found: Oc
  * `recordTransaction` refuses (archived node, overdraft, a missing quantity) is thrown as it is and leaves the occurrence
  * PENDING with nothing written. Throws OccurrenceStateError for a skipped one, NotFoundError for one that is not the
  * user's or belongs to a deleted rule.
+ *
+ * First write wins: a replay (an occurrence already POSTED, or a key that already has a transaction) returns the FIRST
+ * result and ignores the overrides it was given. The view of a posted occurrence is the recorded transaction's.
  */
 export async function postOccurrence(userId: string, id: string, overrides: PostOverrides = {}): Promise<OccurrenceView> {
   const found = await load(userId, id)
@@ -80,7 +106,7 @@ export async function postOccurrence(userId: string, id: string, overrides: Post
   })
 
   const marked = await markPosted(userId, found.id, transaction.id)
-  if (marked) return viewOf(userId, marked, found)
+  if (marked) return viewOf(userId, marked, found, transaction)
   // Not pending any more: someone else posted it first (they hold the same transaction, the key replayed), or it was
   // skipped or its rule deleted while this call was recording. The first is the answer; the others are told.
   const current = await load(userId, found.id)
@@ -107,6 +133,9 @@ export async function restoreOccurrence(userId: string, id: string): Promise<Occ
   if (found.status === "POSTED") throw new OccurrenceStateError("It is already posted, so there is nothing to put back.")
   if (found.status === "PENDING") return viewOf(userId, found, found)
 
+  // Known and harmless: if the rule is deleted between the load above and this write, a PENDING orphan is left behind
+  // (the repository's state changes do not look at the rule). `findPending` only lists occurrences of live rules, so
+  // it is never shown, and nothing can post it: `load` refuses an occurrence of a deleted rule.
   const marked = await markPending(userId, found.id)
   if (marked) return viewOf(userId, marked, found)
   const current = await load(userId, found.id)
