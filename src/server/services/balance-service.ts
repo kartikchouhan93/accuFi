@@ -4,6 +4,7 @@ import { findTransactions, sumBalances } from "@/server/repositories/transaction
 import { todayFor } from "@/server/services/clock"
 import { readValuationInputs, valuationStatesFrom } from "@/server/services/investment-service"
 import { listAllNodes } from "@/server/services/node-service"
+import { loadCashFlow, loadNetWorthReport } from "@/server/services/report-service"
 
 /** How many of the newest transactions the dashboard lists. */
 const RECENT_COUNT = 10
@@ -18,17 +19,26 @@ const RECENT_COUNT = 10
  * than out of net worth or into it twice. One not valued is named and left out (EC-23); one valued at a stale price is
  * named too (EC-24). Archived nodes are in every total and not in the list. Safe to hand to a client component: no
  * bigint, no Date.
+ *
+ * Beside those figures, and never instead of them: this month's income, spending and savings from the cash flow report,
+ * and the last twelve month-ends from the net worth report, whose last point is today's figure. The reports are the only
+ * arithmetic for both; they are handed the valuation inputs read here, so prices and lots are read once. They run as of
+ * the user's own today, whatever `asOf` says.
  */
 export async function getDashboard(userId: string, asOf?: CalendarDate): Promise<DashboardView> {
   const today = asOf ?? (await todayFor(userId))
-  const [nodes, current, all, recent, furthest, held] = await Promise.all([
+  const month = { kind: "month", year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)) } as const
+  const inputs = readValuationInputs(userId)
+  const [nodes, current, all, recent, furthest, held, flow, netWorthReport] = await Promise.all([
     listAllNodes(userId),
     sumBalances(userId, today),
     sumBalances(userId),
     findTransactions(userId, { to: today }, undefined, RECENT_COUNT),
     // Newest first, so the first row on or after today is the furthest-dated one: later than today means a projection.
     findTransactions(userId, { from: today }, undefined, 1),
-    readValuationInputs(userId),
+    inputs,
+    loadCashFlow(userId, month),
+    inputs.then((read) => loadNetWorthReport(userId, { kind: "last12" }, { inputs: read })),
   ])
   const latest = furthest.items[0]
   const furthestDate = latest === undefined ? null : fromDbDate(latest.occurredAt)
@@ -44,5 +54,7 @@ export async function getDashboard(userId: string, asOf?: CalendarDate): Promise
     unvalued,
     priced,
     projectedValuations: latestDate === null ? undefined : valuationStatesFrom(held, latestDate, { priceAsOf: today }).valuations,
+    month: { choice: month, flow },
+    netWorthReport,
   })
 }

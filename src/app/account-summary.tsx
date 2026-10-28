@@ -3,6 +3,7 @@ import { Amount } from "@/app/amount"
 import { PriceLine } from "@/app/price-line"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
+import type { LedgerKind } from "@/domain/ledger-kind"
 import type { DashboardView } from "@/lib/dashboard-view"
 import { NOT_VALUED_COPY } from "@/lib/investment-view"
 import { KIND_COPY } from "@/lib/node-kinds"
@@ -19,18 +20,27 @@ interface Props {
   kindTotals: DashboardView["kindTotals"]
 }
 
+/** A kind has a section (`summary-<kind>`) when it has a live node to list or archived ones counted in its total. */
+const hasSection = (accounts: Props["accounts"], kind: LedgerKind, archivedCount: number) =>
+  archivedCount > 0 || accounts.some((account) => account.kind === kind)
+
+/** The kinds whose section AccountSummary draws, so a link to `#summary-<kind>` is only made where there is one. */
+export function summaryKinds({ accounts, kindTotals }: Props): LedgerKind[] {
+  return kindTotals.filter(({ kind, archivedCount }) => hasSection(accounts, kind, archivedCount)).map(({ kind }) => kind)
+}
+
 export function AccountSummary({ accounts, kindTotals }: Props) {
   return (
     <div className="space-y-10">
       {kindTotals.map(({ kind, total, archivedCount, unvaluedCount, archivedUnvaluedCount }) => {
         const rows = accounts.filter((account) => account.kind === kind)
-        if (rows.length === 0 && archivedCount === 0) return null
+        if (!hasSection(accounts, kind, archivedCount)) return null
         const copy = KIND_COPY[kind]
         const headingId = `summary-${kind}`
         return (
           <section key={kind} aria-labelledby={headingId}>
             <div className="flex items-baseline justify-between gap-4">
-              <h2 id={headingId} className="font-display text-lg font-semibold tracking-tight">
+              <h2 id={headingId} className="scroll-mt-6 font-display text-lg font-semibold tracking-tight">
                 {copy.plural}
               </h2>
               {/* What the total leaves out, beside it and in an element of its own: an investment not valued counts as nothing. */}

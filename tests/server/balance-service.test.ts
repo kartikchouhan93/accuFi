@@ -8,6 +8,7 @@ import { seedAccountNodes } from "@/server/services/account-seed"
 import { archiveLedgerNode, createLedgerNode } from "@/server/services/node-service"
 import { recordTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
+import { holdingsScenario } from "./reports/scenarios"
 
 // The dashboard's data, from real rows. Every expected figure is a literal worked out by hand (paise), never computed
 // with the code under test.
@@ -206,6 +207,90 @@ describe("getDashboard", () => {
     const view = await getDashboard(mine.id)
     expect(view.accounts).toEqual([])
     expect(view.netWorth.total).toBe("0")
+  })
+})
+
+/** How many month-ends a trend from January 2026 to `today` has: one per calendar month, at most twelve. */
+function monthsSinceJanuary2026(today: string): number {
+  const months = (Number(today.slice(0, 4)) - 2026) * 12 + Number(today.slice(5, 7))
+  return Math.min(12, months)
+}
+
+describe("getDashboard, this month and the net worth trend", () => {
+  it("sums this month's income, spending and what was saved, and starts the trend at the month of the first entry", async () => {
+    const user = await newUser()
+    await createLedgerNode(user.id, { kind: "INCOME_SOURCE", name: "Salary" })
+    await createLedgerNode(user.id, { kind: "ASSET", name: "Bank", assetSubtype: "SAVINGS" })
+    const today = await todayOf(user.id)
+    await post(user.id, "Salary", "Bank", 5_000_000n, today)
+    await post(user.id, "Bank", "Rent", 1_500_000n, today)
+
+    const view = await getDashboard(user.id)
+
+    // 50,000 in, 15,000 out: 35,000 saved, and 35,000 is all the bank holds.
+    expect(view.thisMonth).toEqual({
+      monthParam: `month-${today.slice(0, 4)}-${today.slice(5, 7)}`,
+      incomePaise: "5000000",
+      spendingPaise: "1500000",
+      savedPaise: "3500000",
+    })
+    expect(view.netWorth.total).toBe("3500000")
+    // The first entry is today's, so there is one point, today, and no history is made up before it.
+    expect(view.trend).toEqual([{ asOf: today, totalPaise: "3500000", partial: false }])
+    expect(view.trend[0].totalPaise).toBe(view.netWorth.total)
+  })
+
+  it("has no month and no trend for a brand-new account", async () => {
+    const user = await newUser()
+    const view = await getDashboard(user.id)
+    expect(view.isEmpty).toBe(true)
+    expect(view.thisMonth).toBeNull()
+    expect(view.trend).toEqual([])
+  })
+
+  it("draws Scenario N's trend from January 2026 to today, ending at the dashboard's own figure, which is unchanged", async () => {
+    const { user, nodes } = await holdingsScenario(registry)
+    const today = await todayOf(user.id)
+    const count = monthsSinceJanuary2026(today)
+
+    const view = await getDashboard(user.id)
+
+    expect(view.trend).toHaveLength(count)
+    expect(view.trend[count - 1]).toEqual({ asOf: today, totalPaise: "18700000", partial: false })
+    if (count < 12) {
+      // History begins in January, when the gold had no price yet: the month-end leaves it out and says so.
+      expect(view.trend[0]).toEqual({ asOf: "2026-01-31", totalPaise: "11000000", partial: true })
+      expect(view.trend[1]).toEqual({ asOf: "2026-02-28", totalPaise: "18550000", partial: false })
+    }
+    expect(view.trend.map((point) => point.asOf).slice(0, -1).every((day) => day < today)).toBe(true)
+
+    // The figures the dashboard had before the trend, untouched. Bank: 2,00,000 - 70,000 - 10,000 - 37,000 + 60,800 =
+    // 1,43,800. Gold: 15 g bought, 8 g sold, 7 g at 7,600 = 53,200; the fund 10,000: 63,200 invested. The card owes
+    // 20,000. 1,43,800 + 63,200 - 20,000 = 1,87,000. The gold's price, from 5 Mar 2026, is stale today.
+    expect(view.netWorth).toEqual({
+      assets: "14380000",
+      investments: "6320000",
+      liabilities: "2000000",
+      total: "18700000",
+      isPartial: false,
+      unvaluedNodeIds: [],
+      unvaluedNames: [],
+      staleNames: ["Gold"],
+      archivedCount: 0,
+    })
+    expect(view.accounts).toEqual([
+      { id: nodes.Bank.id, name: "Bank", kind: "ASSET", balance: "14380000", notValued: null, priced: null },
+      { id: nodes.Fund.id, name: "Fund", kind: "INVESTMENT", balance: "1000000", notValued: null, priced: null },
+      { id: nodes.Gold.id, name: "Gold", kind: "INVESTMENT", balance: "5320000", notValued: null, priced: { asOf: "2026-03-05", stale: true } },
+      { id: nodes.Card.id, name: "Card", kind: "LIABILITY", balance: "-2000000", notValued: null, priced: null },
+    ])
+    expect(view.kindTotals).toEqual([
+      { kind: "ASSET", total: "14380000", archivedCount: 0, unvaluedCount: 0, archivedUnvaluedCount: 0 },
+      { kind: "INVESTMENT", total: "6320000", archivedCount: 0, unvaluedCount: 0, archivedUnvaluedCount: 0 },
+      { kind: "LIABILITY", total: "-2000000", archivedCount: 0, unvaluedCount: 0, archivedUnvaluedCount: 0 },
+    ])
+    // Nothing earned or spent in this month: the strip says so in zeros, it does not disappear.
+    expect(view.thisMonth).toEqual({ monthParam: `month-${today.slice(0, 7)}`, incomePaise: "0", spendingPaise: "0", savedPaise: "0" })
   })
 })
 

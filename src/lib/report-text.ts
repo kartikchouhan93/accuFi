@@ -10,10 +10,15 @@ export const isNegative = (paise: string): boolean => paise.startsWith("-")
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+/** The calendar month a day falls in: "Jan 2026". */
+export function monthLabel(day: string): string {
+  return `${MONTHS[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`
+}
+
 export function periodLabel(bucket: Pick<BucketView, "from" | "to" | "partial">): string {
   const { from, to } = bucket
   if (from === to) return formatDay(from)
-  const month = `${MONTHS[Number(from.slice(5, 7)) - 1]} ${from.slice(0, 4)}`
+  const month = monthLabel(from)
   if (!bucket.partial) return month
   return `${Number(from.slice(8, 10))}–${Number(to.slice(8, 10))} ${month}`
 }

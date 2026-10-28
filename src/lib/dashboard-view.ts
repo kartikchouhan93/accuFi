@@ -3,9 +3,11 @@ import { fromDbDate, type CalendarDate } from "../domain/calendar-date"
 import type { NodeBalance } from "../domain/balance"
 import type { LedgerKind } from "../domain/ledger-kind"
 import type { Paise } from "../domain/money"
+import { rangeParams, type RangeChoice } from "../domain/periods"
 import type { NotValuedReason, PriceState } from "./investment-view"
 import { HOLDING_KINDS, KIND_ORDER } from "./node-kinds"
 import { buildNodeOverview } from "./node-overview"
+import type { CashFlowView, NetWorthReportView } from "./report-view"
 import { serialisePaise } from "./serialise"
 
 // What the dashboard is made of, in a shape that can cross to the browser: money as paise text, days as CalendarDate,
@@ -78,6 +80,17 @@ export interface DashboardView {
   recent: DashboardTransaction[]
   /** No account, investment or liability exists yet (archived ones count): there is nothing to total, so say how to start. */
   isEmpty: boolean
+  /**
+   * What came in, went out and was saved in the user's current month (their timezone), from the cash flow report, with
+   * that month as a report's `range` parameter ("month-2026-10"). Null when `isEmpty`.
+   */
+  thisMonth: { monthParam: string; incomePaise: string; spendingPaise: string; savedPaise: string } | null
+  /**
+   * Net worth at each month-end since the user's first transaction (the net worth report's own clip), at most twelve, oldest
+   * first; the last is today's and equals `netWorth.total`. `partial` when an investment could not be valued then. Empty
+   * when `isEmpty`, or when there is no transaction yet.
+   */
+  trend: { asOf: CalendarDate; totalPaise: string; partial: boolean }[]
 }
 
 export interface DashboardInput {
@@ -104,6 +117,10 @@ export interface DashboardInput {
    * after the purchases and sales dated after today. Without it the projection reuses `valuations`.
    */
   projectedValuations?: ReadonlyMap<string, Paise | null>
+  /** The cash flow report for the user's current month, and that month. Without it, `thisMonth` is null. */
+  month?: { choice: Extract<RangeChoice, { kind: "month" }>; flow: CashFlowView }
+  /** The net worth report over the last twelve months. Without it, `trend` is empty. */
+  netWorthReport?: NetWorthReportView
 }
 
 function differ(current: readonly NodeBalance[], all: readonly NodeBalance[]): boolean {
@@ -138,6 +155,22 @@ export function buildDashboard(input: DashboardInput): DashboardView {
     0,
   )
 
+  const isEmpty = holdings.length === 0
+  const { month, netWorthReport } = input
+  const thisMonth =
+    isEmpty || month === undefined
+      ? null
+      : {
+          monthParam: rangeParams(month.choice).range,
+          incomePaise: month.flow.totals.incomePaise,
+          spendingPaise: month.flow.totals.spendingPaise,
+          savedPaise: month.flow.totals.savedPaise,
+        }
+  const trend =
+    isEmpty || netWorthReport === undefined
+      ? []
+      : netWorthReport.points.map((point) => ({ asOf: point.asOf, totalPaise: point.totalPaise, partial: point.partial }))
+
   const projectsMore = differ(current, all)
   const projection = projectsMore && latestDate !== null ? buildNodeOverview(nodes, all, input.projectedValuations ?? valuations).netWorth : null
   return {
@@ -169,6 +202,8 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       occurredAt: fromDbDate(row.occurredAt),
       note: row.note,
     })),
-    isEmpty: holdings.length === 0,
+    isEmpty,
+    thisMonth,
+    trend,
   }
 }

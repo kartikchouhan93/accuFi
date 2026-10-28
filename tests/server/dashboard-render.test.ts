@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
 import { AccountSummary } from "@/app/account-summary"
 import { NetWorthCard } from "@/app/net-worth-card"
+import { ThisMonth } from "@/app/this-month"
 import type { DashboardView } from "@/lib/dashboard-view"
 
 // What the dashboard says, as markup. The figures are given as paise text, exactly as the server sends them.
@@ -20,8 +21,15 @@ const netWorth: DashboardView["netWorth"] = {
   archivedCount: 0,
 }
 
-const card = (over: Partial<DashboardView["netWorth"]> = {}, projected: DashboardView["projected"] = null) =>
-  renderToStaticMarkup(createElement(NetWorthCard, { netWorth: { ...netWorth, ...over }, projected }))
+// Three month-ends, every one whole.
+const trend: DashboardView["trend"] = [
+  { asOf: calendarDate("2026-08-31"), totalPaise: "9000000", partial: false },
+  { asOf: calendarDate("2026-09-30"), totalPaise: "10500000", partial: false },
+  { asOf: calendarDate("2026-10-28"), totalPaise: "10974975", partial: false },
+]
+
+const card = (over: Partial<DashboardView["netWorth"]> = {}, projected: DashboardView["projected"] = null, points: DashboardView["trend"] = trend) =>
+  renderToStaticMarkup(createElement(NetWorthCard, { netWorth: { ...netWorth, ...over }, projected, trend: points, sections: ["ASSET", "INVESTMENT", "LIABILITY"] }))
 
 // What a reader sees, not how it is built: the figure's rupee sign, digits and paise are styled as separate spans, so the
 // markup is split while the text is not. The figure is the card's first paragraph; the browser test reads it the same way.
@@ -88,6 +96,92 @@ describe("NetWorthCard", () => {
     expect(html).toContain("1 Jan 2099")
     expect(html).toMatch(/projected/i)
     expect(card()).not.toMatch(/projected/i)
+  })
+})
+
+describe("NetWorthCard, drill links and trend", () => {
+  it("links each part of the sentence to its section below, keeping the sentence's words", () => {
+    const html = card()
+    expect(html).toContain('href="#summary-ASSET"')
+    expect(html).toContain('href="#summary-INVESTMENT"')
+    expect(html).toContain('href="#summary-LIABILITY"')
+    expect(/<a[^>]*href="#summary-ASSET"[^>]*>([\s\S]*?)<\/a>/.exec(html)?.[1].replace(/<[^>]+>/g, "")).toBe("₹1,00,999.50 in accounts")
+    expect(/<a[^>]*href="#summary-LIABILITY"[^>]*>([\s\S]*?)<\/a>/.exec(html)?.[1].replace(/<[^>]+>/g, "")).toBe("₹1,249.75 owed")
+    expect(visibleText(html)).toContain("₹1,00,999.50 in accounts, ₹10,000.00 invested, ₹1,249.75 owed.")
+  })
+
+  it("links to no section the page does not show, and on the ledger screen to none and draws no trend", () => {
+    const html = renderToStaticMarkup(createElement(NetWorthCard, { netWorth, projected: null, trend, sections: ["ASSET", "LIABILITY"] }))
+    expect(html).toContain('href="#summary-ASSET"')
+    expect(html).not.toContain('href="#summary-INVESTMENT"')
+    expect(visibleText(html)).toContain("₹1,00,999.50 in accounts, ₹10,000.00 invested, ₹1,249.75 owed.")
+
+    const ledger = renderToStaticMarkup(createElement(NetWorthCard, { netWorth, projected: null }))
+    expect(ledger).not.toContain("#summary-")
+    expect(ledger).not.toContain("/reports/net-worth")
+    expect(visibleText(ledger)).toContain("₹1,00,999.50 in accounts, ₹10,000.00 invested, ₹1,249.75 owed.")
+  })
+
+  it("draws the trend as a sparkline that opens the net worth report and says what it shows", () => {
+    const html = card()
+    expect(html).toContain('href="/reports/net-worth"')
+    const label = /<svg[^>]*role="img"[^>]*aria-label="([^"]*)"/.exec(html)?.[1]
+    expect(label).toBe("Net worth at each month-end, Aug 2026 to Oct 2026: ₹90,000.00 at the end of Aug 2026, ₹1,09,749.75 on 28 Oct 2026.")
+    expect(html).toContain("data-sparkline-line")
+    expect(html).not.toContain('data-point="hollow"')
+    expect(html).not.toContain("NaN")
+    expect(figureOf(html)).toBe("₹1,09,749.75") // the figure is still the card's first paragraph
+  })
+
+  it("marks a month-end that left out an unvalued investment, without calling today's whole figure partial", () => {
+    const html = card({}, null, [
+      { asOf: calendarDate("2026-08-31"), totalPaise: "9000000", partial: true },
+      { asOf: calendarDate("2026-09-30"), totalPaise: "10500000", partial: false },
+      { asOf: calendarDate("2026-10-28"), totalPaise: "10974975", partial: false },
+    ])
+    expect(html.match(/data-point="hollow"/g)).toHaveLength(1)
+    const label = /<svg[^>]*role="img"[^>]*aria-label="([^"]*)"/.exec(html)?.[1]
+    expect(label).toContain("Aug 2026 is a partial figure: an investment could not be valued then.")
+    expect(visibleText(html)).toContain("A hollow point leaves out an investment that could not be valued at that month-end.")
+    expect(visibleText(html)).not.toMatch(/partial/i) // today's figure is whole; only the point's name says partial
+    expect(html).not.toContain("NaN")
+  })
+
+  it("draws one point and no line when the history is a single month-end", () => {
+    const html = card({}, null, [{ asOf: calendarDate("2026-10-28"), totalPaise: "10974975", partial: false }])
+    expect(html).toContain('href="/reports/net-worth"')
+    expect(html).not.toContain("data-sparkline-line")
+    expect(html.match(/data-point="solid"/g)).toHaveLength(1)
+    expect(html).not.toContain("NaN")
+  })
+
+  it("draws no trend when there is none", () => {
+    expect(card({}, null, [])).not.toContain("/reports/net-worth")
+  })
+})
+
+describe("ThisMonth", () => {
+  const month = { monthParam: "month-2026-10", incomePaise: "5000000", spendingPaise: "1500000", savedPaise: "3500000" }
+  const strip = (thisMonth: DashboardView["thisMonth"]) => renderToStaticMarkup(createElement(ThisMonth, { thisMonth }))
+  const linkTo = (html: string, href: string) => visibleText(new RegExp(`<a[^>]*href="${href.replace(/[?]/g, "\\?")}"[^>]*>([\\s\\S]*?)</a>`).exec(html)?.[1] ?? "")
+
+  it("shows income, spending and what was saved this month, each opening its report for the month", () => {
+    const html = strip(month)
+    expect(linkTo(html, "/reports/income?range=month-2026-10")).toContain("₹50,000.00")
+    expect(linkTo(html, "/reports/spending?range=month-2026-10")).toContain("₹15,000.00")
+    expect(linkTo(html, "/reports/cash-flow?range=month-2026-10")).toContain("₹35,000.00")
+    expect(visibleText(html)).toContain("Oct 2026")
+    expect(html).not.toContain("NaN")
+  })
+
+  it("shows more going out than came in as a negative figure", () => {
+    const html = strip({ ...month, incomePaise: "1000000", spendingPaise: "1500000", savedPaise: "-500000" })
+    expect(linkTo(html, "/reports/cash-flow?range=month-2026-10")).toContain("-₹5,000.00")
+    expect(html).toContain("text-negative")
+  })
+
+  it("is not there when the dashboard has nothing to sum", () => {
+    expect(strip(null)).toBe("")
   })
 })
 

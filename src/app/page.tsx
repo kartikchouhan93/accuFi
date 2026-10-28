@@ -1,10 +1,11 @@
 import { Plus, Wallet } from "lucide-react"
 import type { Metadata } from "next"
 import Link from "next/link"
-import { AccountSummary } from "@/app/account-summary"
+import { AccountSummary, summaryKinds } from "@/app/account-summary"
 import { AppShell } from "@/app/app-shell"
 import { NetWorthCard } from "@/app/net-worth-card"
 import { RecentTransactions } from "@/app/recent-transactions"
+import { ThisMonth } from "@/app/this-month"
 import { buttonClass } from "@/components/ui/styles"
 import { redirectIfUnauthenticated } from "@/server/action-support"
 import { requireUserId } from "@/server/auth"
@@ -54,7 +55,8 @@ export default async function DashboardPage() {
         ) : (
           <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] lg:items-start">
             <div className="space-y-10">
-              <NetWorthCard netWorth={dashboard.netWorth} projected={dashboard.projected} />
+              <NetWorthCard netWorth={dashboard.netWorth} projected={dashboard.projected} trend={dashboard.trend} sections={summaryKinds(dashboard)} />
+              <ThisMonth thisMonth={dashboard.thisMonth} />
               <AccountSummary accounts={dashboard.accounts} kindTotals={dashboard.kindTotals} />
               <p className="text-sm text-fg-soft">
                 Add, rename or archive accounts in the{" "}
