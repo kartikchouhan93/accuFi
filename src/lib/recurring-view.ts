@@ -119,6 +119,10 @@ export interface RuleView {
 /**
  * The initial values of the rule form when it is opened from a transaction ("Make recurring"): the transaction's own
  * ends, amount, note and tags, repeating monthly from the same day next month. Plain data like the views.
+ *
+ * `dayOfMonth` is the transaction's own day. The start date is that day next month clamped to the month's length (31 Jan
+ * gives 28 Feb), so without the day the form would default it to the clamped one and the rule would drift to the 28th for
+ * good; carrying it keeps a month-end rule on the month's end (28 Feb, 31 Mar, 30 Apr).
  */
 export interface RuleDraft {
   fromNodeId: string
@@ -130,6 +134,7 @@ export interface RuleDraft {
   frequency: "MONTHLY"
   interval: 1
   startDate: string
+  dayOfMonth: number
   autoPost: false
 }
 

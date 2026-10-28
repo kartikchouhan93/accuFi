@@ -287,7 +287,10 @@ describe("a form prefilled from a transaction", () => {
     expect(html).toContain('value="Weekly shop"')
     expect(html).toContain('value="home"')
     expect(html).toContain('value="2026-04-30"') // 31 March, a month on: April has 30 days
-    expect(text(html)).toContain("Monthly on the 30th, or the last day")
+    // The transaction's own day (31) is the rule's day of the month: April's 30th is only the first clamp of it.
+    expect(html).toContain('<option value="31" selected')
+    expect(text(html)).toContain("Monthly on the 31st, or the last day")
+    expect(text(html)).toContain("30 Apr 202631 May 202630 Jun 2026")
     // The name is the user's to give.
     expect(html).toMatch(/<input[^>]*id="[^"]*-name"[^>]*value=""/)
   })

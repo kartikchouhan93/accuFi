@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { calendarDate } from "@/domain/calendar-date"
+import { datesDue } from "@/domain/recurrence"
+import { scheduleOfRule } from "@/lib/recurring-view"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { createRegistry } from "../repositories/fixtures"
@@ -557,11 +560,40 @@ describe("templateFromTransaction", () => {
       frequency: "MONTHLY",
       interval: 1,
       startDate: "2026-02-28",
+      dayOfMonth: 31, // the transaction's own day: 28 Feb is only that month's clamp of it
       autoPost: false,
     })
     expect(result.nodes.length).toBe(4)
     expect(result.today).toBe("2026-04-01")
     expectNoBigint(result)
+  })
+
+  it("carries the transaction's day of the month, so a rule made from 31 Jan runs 28 Feb then 31 Mar (it does not drift to the 28th)", async () => {
+    at("2026-01-31T06:00:00Z")
+    const w = await signedInWorld()
+    const tx = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id, { occurredAt: "2026-01-31" })
+    const { draft } = await service.templateFromTransaction(w.user.id, tx.id)
+    expect(draft.startDate).toBe("2026-02-28")
+    expect(draft.dayOfMonth).toBe(31)
+
+    // What the form submits for this draft: the draft's day of the month and start date, as the new-rule form sends them.
+    const view = await service.createRule(w.user.id, {
+      name: "Internet",
+      fromNodeId: draft.fromNodeId,
+      toNodeId: draft.toNodeId,
+      amount: 100_00n,
+      frequency: draft.frequency,
+      interval: draft.interval,
+      dayOfMonth: draft.dayOfMonth,
+      startDate: calendarDate(draft.startDate),
+      autoPost: draft.autoPost,
+      idempotencyKey: randomUUID(),
+    })
+    expect(view.dayOfMonth).toBe(31)
+    expect(view.nextDueOn).toBe("2026-02-28")
+    const rule = await prisma.recurringRule.findUniqueOrThrow({ where: { id: view.id } })
+    const dates = datesDue(scheduleOfRule(rule), { from: calendarDate("2026-02-28"), count: 0, max: 4 })
+    expect(dates).toEqual(["2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31"])
   })
 
   it("rolls December over into January of the next year", async () => {

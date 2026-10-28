@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
-import type { Schedule } from "@/domain/recurrence"
+import { datesDue, type Schedule } from "@/domain/recurrence"
 import type { RuleDraft, RuleView } from "@/lib/recurring-view"
 import type { PickerNode } from "@/lib/transaction-list-view"
 import {
@@ -184,6 +184,7 @@ describe("the values a form starts from", () => {
       frequency: "MONTHLY",
       interval: 1,
       startDate: "2026-11-30",
+      dayOfMonth: 31,
       autoPost: false,
     }
     expect(valuesOfDraft(draft)).toMatchObject({
@@ -193,10 +194,29 @@ describe("the values a form starts from", () => {
       note: "Flat 4B",
       tags: "home, rent",
       anchor: "2026-11-30",
+      dayOfMonth: "31", // the transaction's own day: the form submits it, so a month-end rule stays on the month's end
       frequency: "MONTHLY",
       interval: "1",
       name: "",
     })
+  })
+
+  it("keeps a month-end draft on the month's end: 28 Feb, then 31 Mar", () => {
+    const draft: RuleDraft = {
+      fromNodeId: "bank",
+      toNodeId: "food",
+      amountPaise: "100",
+      note: null,
+      tags: [],
+      frequency: "MONTHLY",
+      interval: 1,
+      startDate: "2026-02-28",
+      dayOfMonth: 31,
+      autoPost: false,
+    }
+    const schedule = scheduleOfFields(valuesOfDraft(draft))
+    expect(schedule).not.toBeNull()
+    expect(datesDue(schedule!, { from: day("2026-02-28"), count: 0, max: 3 })).toEqual(["2026-02-28", "2026-03-31", "2026-04-30"])
   })
 
   it("carries a rule's own fields, with the next due day as the date", () => {

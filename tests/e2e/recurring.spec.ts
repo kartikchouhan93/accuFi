@@ -191,19 +191,36 @@ test("create from the form: the preview says what will happen, and the rule is l
   await expect(inbox(page)).toContainText("Nothing is waiting.")
 })
 
+/** Days in month `month` (1-based) of `year`. */
+const daysInMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate()
+const dayText = (year: number, month: number, dayOfMonth: number) =>
+  `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(dayOfMonth).padStart(2, "0")}`
+type YearMonth = [year: number, month: number]
+const monthOf = (day: string): YearMonth => [Number(day.slice(0, 4)), Number(day.slice(5, 7))]
+const monthBefore = ([year, month]: YearMonth): YearMonth => (month === 1 ? [year - 1, 12] : [year, month - 1])
+const monthAfter = ([year, month]: YearMonth): YearMonth => (month === 12 ? [year + 1, 1] : [year, month + 1])
+/** The 31st, or the month's last day when it is shorter. */
+const monthEnd = ([year, month]: YearMonth) => dayText(year, month, Math.min(31, daysInMonth(year, month)))
+
+/** Open the transaction whose note is `note` in the ledger and follow its "Make recurring" link. */
+async function makeRecurringFrom(page: Page, note: string) {
+  await page.goto("/transactions?from=&to=") // every date: the payment is in an earlier month than the list opens on
+  const row = entries(page).getByRole("listitem").filter({ hasText: note })
+  await row.getByRole("button", { expanded: false }).first().click()
+  await row.getByRole("link", { name: "Make recurring" }).click()
+  await expect(page).toHaveURL(/\/recurring\/new\?from=/)
+  return page.getByRole("form", { name: "New rule" })
+}
+
 test("make recurring: a transaction's row opens the new-rule form already filled in", async ({ session: { page, userId } }) => {
   await account(userId, "Bank", "1,00,000")
   const day = await today(userId)
-  const paid = daysFrom(day, -10)
+  // Pinned to the 15th of last month: a day no month clamps, so the start date below is always asserted.
+  const [paidYear, paidMonth] = monthBefore(monthOf(day))
+  const paid = dayText(paidYear, paidMonth, 15)
   await post(userId, "Bank", "Rent", "21,500", { date: paid, note: "Monthly rent", tags: ["home"] })
 
-  await page.goto("/transactions")
-  const row = entries(page).getByRole("listitem").filter({ hasText: "Monthly rent" })
-  await row.getByRole("button", { expanded: false }).first().click()
-  await row.getByRole("link", { name: "Make recurring" }).click()
-
-  await expect(page).toHaveURL(/\/recurring\/new\?from=/)
-  const form = page.getByRole("form", { name: "New rule" })
+  const form = await makeRecurringFrom(page, "Monthly rent")
   await expect(form.getByLabel("From", { exact: true })).toHaveValue(await nodeId(userId, "Bank"))
   await expect(form.getByLabel("To", { exact: true })).toHaveValue(await nodeId(userId, "Rent"))
   await expect(form.getByLabel("Amount (₹)")).toHaveValue("21500.00")
@@ -212,11 +229,10 @@ test("make recurring: a transaction's row opens the new-rule form already filled
   await expect(form.getByLabel("Repeats")).toHaveValue("MONTHLY")
   // The name is the one thing the transaction cannot supply.
   await expect(form.getByLabel("Name")).toHaveValue("")
-  // Next month, the same day of the month as the payment.
-  const [year, month, dayOfMonth] = paid.split("-").map(Number)
-  const next = new Date(Date.UTC(year, month, dayOfMonth)) // month is 1-based here, so this is the following month
-  const nextDay = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`
-  if (dayOfMonth <= 28) await expect(form.getByLabel("Starts on")).toHaveValue(nextDay)
+  // Next month, the same day of the month as the payment, which is also the rule's day of the month.
+  const [nextYear, nextMonth] = monthAfter([paidYear, paidMonth])
+  await expect(form.getByLabel("Starts on")).toHaveValue(dayText(nextYear, nextMonth, 15))
+  await expect(form.getByLabel("Day of the month")).toHaveValue("15")
 
   // Name it and save: the rule exists, with the transaction's content.
   await form.getByLabel("Name").fill("Flat rent")
@@ -225,6 +241,41 @@ test("make recurring: a transaction's row opens the new-rule form already filled
   const rule = rules(page).getByRole("listitem").filter({ hasText: "Flat rent" })
   await expect(rule).toContainText("₹21,500.00")
   await expect(rule).toContainText("Bank")
+})
+
+test("make recurring: a payment on the 31st becomes a month-end rule, not one that drifts to the 28th", async ({ session: { page, userId } }) => {
+  await account(userId, "Bank", "1,00,000")
+  const day = await today(userId)
+  // The most recent 31st before this month: a payment on the last day of a long month.
+  let paidIn = monthBefore(monthOf(day))
+  while (daysInMonth(...paidIn) !== 31) paidIn = monthBefore(paidIn)
+  const paid = dayText(paidIn[0], paidIn[1], 31)
+  await post(userId, "Bank", "Rent", "21,500", { date: paid, note: "Month-end rent" })
+
+  const form = await makeRecurringFrom(page, "Month-end rent")
+  // The start is that day next month, clamped to the month's length; the rule's day of the month is the payment's own: 31.
+  const startIn = monthAfter(paidIn)
+  await expect(form.getByLabel("Starts on")).toHaveValue(monthEnd(startIn))
+  await expect(form.getByLabel("Day of the month")).toHaveValue("31")
+  await expect(form.getByRole("region", { name: "Schedule preview" })).toContainText("Monthly on the 31st, or the last day")
+
+  await form.getByLabel("Name").fill("Month-end rent")
+  await form.getByRole("button", { name: "Create rule" }).click()
+  await expect(page).toHaveURL(/\/recurring$/)
+
+  // Every entry the rule has proposed so far, and the next one, is on its month's last day: nothing sits on the 28th.
+  // Worked out here: the first scheduled day on or after `start` that is after today, month by month.
+  let nextIn = startIn
+  while (monthEnd(nextIn) <= day) nextIn = monthAfter(nextIn)
+  const expectedNext = monthEnd(nextIn)
+  const rule = rules(page).getByRole("listitem").filter({ hasText: "Month-end rent" })
+  await expect(rule).toContainText("Monthly on the 31st, or the last day")
+  await expect(rule).toContainText(`Next entry ${printed(expectedNext)}.`)
+  const stored = await prisma.recurringOccurrence.findMany({ where: { userId }, orderBy: { dueOn: "asc" } })
+  for (const occurrence of stored) {
+    const due = occurrence.dueOn.toISOString().slice(0, 10)
+    expect(Number(due.slice(8, 10))).toBe(daysInMonth(Number(due.slice(0, 4)), Number(due.slice(5, 7))))
+  }
 })
 
 test("signing in catches up what fell due while nobody was signed in", async ({ session: { page, userId } }) => {

@@ -171,7 +171,10 @@ export const blankValues = (today: CalendarDate): RuleFormValues => ({
   occurrenceLimit: "",
 })
 
-/** A new rule opened from a transaction ("Make recurring"): its ends, amount, note and tags, and the draft's schedule. */
+/**
+ * A new rule opened from a transaction ("Make recurring"): its ends, amount, note and tags, and the draft's schedule, with
+ * the day of the month the transaction was on (not the start date's, which a short month may have clamped).
+ */
 export const valuesOfDraft = (draft: RuleDraft): RuleFormValues => ({
   ...blankValues(draft.startDate as CalendarDate),
   from: draft.fromNodeId,
@@ -181,6 +184,7 @@ export const valuesOfDraft = (draft: RuleDraft): RuleFormValues => ({
   tags: draft.tags.join(", "),
   frequency: draft.frequency,
   interval: String(draft.interval),
+  dayOfMonth: String(draft.dayOfMonth),
   autoPost: draft.autoPost,
 })
 

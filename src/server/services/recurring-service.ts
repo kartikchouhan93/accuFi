@@ -374,7 +374,8 @@ export async function loadNewRule(userId: string): Promise<{ nodes: PickerNode[]
 
 /**
  * The form's starting values for "Make recurring" on a transaction: its ends, amount, note and tags, monthly, from the
- * same day of the month next month (clamped to that month's length). Nothing is stored. NotFoundError for a transaction
+ * same day of the month next month (clamped to that month's length, with the transaction's own day kept as the rule's day
+ * of the month so a month-end rule does not drift). Nothing is stored. NotFoundError for a transaction
  * that is not the user's or is deleted, one in a split (a rule repeats one movement, not a division), and one touching an
  * application node (an opening balance or a realised gain is not something a person repeats).
  */
@@ -388,6 +389,7 @@ export async function templateFromTransaction(
   if (node(transaction.fromNodeId).systemRole !== null || node(transaction.toNodeId).systemRole !== null) {
     throw new NotFoundError("transaction")
   }
+  const occurredOn = fromDbDate(transaction.occurredAt)
   return {
     draft: {
       fromNodeId: transaction.fromNodeId,
@@ -397,7 +399,8 @@ export async function templateFromTransaction(
       tags: [...transaction.tags],
       frequency: "MONTHLY",
       interval: 1,
-      startDate: sameDayNextMonth(fromDbDate(transaction.occurredAt)),
+      startDate: sameDayNextMonth(occurredOn),
+      dayOfMonth: Number(occurredOn.slice(8, 10)),
       autoPost: false,
     },
     nodes: nodes.map(toPickerNode),
