@@ -43,7 +43,7 @@ A recurring rule describes something that repeats: rent, a SIP, a subscription, 
 
 **Nothing posts until you confirm it, unless a rule is set to post automatically.** When a rule falls due it proposes an entry in the inbox on the Recurring screen. A proposal is in no balance, net worth or report; you post it as shown, change it first, or skip it (a skip can be put back). Only a rule you turn "Post automatically" on for records itself on its day, and a rule that buys into an investment valued by quantity cannot, since each purchase needs its quantity. The number waiting shows on the Recurring link in the navigation and on the dashboard.
 
-Entries are proposed by a catch-up that runs at every sign-in and on an hourly in-process timer, so an instance that was switched off for a week proposes everything it missed once it is running again. The timer needs no cron job; `RECURRING_SWEEP` and `RECURRING_SWEEP_INTERVAL_MS` are described under [Deployment](#deployment).
+Entries are proposed by a catch-up that runs at every sign-in and on an hourly in-process timer, so an instance that was switched off for a week proposes everything it missed once it is running again, though at most 100 entries per rule per run, so a long daily gap fills over several hourly runs. The timer needs no cron job; `RECURRING_SWEEP` and `RECURRING_SWEEP_INTERVAL_MS` are described under [Deployment](#deployment).
 
 ## Runtime spike outcome (spec §9.1)
 
