@@ -4,6 +4,7 @@ import Link from "next/link"
 import { AccountSummary, summaryKinds } from "@/app/account-summary"
 import { AppShell } from "@/app/app-shell"
 import { NetWorthCard } from "@/app/net-worth-card"
+import { pendingCount } from "@/app/pending-count"
 import { PendingNotice } from "@/app/pending-notice"
 import { RecentTransactions } from "@/app/recent-transactions"
 import { ThisMonth } from "@/app/this-month"
@@ -11,7 +12,6 @@ import { buttonClass } from "@/components/ui/styles"
 import { redirectIfUnauthenticated } from "@/server/action-support"
 import { requireUserId } from "@/server/auth"
 import { getDashboard } from "@/server/services/balance-service"
-import { countPendingFor } from "@/server/services/recurring-service"
 
 export const metadata: Metadata = { title: "Dashboard" }
 
@@ -23,7 +23,7 @@ export default async function DashboardPage() {
   let pending: number
   try {
     const userId = await requireUserId()
-    ;[dashboard, pending] = await Promise.all([getDashboard(userId), countPendingFor(userId)])
+    ;[dashboard, pending] = await Promise.all([getDashboard(userId), pendingCount(userId)])
   } catch (error) {
     redirectIfUnauthenticated(error)
     throw error

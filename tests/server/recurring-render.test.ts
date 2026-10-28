@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { OccurrenceView, RuleView } from "@/lib/recurring-view"
 import { createRegistry } from "./repositories/fixtures"
 
@@ -22,6 +22,7 @@ vi.mock("next/navigation", async (importOriginal) => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
 }))
 
+const recurringRepo = await import("@/server/repositories/recurring-repository")
 const { Inbox } = await import("@/app/recurring/inbox")
 const { InboxCard } = await import("@/app/recurring/inbox-card")
 const { RulesList } = await import("@/app/recurring/rules-list")
@@ -371,6 +372,20 @@ describe("the app shell", () => {
     auth.mockResolvedValue(null)
     expect((await navOf()).pending).toBe(0)
   })
+
+  describe("when the count cannot be read", () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    it("still renders every page: the badge is zero and the failure is logged under [recurring]", async () => {
+      await userWithPending(3)
+      const countPending = vi.spyOn(recurringRepo, "countPending").mockRejectedValue(new Error("connection reset"))
+      const log = vi.spyOn(console, "error").mockImplementation(() => {})
+      expect((await navOf()).pending).toBe(0)
+      expect(countPending).toHaveBeenCalled()
+      expect(log).toHaveBeenCalledTimes(1)
+      expect(String(log.mock.calls[0][0])).toMatch(/^\[recurring\] /)
+    })
+  })
 })
 
 describe("the dashboard page", () => {
@@ -389,5 +404,14 @@ describe("the dashboard page", () => {
   it("renders no notice when nothing waits", async () => {
     await userWithPending(0)
     expect(await noticeIn()).toBeUndefined()
+  })
+
+  it("still renders, with no notice, when the count cannot be read", async () => {
+    await userWithPending(2)
+    vi.spyOn(recurringRepo, "countPending").mockRejectedValue(new Error("connection reset"))
+    const log = vi.spyOn(console, "error").mockImplementation(() => {})
+    expect(await noticeIn()).toBeUndefined()
+    expect(String(log.mock.calls[0][0])).toMatch(/^\[recurring\] /)
+    vi.restoreAllMocks()
   })
 })
