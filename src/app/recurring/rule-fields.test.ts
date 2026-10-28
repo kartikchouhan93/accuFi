@@ -88,11 +88,19 @@ describe("entriesNowLine", () => {
     expect(entriesNowLine(3, false)).toBe("3 entries will appear in your inbox now.")
     expect(entriesNowLine(100, false)).toBe("100 entries will appear in your inbox now.")
   })
-  it("says more than 100 beyond the cap", () => {
-    expect(entriesNowLine(101, false)).toBe("More than 100 entries will appear in your inbox now.")
+  it("says it is too many to create at once beyond the cap, and what to do: it never promises entries the server refuses", () => {
+    expect(entriesNowLine(101, false)).toBe("That is too many to create at once. Choose a later start date.")
+    expect(entriesNowLine(101, true)).toBe("That is too many to create at once. Choose a later start date.")
+    expect(entriesNowLine(NOW_DISPLAY_CAP, false)).toBe("100 entries will appear in your inbox now.")
   })
   it("says the entries are posted when the rule posts itself", () => {
     expect(entriesNowLine(2, true)).toBe("2 entries will be posted now.")
+  })
+  it("does not claim entries will appear for a paused rule: a paused rule makes none, and resuming starts from after today", () => {
+    expect(entriesNowLine(3, false, true)).toBe("It is paused, so it makes no entries until you resume it.")
+    expect(entriesNowLine(3, true, true)).toBe("It is paused, so it makes no entries until you resume it.")
+    expect(entriesNowLine(101, false, true)).toBe("It is paused, so it makes no entries until you resume it.")
+    expect(entriesNowLine(0, false, true)).toBeNull()
   })
 })
 
@@ -261,6 +269,27 @@ describe("the values a form starts from", () => {
       occurrenceLimit: "10",
     })
     expect(valuesOfRule({ ...rule, nextDueOn: null }, today).anchor).toBe("2026-10-28")
+  })
+
+  describe("the date offered for a rule with no next due day", () => {
+    const finished: RuleView = {
+      id: "r1", name: "Rent", fromNodeId: "bank", toNodeId: "food", fromName: "Bank", toName: "Food", amountPaise: "100",
+      note: null, tags: [], frequency: "MONTHLY", interval: 1, dayOfMonth: 31, dayOfWeek: null, startDate: "2026-01-31",
+      endDate: null, occurrenceLimit: null, autoPost: false, nextDueOn: null, state: "finished", scheduleText: "Monthly", version: 1,
+    }
+    const today = day("2026-10-28")
+
+    it("is the end date when the rule ended before today: today would be after its end, and the save would be refused", () => {
+      expect(valuesOfRule({ ...finished, endDate: "2026-04-30" }, today).anchor).toBe("2026-04-30")
+    })
+    it("is today when the end date is today or later, or there is none (a spent limit)", () => {
+      expect(valuesOfRule({ ...finished, endDate: "2026-10-28" }, today).anchor).toBe("2026-10-28")
+      expect(valuesOfRule({ ...finished, endDate: "2027-01-01" }, today).anchor).toBe("2026-10-28")
+      expect(valuesOfRule({ ...finished, occurrenceLimit: 4 }, today).anchor).toBe("2026-10-28")
+    })
+    it("is the next due day whenever there is one, whatever the end date", () => {
+      expect(valuesOfRule({ ...finished, nextDueOn: "2026-11-30", endDate: "2026-12-31" }, today).anchor).toBe("2026-11-30")
+    })
   })
 })
 

@@ -108,7 +108,9 @@ interface Prepared {
 /**
  * Everything the template and the schedule must satisfy, or InvalidRuleError carrying every violation. `anchor` is the
  * day the schedule starts on (the start date, or the edit's next due) and `existing` how many occurrences the rule
- * already has, since the occurrence limit and the "too many due now" check both count them.
+ * already has, since the occurrence limit and the "too many due now" check both count them. A `paused` rule is not held
+ * to that check: it generates nothing while paused, and resuming recomputes where it stands from after today, so a stale
+ * anchor (a daily rule paused for months) cannot dump anything into the inbox and must not stop it being edited.
  */
 function prepare(
   input: Omit<RuleInput, "startDate">,
@@ -118,6 +120,7 @@ function prepare(
   to: LedgerNode,
   existing: number,
   today: CalendarDate,
+  paused = false,
 ): Prepared {
   const violations: RuleViolation[] = []
 
@@ -145,7 +148,7 @@ function prepare(
   })
   const scheduleProblems = scheduleViolations(schedule)
   for (const violation of scheduleProblems) violations.push(violation)
-  if (scheduleProblems.length === 0) {
+  if (scheduleProblems.length === 0 && !paused) {
     // One more than the limit is enough to know it is exceeded, without walking years of a daily rule.
     const due = datesDue(schedule, { from: anchor, count: existing, upTo: today, max: MAX_DUE_PER_RUN + 1 })
     if (due.length > MAX_DUE_PER_RUN) violations.push({ field: anchorField, message: TOO_MANY_DUE })
@@ -242,13 +245,16 @@ export async function editRule(
   expectedVersion: number,
   input: Omit<RuleInput, "startDate"> & { nextDue: CalendarDate },
 ): Promise<RuleView> {
-  const [from, to, today, existing] = await Promise.all([
+  const [from, to, today, existing, current] = await Promise.all([
     requireNode(userId, input.fromNodeId),
     requireNode(userId, input.toNodeId),
     todayFor(userId),
     countOccurrences(userId, id),
+    findRuleById(userId, id),
   ])
-  const { data, schedule } = prepare(input, input.nextDue, "nextDue", from, to, existing, today)
+  if (!current) throw new NotFoundError("rule")
+  // Whether it is paused is read here and acted on with the version below: a pause or resume in between changes the version.
+  const { data, schedule } = prepare(input, input.nextDue, "nextDue", from, to, existing, today, current.pausedAt !== null)
   // `updateRule` is where a stale version, or a rule that is not the user's or is gone, is refused.
   await updateRule(userId, id, expectedVersion, { ...data, nextDueOn: firstDue(schedule, existing) })
   return viewAfterGeneration(userId, id)

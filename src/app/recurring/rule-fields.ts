@@ -39,7 +39,7 @@ export function autoPostOffered(destination: Pick<PickerNode, "kind" | "valuatio
   return !(destination?.kind === "INVESTMENT" && destination.valuationMode === "QUANTITY")
 }
 
-/** The most entries one save may make due at once; more is refused, and shown as "more than 100". */
+/** The most entries one save may make due at once; more is refused. */
 export const NOW_DISPLAY_CAP = MAX_DUE_PER_RUN
 
 /**
@@ -50,13 +50,22 @@ export function entriesDueNow(schedule: Schedule, existing: number, today: Calen
   return datesDue(schedule, { from: schedule.startDate, count: existing, upTo: today, max: NOW_DISPLAY_CAP + 1 }).length
 }
 
+/** Said when a save would make more than the cap due at once: the server refuses it, so the line says so and what to do. */
+export const TOO_MANY_NOW = `That is too many to create at once. Choose a later start date.`
+/** Said instead of any count for a rule that is paused: it makes nothing until it is resumed, and resuming never backfills. */
+export const PAUSED_NOW = "It is paused, so it makes no entries until you resume it."
+
 /**
- * The line that says what saving will put in front of the user right now, or null when nothing is due yet. A rule that
- * posts itself does not wait in the inbox, so it says that instead.
+ * The line that says what saving will do right now, or null when there is nothing to say. Due now and over the cap is not
+ * a promise of entries but a refusal-to-be (a save that would make more than 100 is turned down), so it says to choose a
+ * later start. A paused rule generates nothing whatever its dates, so it says that instead of counting. A rule that posts
+ * itself does not wait in the inbox, so it says it will be posted.
  */
-export function entriesNowLine(count: number, autoPost: boolean): string | null {
+export function entriesNowLine(count: number, autoPost: boolean, paused = false): string | null {
   if (count <= 0) return null
-  const entries = count > NOW_DISPLAY_CAP ? `More than ${NOW_DISPLAY_CAP} entries` : count === 1 ? "1 entry" : `${count} entries`
+  if (paused) return PAUSED_NOW
+  if (count > NOW_DISPLAY_CAP) return TOO_MANY_NOW
+  const entries = count === 1 ? "1 entry" : `${count} entries`
   return autoPost ? `${entries} will be posted now.` : `${entries} will appear in your inbox now.`
 }
 
@@ -189,8 +198,10 @@ export const valuesOfDraft = (draft: RuleDraft): RuleFormValues => ({
 })
 
 /**
- * A rule being edited. The schedule is re-anchored on save, so the date the form asks for is the next due day; a rule
- * with none (it has run out) offers today. The stored day of the month or week is shown, since it is what the rule uses.
+ * A rule being edited. The schedule is re-anchored on save, so the date the form asks for is the next due day. A rule with
+ * none has run out: if it ended by its end date, today may be after that end and a save from today would be refused
+ * ("the end date cannot be before the start"), so it offers the end date itself; otherwise (a spent limit) it offers today.
+ * The stored day of the month or week is shown, since it is what the rule uses.
  */
 export const valuesOfRule = (rule: RuleView, today: CalendarDate): RuleFormValues => ({
   name: rule.name,
@@ -204,7 +215,7 @@ export const valuesOfRule = (rule: RuleView, today: CalendarDate): RuleFormValue
   interval: String(rule.interval),
   dayOfMonth: rule.dayOfMonth === null ? "" : String(rule.dayOfMonth),
   dayOfWeek: rule.dayOfWeek === null ? "" : String(rule.dayOfWeek),
-  anchor: rule.nextDueOn ?? today,
+  anchor: rule.nextDueOn ?? (rule.endDate !== null && rule.endDate < today ? rule.endDate : today),
   endDate: rule.endDate ?? "",
   occurrenceLimit: rule.occurrenceLimit === null ? "" : String(rule.occurrenceLimit),
 })

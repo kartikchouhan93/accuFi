@@ -413,6 +413,61 @@ describe("editRule", () => {
   })
 })
 
+// A rule that cannot be edited cannot even be renamed, so two kinds that used to be locked out are held open here.
+describe("editing a rule that is paused or has ended", () => {
+  it("renames a daily rule paused for more than 100 days: nothing is generated for a paused rule, and resuming recomputes", async () => {
+    at(TODAY)
+    const w = await setup()
+    const view = await createRule(w.user.id, monthly(w, { frequency: "DAILY", startDate: day("2026-05-19") }))
+    const paused = await setPaused(w.user.id, view.id, true)
+    expect(paused.nextDueOn).toBe("2026-05-20") // stale from here on: nothing moves it while paused
+
+    at("2026-10-01T06:00:00Z") // 134 days on
+    const renamed = await editRule(w.user.id, view.id, paused.version, editOf(w, paused.nextDueOn!, { name: "Flat rent", frequency: "DAILY" }))
+    expect(renamed.name).toBe("Flat rent")
+    expect(renamed.state).toBe("paused")
+    expect(await datesOf(view.id)).toEqual(["2026-05-19"]) // not 134 entries, and not any
+
+    // Resuming starts from after today, as ever.
+    const resumed = await setPaused(w.user.id, view.id, false)
+    expect(resumed.nextDueOn).toBe("2026-10-02")
+    expect(await datesOf(view.id)).toEqual(["2026-05-19"])
+  })
+
+  it("still refuses more than 100 entries due at once for a rule that is not paused", async () => {
+    at(TODAY)
+    const w = await setup()
+    const view = await createRule(w.user.id, monthly(w, { frequency: "DAILY", startDate: day("2026-05-19") }))
+    at("2026-10-01T06:00:00Z")
+    // Not paused, with a next due day far behind (as a rule blocked by an archived account can be): the check stands.
+    await prisma.recurringRule.update({ where: { id: view.id }, data: { nextDueOn: new Date("2026-05-20T00:00:00Z") } })
+    const error = await refusal(editRule(w.user.id, view.id, (await storedRule(view.id)).version, editOf(w, "2026-05-20", { frequency: "DAILY" })))
+    expect(fieldsOf(error)).toEqual(["nextDue"])
+  })
+
+  it("edits a rule that ended by its end date when the form's date is the end date, and it stays ended", async () => {
+    at(TODAY)
+    const w = await setup()
+    const view = await createRule(
+      w.user.id,
+      monthly(w, { dayOfMonth: 31, startDate: day("2026-01-31"), endDate: day("2026-04-30") }),
+    )
+    expect(view.state).toBe("finished")
+    expect(await datesOf(view.id)).toEqual(["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"])
+
+    // What the form offers for it (see valuesOfRule): the end date, not today, which is after the end.
+    const renamed = await editRule(w.user.id, view.id, view.version, editOf(w, "2026-04-30", { name: "Flat rent", dayOfMonth: 31, endDate: day("2026-04-30") }))
+    expect(renamed.name).toBe("Flat rent")
+    expect(renamed.state).toBe("finished")
+    expect(renamed.nextDueOn).toBeNull()
+    expect(await datesOf(view.id)).toEqual(["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]) // nothing proposed twice
+
+    // Today as the date, which is what it used to offer, is after the end date: refused, which is why it was never usable.
+    const error = await refusal(editRule(w.user.id, view.id, renamed.version, editOf(w, "2026-05-19", { dayOfMonth: 31, endDate: day("2026-04-30") })))
+    expect(fieldsOf(error)).toEqual(["endDate"])
+  })
+})
+
 describe("pause and resume", () => {
   it("a paused rule generates nothing, and shows as paused", async () => {
     at(TODAY)

@@ -50,7 +50,7 @@ const NODES: PickerNode[] = [
 ]
 
 type Values = ReturnType<typeof blankValues>
-const form = (values: Partial<Values> = {}, over: { today?: CalendarDate; editing?: { id: string; version: number; occurrences: number } | null; nodes?: PickerNode[] } = {}) =>
+const form = (values: Partial<Values> = {}, over: { today?: CalendarDate; editing?: { id: string; version: number; occurrences: number; paused?: boolean } | null; nodes?: PickerNode[] } = {}) =>
   renderToStaticMarkup(
     createElement(RuleForm, {
       nodes: over.nodes ?? NODES,
@@ -151,9 +151,19 @@ describe("the live schedule preview", () => {
     expect(text(html)).toContain("3 entries will appear in your inbox now.")
   })
 
-  it("says more than 100 beyond what one save may make", () => {
+  it("says it is too many to create at once beyond what one save may make, not that they will appear", () => {
     const html = form({ anchor: "2020-01-01", frequency: "DAILY" }, { today: day("2026-10-28") })
-    expect(text(html)).toContain("More than 100 entries will appear in your inbox now.")
+    expect(text(html)).toContain("That is too many to create at once. Choose a later start date.")
+    expect(text(html)).not.toMatch(/more than 100|will appear in your inbox/i)
+  })
+
+  it("says a paused rule makes no entries, whatever the date, and does not claim any will appear or be too many", () => {
+    const html = form(
+      { anchor: "2026-05-20", frequency: "DAILY" },
+      { today: day("2026-10-28"), editing: { id: "r1", version: 2, occurrences: 1, paused: true } },
+    )
+    expect(text(html)).toContain("It is paused, so it makes no entries until you resume it.")
+    expect(text(html)).not.toMatch(/too many|inbox now/i)
   })
 
   it("says the entries are posted when the rule posts itself", () => {
@@ -355,9 +365,16 @@ describe("the edit page", () => {
     const found = formOf(await page(rule.id))
     expect(found).toBeDefined()
     expect(found!.key).toBe(`${rule.id}:4`)
-    const props = found!.props as unknown as { initial: Values; editing: { id: string; version: number; occurrences: number } }
-    expect(props.editing).toEqual({ id: rule.id, version: 4, occurrences: 1 })
+    const props = found!.props as unknown as { initial: Values; editing: { id: string; version: number; occurrences: number; paused: boolean } }
+    expect(props.editing).toEqual({ id: rule.id, version: 4, occurrences: 1, paused: false })
     expect(props.initial).toMatchObject({ name: "Rent", from: w.bank.id, to: w.food.id, amount: "15000.00", anchor: "2026-11-01", frequency: "MONTHLY", dayOfMonth: "1" })
+  })
+
+  it("tells the form the rule is paused, so its preview does not promise entries", async () => {
+    const w = await signedInWorld()
+    const rule = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { pausedAt: new Date(), nextDueOn: "2026-05-20", frequency: "DAILY" })
+    const found = formOf(await page(rule.id))
+    expect((found!.props as unknown as { editing: { paused: boolean } }).editing.paused).toBe(true)
   })
 
   it("is a plain 404 for a rule that does not exist, is another user's, or is deleted", async () => {
