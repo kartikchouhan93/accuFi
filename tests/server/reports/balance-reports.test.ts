@@ -321,6 +321,33 @@ describe("loadInvestmentGrowth, Scenario N, January to March 2026", () => {
     expect(view.points[2].investedPaise).toBe("0")
   })
 
+  it("leaves a portfolio month that values none of its investments not valued, never ₹0 (EC-23)", async () => {
+    // 10 g of gold for ₹70,000 on 10 Jan, the only investment, first priced on 15 Feb at ₹7,200 a gram: ₹72,000, a gain of ₹2,000.
+    const user = await emptyUser()
+    const bank = await createLedgerNode(user.id, { kind: "ASSET", name: "Bank", assetSubtype: "SAVINGS" })
+    const gold = await createLedgerNode(user.id, { kind: "INVESTMENT", name: "Gold", valuationMode: "QUANTITY", unitLabel: "g", lotMethod: "FIFO" })
+    await recordTransaction(user.id, {
+      fromNodeId: bank.id,
+      toNodeId: gold.id,
+      amount: 7_000_000n,
+      quantity: 10n * QUANTITY_SCALE,
+      occurredAt: calendarDate("2026-01-10"),
+      idempotencyKey: randomUUID(),
+    })
+    await recordPrice(user.id, { nodeId: gold.id, asOf: calendarDate("2026-02-15"), pricePerUnit: 720_000n })
+    for (const selected of [undefined, gold.id]) {
+      const view = await loadInvestmentGrowth(user.id, Q1, selected)
+      expect(figures(view.points), String(selected)).toEqual([
+        ["7000000", null, null, "0"],
+        ["7000000", "7200000", "200000", "0"],
+        ["7000000", "7200000", "200000", "0"],
+      ])
+    }
+    const portfolio = await loadInvestmentGrowth(user.id, Q1, undefined)
+    expect(portfolio.points[0].covered).toEqual({ covered: 0, total: 1 })
+    expect(portfolio.points[0].unvaluedNames).toEqual(["Gold"])
+  })
+
   it("still counts an archived investment", async () => {
     const own = await holdingsScenario(registry)
     await archiveLedgerNode(own.user.id, own.nodes.Gold.id)

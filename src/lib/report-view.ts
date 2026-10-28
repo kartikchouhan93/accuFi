@@ -415,7 +415,7 @@ export function buildInvestmentGrowthView(input: {
     })
     const point = portfolioPoint(perNode)
     const single = chosen !== null
-    const valued = !single || point.covered === 1
+    const valued = point.covered > 0 // one investment or the portfolio: with nothing valued there is no value, never ₹0 (EC-23)
     return {
       bucket: toBucketView(bucket),
       asOf: bucket.to,
