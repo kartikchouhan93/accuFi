@@ -1,8 +1,10 @@
 "use client"
 
-import { ChevronDown, CircleAlert } from "lucide-react"
+import { ChevronDown, CircleAlert, Repeat } from "lucide-react"
+import Link from "next/link"
 import { useId, useState, useTransition } from "react"
 import { Amount } from "@/app/amount"
+import { makeRecurringHref } from "@/app/recurring/rule-fields"
 import { Collapse } from "@/components/ui/collapse"
 import { buttonClass as makeButtonClass } from "@/components/ui/styles"
 import { cn } from "@/lib/utils"
@@ -69,11 +71,13 @@ async function undoDelete(id: string, announce: Announce) {
   announce(restoredNotice(result.data))
 }
 
-export function EntryRow({ entry, context }: { entry: ListEntry; context: Context }) {
+// `startOpen` opens the row's details at first render: a way for a test to see what is inside, since a closed row has none of
+// it in the document. The list never sets it.
+export function EntryRow({ entry, context, startOpen = false }: { entry: ListEntry; context: Context; startOpen?: boolean }) {
   return entry.kind === "single" ? (
-    <SingleRow transaction={entry.transaction} sale={entry.sale === true} context={context} />
+    <SingleRow transaction={entry.transaction} sale={entry.sale === true} context={context} startOpen={startOpen} />
   ) : (
-    <GroupRow entry={entry} context={context} />
+    <GroupRow entry={entry} context={context} startOpen={startOpen} />
   )
 }
 
@@ -130,10 +134,10 @@ function Heading({ title, amount, onToggle, open, panelId, children }: { title: 
   )
 }
 
-function SingleRow({ transaction, sale, context }: { transaction: TransactionView; sale: boolean; context: Context }) {
+function SingleRow({ transaction, sale, context, startOpen }: { transaction: TransactionView; sale: boolean; context: Context; startOpen: boolean }) {
   const { nodes, today, announce, onEdit } = context
   const panelId = useId()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(startOpen)
   const { pending, problem, run } = useRowActions()
   const from = nodes.get(transaction.fromNodeId)
   const to = nodes.get(transaction.toNodeId)
@@ -141,6 +145,8 @@ function SingleRow({ transaction, sale, context }: { transaction: TransactionVie
   const deleted = transaction.deleted
   // A deleted row counts toward nothing, so "not in your current balances" would be no news.
   const projected = !deleted && compareDates(transaction.occurredAt, today) > 0
+  // One movement between the user's own accounts can repeat; a leg of a split, a sale and a system node's entry cannot.
+  const recurringHref = makeRecurringHref(transaction, nodes, sale)
 
   const restore = () =>
     run(
@@ -228,6 +234,12 @@ function SingleRow({ transaction, sale, context }: { transaction: TransactionVie
                     Edit
                   </button>
                 )}
+                {recurringHref && (
+                  <Link href={recurringHref} className={buttonClass}>
+                    <Repeat aria-hidden className="size-4" />
+                    Make recurring
+                  </Link>
+                )}
                 <button type="button" className={dangerClass} disabled={pending} onClick={remove}>
                   Delete
                 </button>
@@ -239,10 +251,10 @@ function SingleRow({ transaction, sale, context }: { transaction: TransactionVie
   )
 }
 
-function GroupRow({ entry, context }: { entry: Extract<ListEntry, { kind: "group" }>; context: Context }) {
+function GroupRow({ entry, context, startOpen }: { entry: Extract<ListEntry, { kind: "group" }>; context: Context; startOpen: boolean }) {
   const { nodes, today, announce, onEdit } = context
   const panelId = useId()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(startOpen)
   const { pending, problem, run } = useRowActions()
   const first = entry.legs[0]
   const source = entry.fromNodeId === null ? "several sources" : nameOf(nodes, entry.fromNodeId)

@@ -7,6 +7,7 @@ import { NoticeToast, type ToastNotice } from "@/components/ui/notice-toast"
 import { buttonClass } from "@/components/ui/styles"
 import type { OccurrenceView, RuleView } from "@/lib/recurring-view"
 import type { TransactionNotice } from "@/app/transactions/notice"
+import { useFlash } from "./flash"
 import { Inbox } from "./inbox"
 import { RecentList } from "./recent-list"
 import { RulesList } from "./rules-list"
@@ -24,6 +25,9 @@ interface Props {
 export function RecurringWorkspace({ inbox, rules, recent }: Props) {
   const [notice, setNotice] = useState<ToastNotice | null>(null)
   const statusRef = useRef<HTMLDivElement>(null)
+
+  // What the rule form left for this screen after saving: said once, here, since the form has gone.
+  useFlash(setNotice)
 
   // What was pressed often disappears with its card (a posted entry leaves the inbox), taking the keyboard's place with
   // it: the message is where focus lands then, as on the other screens.

@@ -347,15 +347,29 @@ export function countPendingFor(userId: string): Promise<number> {
   return countPending(userId)
 }
 
-/** The rule as the edit form opens it, with the nodes and today. NotFoundError if it is not the user's or is deleted. */
+/**
+ * The rule as the edit form opens it, with the nodes, today, and how many entries the rule already has (what the form's
+ * preview needs to show only what an occurrence limit has left). NotFoundError if it is not the user's or is deleted.
+ */
 export async function loadRuleForEdit(
   userId: string,
   id: string,
-): Promise<{ rule: RuleView; nodes: PickerNode[]; today: CalendarDate }> {
-  const [rule, nodes, today] = await Promise.all([findRuleById(userId, id), listAllNodes(userId), todayFor(userId)])
+): Promise<{ rule: RuleView; nodes: PickerNode[]; today: CalendarDate; occurrences: number }> {
+  const [rule, nodes, today, occurrences] = await Promise.all([
+    findRuleById(userId, id),
+    listAllNodes(userId),
+    todayFor(userId),
+    countOccurrences(userId, id),
+  ])
   if (!rule) throw new NotFoundError("rule")
   const node = nodeLookup(nodes)
-  return { rule: toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId)), nodes: nodes.map(toPickerNode), today }
+  return { rule: toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId)), nodes: nodes.map(toPickerNode), today, occurrences }
+}
+
+/** What the blank new-rule form needs: every node (the form narrows them itself) and today in the user's own zone. */
+export async function loadNewRule(userId: string): Promise<{ nodes: PickerNode[]; today: CalendarDate }> {
+  const [nodes, today] = await Promise.all([listAllNodes(userId), todayFor(userId)])
+  return { nodes: nodes.map(toPickerNode), today }
 }
 
 /**

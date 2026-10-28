@@ -750,7 +750,7 @@ export function TransactionForm({ nodes, today, listed, editing, onFinished, ann
   )
 }
 
-const joinIds = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined
+export const joinIds = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined
 
 export interface FieldProps {
   idBase: string
@@ -797,7 +797,7 @@ export function Field({ idBase, label, optional, hint, errors, children }: Field
   )
 }
 
-interface NodePickerProps extends ControlAttributes {
+export interface NodePickerProps extends ControlAttributes {
   value: string
   onChange: (id: string) => void
   groups: KindGroup[]
@@ -806,8 +806,8 @@ interface NodePickerProps extends ControlAttributes {
   "data-first-field"?: string
 }
 
-/** A select of nodes, grouped by kind. The placeholder is the empty choice: a destination is never chosen by default. */
-function NodePicker({ value, onChange, groups, placeholder, disabled, ...attributes }: NodePickerProps) {
+/** A select of nodes, grouped by kind. The placeholder is the empty choice: a destination is never chosen by default. Shared with the rule form. */
+export function NodePicker({ value, onChange, groups, placeholder, disabled, ...attributes }: NodePickerProps) {
   return (
     <select {...attributes} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} className={inputClass}>
       <option value="">{placeholder}</option>

@@ -509,6 +509,7 @@ describe("loadRuleForEdit", () => {
     expect(loaded.rule).toMatchObject({ id: rule.id, name: "Rent", amountPaise: "10000", version: 0 })
     expect(loaded.nodes.length).toBe(4)
     expect(loaded.today).toBe("2026-04-01")
+    expect(loaded.occurrences).toBeGreaterThan(0) // the rule has the entry `pending()` made for it
     expectNoBigint(loaded)
   })
 
@@ -522,6 +523,17 @@ describe("loadRuleForEdit", () => {
     const { rule } = await w.pending()
     await actions.deleteRuleAction({ id: rule.id })
     await expect(service.loadRuleForEdit(w.user.id, rule.id)).rejects.toBeInstanceOf(NotFoundError)
+  })
+})
+
+describe("loadNewRule", () => {
+  it("returns every node and today in the user's zone, as plain data", async () => {
+    at("2026-04-01T06:00:00Z")
+    const w = await signedInWorld()
+    const loaded = await service.loadNewRule(w.user.id)
+    expect(loaded.nodes.length).toBe(4)
+    expect(loaded.today).toBe("2026-04-01")
+    expectNoBigint(loaded)
   })
 })
 
