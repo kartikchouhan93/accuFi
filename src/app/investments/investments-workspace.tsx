@@ -35,15 +35,20 @@ export function InvestmentsWorkspace({ portfolio, today, destinations }: Props) 
   const archivedUnvalued = portfolio.holdings.filter((holding) => holding.archived && holding.notValued !== null).length
   const visible = showArchived ? portfolio.holdings : portfolio.holdings.filter((holding) => !holding.archived)
 
-  // The investment growth report links to one card (`#holding-<id>`). An archived one is not drawn until asked for, so
-  // the browser has nothing to scroll to: show the archived cards, then bring that one into view once they are drawn.
-  // Only on arrival: a later refresh (after a sale) leaves the page where it is.
+  // The investment growth report links to one card (`#holding-<id>`). The browser's own jump to it is not to be relied on:
+  // the cards may stream in after it has looked for the id, and an archived card is not drawn until asked for. So, on
+  // arrival only (a refresh after a sale leaves the page where it is), the card is brought into view here, after the
+  // archived cards are shown when it is one of them.
   const anchor = useRef<string | null>(null)
   useEffect(() => {
     const hash = window.location.hash
-    if (!hash.startsWith("#holding-")) return
     const target = portfolio.holdings.find((holding) => `#holding-${holding.nodeId}` === hash)
-    if (!target?.archived) return
+    if (!target) return
+    const scroll = () => document.getElementById(hash.slice(1))?.scrollIntoView()
+    if (!target.archived) {
+      requestAnimationFrame(scroll)
+      return
+    }
     anchor.current = hash.slice(1)
     requestAnimationFrame(() => setShowArchived(true))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- on arrival only, not when a sale refreshes the holdings

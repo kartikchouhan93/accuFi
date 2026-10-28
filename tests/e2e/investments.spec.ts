@@ -604,3 +604,31 @@ test("says, on request, what the investments screen does not do", async ({ sessi
   await expect(page.getByText("Switching funds and paying fees out of an investment are not supported yet: sell, then buy.")).toBeVisible()
   await expect(page.getByText("A sale cannot be edited: delete it and enter it again.")).toBeVisible()
 })
+
+test("a link to one investment's card opens at that card, an archived one too", async ({ session: { page, userId } }) => {
+  // What the investment growth report links to: /investments#holding-<id>. Eight investments, so the last cards are below
+  // the fold on any screen, and an archived one is not drawn until asked for.
+  await account(userId, "Bank", "2,00,000")
+  const names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]
+  for (const name of names) {
+    await investment(userId, name, { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+    await post(userId, "Bank", name, "1,000", { date: "2026-01-05" })
+  }
+  await investment(userId, "Old silver", { valuation: "CONTRIBUTION_ONLY", unit: "unit" })
+  await post(userId, "Bank", "Old silver", "1,000", { date: "2026-01-05" })
+  await prisma.ledgerNode.update({ where: { id: await nodeId(userId, "Old silver") }, data: { archivedAt: new Date() } })
+
+  await page.goto(`/investments#holding-${await nodeId(userId, "Golf")}`)
+  await expect(card(page, "Golf")).toBeInViewport()
+
+  // A fresh load, not a jump within the page: the archived card is drawn on arrival.
+  await page.goto("/")
+  await page.goto(`/investments#holding-${await nodeId(userId, "Old silver")}`)
+  await expect(page.getByRole("checkbox", { name: "Show archived" })).toBeChecked()
+  await expect(card(page, "Old silver")).toBeVisible()
+  await expect(card(page, "Old silver")).toBeInViewport()
+
+  // Arriving without one leaves the archived cards hidden, as before.
+  await openInvestments(page)
+  await expect(card(page, "Old silver")).toHaveCount(0)
+})
