@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, describe, expect, it } from "vitest"
-import { calendarDate, todayIn } from "@/domain/calendar-date"
+import { addDays, calendarDate, todayIn } from "@/domain/calendar-date"
 import { buildDashboard } from "@/lib/dashboard-view"
 import { prisma } from "@/server/db"
 import { getDashboard } from "@/server/services/balance-service"
@@ -246,6 +246,26 @@ describe("getDashboard, this month and the net worth trend", () => {
     expect(view.isEmpty).toBe(true)
     expect(view.thisMonth).toBeNull()
     expect(view.trend).toEqual([])
+  })
+
+  it("keeps the strip and the trend on the user's real today whatever day the figures are asked for", async () => {
+    const user = await newUser()
+    await createLedgerNode(user.id, { kind: "INCOME_SOURCE", name: "Salary" })
+    await createLedgerNode(user.id, { kind: "ASSET", name: "Bank", assetSubtype: "SAVINGS" })
+    const today = await todayOf(user.id)
+    await post(user.id, "Salary", "Bank", 5_000_000n, today)
+    const thisMonth = { monthParam: `month-${today.slice(0, 7)}`, incomePaise: "5000000", spendingPaise: "0", savedPaise: "5000000" }
+
+    // Sixty days ahead: no throw, and the strip and trend still describe today, not that day.
+    const ahead = await getDashboard(user.id, addDays(today, 60))
+    expect(ahead.thisMonth).toEqual(thisMonth)
+    expect(ahead.trend[ahead.trend.length - 1].asOf).toBe(today)
+
+    // Sixty days back: the core figures follow the day asked for (nothing had happened yet), the strip does not.
+    const before = await getDashboard(user.id, addDays(today, -60))
+    expect(before.netWorth.total).toBe("0")
+    expect(before.thisMonth).toEqual(thisMonth)
+    expect(before.trend[before.trend.length - 1]).toEqual({ asOf: today, totalPaise: "5000000", partial: false })
   })
 
   it("draws Scenario N's trend from January 2026 to today, ending at the dashboard's own figure, which is unchanged", async () => {

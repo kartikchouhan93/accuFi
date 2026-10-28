@@ -29,6 +29,7 @@ const coordinate = (value: number) => Math.round(value * 100) / 100
 
 export function Sparkline({ values, hollow = [], label, className }: Props) {
   const numbers = values.map(paiseToNumber)
+  // Scaled lowest to highest by design, not from zero: the line shows shape, and the label carries the exact first and last figures.
   const lo = numbers.length ? Math.min(...numbers) : 0
   const hi = numbers.length ? Math.max(...numbers) : 0
   const scale = linearScale({ min: lo, max: hi }, HEIGHT - PAD, PAD)

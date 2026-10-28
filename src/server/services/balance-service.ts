@@ -22,12 +22,14 @@ const RECENT_COUNT = 10
  *
  * Beside those figures, and never instead of them: this month's income, spending and savings from the cash flow report,
  * and the last twelve month-ends from the net worth report, whose last point is today's figure. The reports are the only
- * arithmetic for both; they are handed the valuation inputs read here, so prices and lots are read once. They run as of
- * the user's own today, whatever `asOf` says.
+ * arithmetic for both; they are handed the valuation inputs read here, so prices and lots are read once. The core
+ * figures above follow `asOf`; the strip and the trend always describe the user's real current month and last twelve
+ * month-ends (the report loaders take no date), so a past or future `asOf` never moves them, nor makes them throw.
  */
 export async function getDashboard(userId: string, asOf?: CalendarDate): Promise<DashboardView> {
-  const today = asOf ?? (await todayFor(userId))
-  const month = { kind: "month", year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)) } as const
+  const realToday = await todayFor(userId)
+  const today = asOf ?? realToday
+  const month = { kind: "month", year: Number(realToday.slice(0, 4)), month: Number(realToday.slice(5, 7)) } as const
   const inputs = readValuationInputs(userId)
   const [nodes, current, all, recent, furthest, held, flow, netWorthReport] = await Promise.all([
     listAllNodes(userId),
