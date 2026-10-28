@@ -72,7 +72,7 @@ describe("startSweepTimer", () => {
     expect(fast).toHaveBeenCalledTimes(2)
     a?.stop()
 
-    for (const bad of ["abc", "0", "-5", "1.5", ""]) {
+    for (const bad of ["abc", "0", "-5", "1.5", "", "2147483648", "2592000000"]) {
       const run = vi.fn(async () => {})
       const b = startSweepTimer({ run, env: { RECURRING_SWEEP_INTERVAL_MS: bad } })
       await vi.advanceTimersByTimeAsync(HOUR - 1)
@@ -81,6 +81,26 @@ describe("startSweepTimer", () => {
       expect(run, `value ${JSON.stringify(bad)}`).toHaveBeenCalledTimes(2)
       b?.stop()
     }
+  })
+
+  it("accepts the largest delay setInterval can hold", async () => {
+    const run = vi.fn(async () => {})
+    const timer = startSweepTimer({ run, env: { RECURRING_SWEEP_INTERVAL_MS: "2147483647" } })
+    await vi.advanceTimersByTimeAsync(HOUR * 3)
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2_147_483_647)
+    expect(run).toHaveBeenCalledTimes(2)
+    timer?.stop()
+  })
+
+  it("treats an empty RECURRING_SWEEP as not off (docker-compose passes an empty string when unset)", async () => {
+    const run = vi.fn(async () => {})
+    const timer = startSweepTimer({ run, env: { RECURRING_SWEEP: "", RECURRING_SWEEP_INTERVAL_MS: "" } })
+    expect(timer).not.toBeNull()
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(HOUR)
+    expect(run).toHaveBeenCalledTimes(2)
+    timer?.stop()
   })
 
   it("stops ticking after stop()", async () => {

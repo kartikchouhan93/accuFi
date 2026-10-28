@@ -2,6 +2,7 @@
 // instrumentation.ts so it can be tested with fake timers and without importing anything that touches the database.
 
 const DEFAULT_INTERVAL_MS = 3_600_000
+const MAX_INTERVAL_MS = 2_147_483_647
 
 export type SweepTimerOptions = {
   run: () => Promise<void>
@@ -10,12 +11,14 @@ export type SweepTimerOptions = {
   log?: Pick<Console, "error">
 }
 
-// Only a plain run of digits that is above zero counts. Number("") is 0 and Number("1.5") is not an integer, so a
-// blank or fractional variable falls back to the default instead of producing a timer that spins or never fires.
+// Only a plain run of digits that is above zero and fits setInterval counts. Number("") is 0 and Number("1.5") is not
+// an integer, so a blank or fractional variable falls back to the default instead of producing a timer that spins or
+// never fires. setInterval stores its delay in a signed 32-bit integer and clamps anything larger to 1 ms, so a
+// "monthly" 2592000000 would make the sweep spin; such a value is ignored too.
 function intervalFromEnv(value: string | undefined): number | null {
   if (value === undefined || !/^\d+$/.test(value)) return null
   const n = Number(value)
-  return Number.isSafeInteger(n) && n > 0 ? n : null
+  return n > 0 && n <= MAX_INTERVAL_MS ? n : null
 }
 
 /**
