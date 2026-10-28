@@ -11,7 +11,7 @@ generator client {
 // history (EC-66). updatedAt is different: `@updatedAt` makes Prisma supply a value itself on create and on update, so
 // the column default never applies. The database clock is enforced by a BEFORE INSERT OR UPDATE trigger on each table
 // with an updatedAt ("Transaction": migration updated_at_on_insert_and_keyset_index; "PriceSnapshot": migration
-// investments), which overwrites whatever the statement sent.
+// investments; "RecurringRule": migration recurring_rules), which overwrites whatever the statement sent.
 
 // Everything money can come from, sit in, or go to is a ledger node of one of these kinds.
 enum LedgerKind {
@@ -65,6 +65,23 @@ enum SystemNodeRole {
   REALISED_LOSS
 }
 
+// How often a recurring rule fires (design §4). Mirrors RECURRENCE_FREQUENCIES in src/domain/recurrence.ts (pinned by
+// tests/db/enum-parity.test.ts).
+enum RecurrenceFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+// PENDING sits in the inbox; POSTED became a transaction; DISMISSED was skipped (and can be put back).
+enum OccurrenceStatus {
+  PENDING
+  POSTED
+  DISMISSED
+}
+
 // Only MANUAL_SPLIT is reachable in M1; the rest are declared now because adding an enum value later is a migration.
 enum GroupKind {
   MANUAL_SPLIT
@@ -81,12 +98,14 @@ model User {
   stalePriceDays          Int      @default(30)
   createdAt               DateTime @default(dbgenerated("now()")) @db.Timestamptz(3)
 
-  nodes             LedgerNode[]
-  transactionGroups TransactionGroup[]
-  transactions      Transaction[]
-  lots              InvestmentLot[]
-  lotConsumptions   LotConsumption[]
-  priceSnapshots    PriceSnapshot[]
+  nodes                LedgerNode[]
+  transactionGroups    TransactionGroup[]
+  transactions         Transaction[]
+  lots                 InvestmentLot[]
+  lotConsumptions      LotConsumption[]
+  priceSnapshots       PriceSnapshot[]
+  recurringRules       RecurringRule[]
+  recurringOccurrences RecurringOccurrence[]
 }
 
 // One table for every node of the ledger; `kind` says which. There is deliberately no balance column
@@ -120,6 +139,8 @@ model LedgerNode {
   incoming       Transaction[]   @relation("TransactionTo")
   lots           InvestmentLot[]
   priceSnapshots PriceSnapshot[]
+  recurringFrom  RecurringRule[] @relation("RecurringFrom")
+  recurringTo    RecurringRule[] @relation("RecurringTo")
 
   // NULLs are distinct in Postgres, so any number of ordinary nodes (systemRole null) coexist; at most one system node per role.
   @@unique([userId, systemRole])
@@ -155,12 +176,13 @@ model Transaction {
   createdAt      DateTime  @default(dbgenerated("now()")) @db.Timestamptz(3)
   updatedAt      DateTime  @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
 
-  user         User              @relation(fields: [userId], references: [id])
-  fromNode     LedgerNode        @relation("TransactionFrom", fields: [fromNodeId], references: [id])
-  toNode       LedgerNode        @relation("TransactionTo", fields: [toNodeId], references: [id])
-  group        TransactionGroup? @relation(fields: [groupId], references: [id])
+  user         User                 @relation(fields: [userId], references: [id])
+  fromNode     LedgerNode           @relation("TransactionFrom", fields: [fromNodeId], references: [id])
+  toNode       LedgerNode           @relation("TransactionTo", fields: [toNodeId], references: [id])
+  group        TransactionGroup?    @relation(fields: [groupId], references: [id])
   lot          InvestmentLot? // the lot this transaction acquired, if it bought into a lot-mode investment
   consumptions LotConsumption[] // the lots this disposal cost-basis leg consumed
+  occurrence   RecurringOccurrence? // the occurrence that became this transaction; there is deliberately no ruleId here
 
   // NULLs are distinct, so any number of transactions without an idempotency key coexist.
   @@unique([userId, idempotencyKey])
@@ -239,4 +261,68 @@ model PriceSnapshot {
 
   @@unique([nodeId, asOf])
   @@index([userId, nodeId, asOf])
+}
+
+// A template for a transaction that repeats (design §5): the entry to book, and the schedule it follows. It holds no
+// postings itself; each due date becomes a RecurringOccurrence, and only a confirmed (or auto-posted) occurrence becomes a
+// transaction. nextDueOn is the next date to generate and is null once the schedule has ended, so the due scan is one
+// indexed range read. dayOfMonth 31 means "the last day" by the clamp in src/domain/recurrence.ts. Deletion is soft.
+// interval >= 1, dayOfMonth null or 1-31, dayOfWeek null or 1-7, amountPaise > 0 and occurrenceLimit null or >= 1 are
+// CHECK constraints (migration recurring_rules); Prisma cannot express them.
+model RecurringRule {
+  id              String              @id @default(cuid())
+  userId          String
+  name            String // 1-60 chars, validated in the service
+  fromNodeId      String
+  toNodeId        String
+  amountPaise     BigInt
+  note            String?
+  tags            String[]
+  frequency       RecurrenceFrequency
+  interval        Int                 @default(1)
+  dayOfMonth      Int?
+  dayOfWeek       Int?
+  startDate       DateTime            @db.Date // a calendar day
+  endDate         DateTime?           @db.Date
+  occurrenceLimit Int?
+  autoPost        Boolean             @default(false)
+  nextDueOn       DateTime?           @db.Date
+  pausedAt        DateTime?           @db.Timestamptz(3)
+  version         Int                 @default(0)
+  idempotencyKey  String?
+  deletedAt       DateTime?           @db.Timestamptz(3)
+  createdAt       DateTime            @default(dbgenerated("now()")) @db.Timestamptz(3)
+  updatedAt       DateTime            @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
+
+  user        User                  @relation(fields: [userId], references: [id])
+  fromNode    LedgerNode            @relation("RecurringFrom", fields: [fromNodeId], references: [id])
+  toNode      LedgerNode            @relation("RecurringTo", fields: [toNodeId], references: [id])
+  occurrences RecurringOccurrence[]
+
+  // NULLs are distinct, so any number of rules without an idempotency key coexist.
+  @@unique([userId, idempotencyKey])
+  @@index([userId, nextDueOn]) // the due scan
+}
+
+// One due date of one rule. A pending occurrence lives here, not in Transaction, so it cannot reach a balance, net worth
+// or report query by construction (EC-47). @@unique([ruleId, dueOn]) is the guard against a duplicate when the hourly
+// sweep and a login race; transactionId (unique) is the transaction the occurrence became, and postFailure says why an
+// auto-post did not happen.
+model RecurringOccurrence {
+  id            String           @id @default(cuid())
+  userId        String
+  ruleId        String
+  dueOn         DateTime         @db.Date // a calendar day
+  status        OccurrenceStatus @default(PENDING)
+  transactionId String?          @unique
+  postFailure   String?
+  resolvedAt    DateTime?        @db.Timestamptz(3)
+  createdAt     DateTime         @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user        User          @relation(fields: [userId], references: [id])
+  rule        RecurringRule @relation(fields: [ruleId], references: [id])
+  transaction Transaction?  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+
+  @@unique([ruleId, dueOn])
+  @@index([userId, status, dueOn]) // the inbox
 }

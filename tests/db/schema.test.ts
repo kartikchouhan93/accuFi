@@ -27,6 +27,9 @@ async function makeUserWithNodes() {
 }
 
 afterAll(async () => {
+  // Recurring tables first: their foreign keys to transactions and nodes are RESTRICT.
+  await prisma.recurringOccurrence.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.recurringRule.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.lotConsumption.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.investmentLot.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.priceSnapshot.deleteMany({ where: { userId: { in: createdUserIds } } })
@@ -442,6 +445,144 @@ describe("investment lots, lot consumptions and price snapshots", () => {
 
   it("defaults createdAt on the three new tables to the database clock (EC-66)", async () => {
     for (const table of ["InvestmentLot", "LotConsumption", "PriceSnapshot"]) {
+      const [col] = await prisma.$queryRaw<{ column_default: string | null }[]>`
+        SELECT column_default FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ${table} AND column_name = 'createdAt'`
+      expect(col?.column_default, `${table}.createdAt`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
+    }
+  })
+})
+
+describe("recurring rules and occurrences", () => {
+  async function expectCheckViolation(promise: Promise<unknown>) {
+    const error = await promise.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error, "expected the insert to be rejected").toBeDefined()
+    expect(String(error)).toMatch(/check constraint/i)
+  }
+
+  async function makeRuleWorld() {
+    const { user, from, to } = await makeUserWithNodes()
+    const ruleData = (over: Partial<Prisma.RecurringRuleUncheckedCreateInput> = {}) => ({
+      userId: user.id,
+      name: "Rent",
+      fromNodeId: from.id,
+      toNodeId: to.id,
+      amountPaise: 1_500_000n,
+      frequency: "MONTHLY" as const,
+      startDate: toDbDate(calendarDate("2026-11-01")),
+      nextDueOn: toDbDate(calendarDate("2026-11-01")),
+      ...over,
+    })
+    return { user, from, to, ruleData }
+  }
+
+  it("stores a rule with its defaults, and reads its days back as the same calendar days", async () => {
+    const { ruleData } = await makeRuleWorld()
+    const rule = await prisma.recurringRule.create({ data: ruleData({ dayOfMonth: 31 }) })
+    expect(rule.interval).toBe(1)
+    expect(rule.autoPost).toBe(false)
+    expect(rule.version).toBe(0)
+    expect(rule.tags).toEqual([])
+    expect(rule.pausedAt).toBeNull()
+    expect(fromDbDate(rule.startDate)).toBe("2026-11-01")
+  })
+
+  it("rejects a rule with an interval below 1", async () => {
+    const { ruleData } = await makeRuleWorld()
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ interval: 0 }) }))
+  })
+
+  it("accepts dayOfMonth 1 to 31 or null and rejects 0 and 32", async () => {
+    const { ruleData } = await makeRuleWorld()
+    await prisma.recurringRule.create({ data: ruleData({ dayOfMonth: 1 }) })
+    await prisma.recurringRule.create({ data: ruleData({ dayOfMonth: 31 }) })
+    await prisma.recurringRule.create({ data: ruleData({ dayOfMonth: null }) })
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ dayOfMonth: 32 }) }))
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ dayOfMonth: 0 }) }))
+  })
+
+  it("accepts dayOfWeek 1 to 7 or null and rejects 0 and 8", async () => {
+    const { ruleData } = await makeRuleWorld()
+    await prisma.recurringRule.create({ data: ruleData({ frequency: "WEEKLY", dayOfWeek: 1 }) })
+    await prisma.recurringRule.create({ data: ruleData({ frequency: "WEEKLY", dayOfWeek: 7 }) })
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ dayOfWeek: 8 }) }))
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ dayOfWeek: 0 }) }))
+  })
+
+  it("rejects a rule with a zero or negative amount", async () => {
+    const { ruleData } = await makeRuleWorld()
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ amountPaise: 0n }) }))
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ amountPaise: -1n }) }))
+  })
+
+  it("accepts an occurrenceLimit of 1 or null and rejects 0", async () => {
+    const { ruleData } = await makeRuleWorld()
+    await prisma.recurringRule.create({ data: ruleData({ occurrenceLimit: 1 }) })
+    await prisma.recurringRule.create({ data: ruleData({ occurrenceLimit: null }) })
+    await expectCheckViolation(prisma.recurringRule.create({ data: ruleData({ occurrenceLimit: 0 }) }))
+  })
+
+  it("rejects two rules with the same (user, idempotencyKey), and lets any number without a key coexist", async () => {
+    const { ruleData } = await makeRuleWorld()
+    await prisma.recurringRule.create({ data: ruleData({ idempotencyKey: "k1" }) })
+    const error = await prisma.recurringRule.create({ data: ruleData({ idempotencyKey: "k1" }) }).catch((e: unknown) => e)
+    expect(isUniqueViolation(error)).toBe(true)
+    await prisma.recurringRule.create({ data: ruleData() })
+    await prisma.recurringRule.create({ data: ruleData() })
+    await prisma.recurringRule.create({ data: ruleData({ idempotencyKey: "k2" }) })
+  })
+
+  it("allows the same idempotencyKey for different users", async () => {
+    const a = await makeRuleWorld()
+    const b = await makeRuleWorld()
+    await prisma.recurringRule.create({ data: a.ruleData({ idempotencyKey: "same" }) })
+    await prisma.recurringRule.create({ data: b.ruleData({ idempotencyKey: "same" }) })
+  })
+
+  it("defaults an occurrence to PENDING and rejects a second one for the same (rule, dueOn)", async () => {
+    const { user, ruleData } = await makeRuleWorld()
+    const rule = await prisma.recurringRule.create({ data: ruleData() })
+    const dueOn = toDbDate(calendarDate("2026-11-01"))
+    const occ = await prisma.recurringOccurrence.create({ data: { userId: user.id, ruleId: rule.id, dueOn } })
+    expect(occ.status).toBe("PENDING")
+    expect(occ.transactionId).toBeNull()
+    const error = await prisma.recurringOccurrence
+      .create({ data: { userId: user.id, ruleId: rule.id, dueOn } })
+      .catch((e: unknown) => e)
+    expect(isUniqueViolation(error)).toBe(true)
+    await prisma.recurringOccurrence.create({
+      data: { userId: user.id, ruleId: rule.id, dueOn: toDbDate(calendarDate("2026-12-01")) },
+    })
+  })
+
+  it("rejects two occurrences that became the same transaction", async () => {
+    const { user, from, to, ruleData } = await makeRuleWorld()
+    const rule = await prisma.recurringRule.create({ data: ruleData() })
+    const tx = await prisma.transaction.create({
+      data: {
+        userId: user.id,
+        fromNodeId: from.id,
+        toNodeId: to.id,
+        amountPaise: 1_500_000n,
+        occurredAt: toDbDate(calendarDate("2026-11-01")),
+      },
+    })
+    await prisma.recurringOccurrence.create({
+      data: { userId: user.id, ruleId: rule.id, dueOn: toDbDate(calendarDate("2026-11-01")), transactionId: tx.id },
+    })
+    const error = await prisma.recurringOccurrence
+      .create({
+        data: { userId: user.id, ruleId: rule.id, dueOn: toDbDate(calendarDate("2026-12-01")), transactionId: tx.id },
+      })
+      .catch((e: unknown) => e)
+    expect(isUniqueViolation(error)).toBe(true)
+  })
+
+  it("defaults createdAt on both new tables to the database clock (EC-66)", async () => {
+    for (const table of ["RecurringRule", "RecurringOccurrence"]) {
       const [col] = await prisma.$queryRaw<{ column_default: string | null }[]>`
         SELECT column_default FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = ${table} AND column_name = 'createdAt'`
