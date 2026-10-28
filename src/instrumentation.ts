@@ -6,10 +6,6 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return
 
   const { startSweepTimer } = await import("@/server/sweep-timer")
-  // A stub until the sweep itself exists; it only proves the timer is alive in the production runtime.
-  startSweepTimer({
-    run: async () => {
-      console.log("[recurring-sweep] tick")
-    },
-  })
+  const { sweepAll } = await import("@/server/services/recurring-generation")
+  startSweepTimer({ run: sweepAll })
 }

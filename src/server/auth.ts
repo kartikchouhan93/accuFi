@@ -4,6 +4,7 @@ import { authConfig } from "@/server/auth.config"
 import { authLogger } from "@/server/auth-logger"
 import { clientIp } from "@/server/client-ip"
 import { authenticate, RateLimitedError } from "@/server/services/login-service"
+import { generateInBackground } from "@/server/services/recurring-generation"
 
 /** Surfaced to the sign-in form as `code === "rate_limited"`. */
 export class RateLimitedSignin extends CredentialsSignin {
@@ -23,6 +24,13 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
   ...authConfig,
   // Only `error` is overridden (a wrong password is not one); `warn` and `debug` keep Auth.js's defaults.
   logger: authLogger,
+  // Catch up the user's recurring entries the moment they arrive, so an instance that was switched off is current by the
+  // time the inbox is opened. Fire and forget: it returns at once and swallows its own errors, so it cannot fail a sign-in.
+  events: {
+    signIn: ({ user }) => {
+      if (user.id) generateInBackground(user.id)
+    },
+  },
   providers: [
     Credentials({
       credentials: { email: {}, password: {} },
