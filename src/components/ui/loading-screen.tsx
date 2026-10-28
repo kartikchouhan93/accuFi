@@ -85,6 +85,27 @@ export function InvestmentsSkeleton() {
   )
 }
 
+export function RecurringSkeleton() {
+  return (
+    <Shell label="your recurring entries">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-10 w-48" />
+        <Skeleton className="h-11 w-36" />
+      </div>
+      <Skeleton className="mt-8 h-6 w-24" />
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        {Array.from({ length: 2 }, (_, i) => (
+          <Skeleton key={i} className="h-44 rounded-2xl" />
+        ))}
+      </div>
+      <Skeleton className="mt-12 h-6 w-20" />
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <Skeleton className="h-40 rounded-2xl" />
+      </div>
+    </Shell>
+  )
+}
+
 export function PricesSkeleton() {
   return (
     <Shell label="the price screen">

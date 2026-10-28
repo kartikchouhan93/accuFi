@@ -22,6 +22,8 @@ export interface NavItem {
   href: string
   label: string
   icon: LucideIcon
+  /** A count shown over the icon (entries waiting); nothing is drawn for 0 or none. It is also part of the link's name. */
+  badge?: number
 }
 
 interface SidebarProps {
@@ -145,9 +147,13 @@ function MobileBar({ items, current, brand, email, signOut }: SidebarProps) {
           aria-expanded={open}
           aria-controls={drawerId}
           onClick={() => setOpen(true)}
-          className="grid size-10 place-items-center rounded-xl text-fg hover:bg-panel-raised"
+          className="relative grid size-10 place-items-center rounded-xl text-fg hover:bg-panel-raised"
         >
           <Menu aria-hidden className="size-5" />
+          {/* Something is waiting behind the menu: the drawer says what, in the link's name. */}
+          {items.some((item) => (item.badge ?? 0) > 0) && (
+            <span aria-hidden className="absolute right-2 top-2 size-2.5 rounded-full border-2 border-panel bg-accent" />
+          )}
         </button>
       </div>
       <AnimatePresence>
@@ -222,6 +228,7 @@ function NavLink({
   onNavigate?: () => void
 }) {
   const Icon = item.icon
+  const badge = item.badge ?? 0
   const reduce = useReducedMotion()
   return (
     <Link
@@ -244,9 +251,22 @@ function NavLink({
         />
       )}
       {active && <span aria-hidden className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full bg-accent-edge" />}
-      <Icon aria-hidden className="relative size-5 shrink-0" />
+      <span className="relative shrink-0">
+        <Icon aria-hidden className="size-5" />
+        {badge > 0 && (
+          // On the icon, so it shows while the rail is closed. Hidden from assistive technology: the count is said once, in
+          // the name below.
+          <span
+            aria-hidden
+            className="absolute -right-2 -top-2 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold leading-none text-accent-fg"
+          >
+            {badge > 99 ? "99+" : badge}
+          </span>
+        )}
+      </span>
       <span className="relative">
         <Label revealed={revealed}>{item.label}</Label>
+        {badge > 0 && <span className="sr-only">, {badge} waiting</span>}
       </span>
     </Link>
   )

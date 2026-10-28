@@ -4,12 +4,14 @@ import Link from "next/link"
 import { AccountSummary, summaryKinds } from "@/app/account-summary"
 import { AppShell } from "@/app/app-shell"
 import { NetWorthCard } from "@/app/net-worth-card"
+import { PendingNotice } from "@/app/pending-notice"
 import { RecentTransactions } from "@/app/recent-transactions"
 import { ThisMonth } from "@/app/this-month"
 import { buttonClass } from "@/components/ui/styles"
 import { redirectIfUnauthenticated } from "@/server/action-support"
 import { requireUserId } from "@/server/auth"
 import { getDashboard } from "@/server/services/balance-service"
+import { countPendingFor } from "@/server/services/recurring-service"
 
 export const metadata: Metadata = { title: "Dashboard" }
 
@@ -18,8 +20,10 @@ export const metadata: Metadata = { title: "Dashboard" }
 // without a session to /login before this runs.
 export default async function DashboardPage() {
   let dashboard: Awaited<ReturnType<typeof getDashboard>>
+  let pending: number
   try {
-    dashboard = await getDashboard(await requireUserId())
+    const userId = await requireUserId()
+    ;[dashboard, pending] = await Promise.all([getDashboard(userId), countPendingFor(userId)])
   } catch (error) {
     redirectIfUnauthenticated(error)
     throw error
@@ -36,6 +40,7 @@ export default async function DashboardPage() {
             </Link>
           )}
         </div>
+        {pending > 0 && <PendingNotice count={pending} />}
         {dashboard.isEmpty ? (
           <section aria-labelledby="start-heading" className="surface mt-8 max-w-xl rounded-3xl p-8">
             <span aria-hidden className="grid size-12 place-items-center rounded-2xl bg-panel-raised text-accent-edge">
