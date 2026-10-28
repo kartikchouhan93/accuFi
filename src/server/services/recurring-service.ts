@@ -32,6 +32,7 @@ import {
   findPending,
   findRecentlyHandled,
   findRuleById,
+  findRuleByKey,
   findRules,
   insertRule,
   RuleVersionConflictError,
@@ -186,14 +187,32 @@ async function viewAfterGeneration(userId: string, id: string): Promise<RuleView
   return viewOf(userId, rule)
 }
 
+const REPLAYED_AFTER_DELETE = "This rule was already created and then deleted. Open a new form to create it again."
+
+/**
+ * The answer to a request this user already made: the stored rule, with whatever is due for it generated, as it then is.
+ * A rule that was made and then deleted is not handed back as if it were live: it is refused under the request key, and
+ * nothing is created (making a second rule under the same key is not possible, and a fresh form has a fresh key).
+ */
+async function replayOf(userId: string, stored: RecurringRule): Promise<RuleView> {
+  if (stored.deletedAt !== null) throw new InvalidRuleError([{ field: "idempotencyKey", message: REPLAYED_AFTER_DELETE }])
+  return viewAfterGeneration(userId, stored.id)
+}
+
 /**
  * Create a rule. Validates the template as a transaction would be (violations filed under fromNodeId, toNodeId, amount),
  * the schedule, `autoPost` into a quantity investment, and a start date that would make over 100 entries due now. Then
- * stores it with its first due day and generates what is already due, so the inbox is current. A repeated
- * `idempotencyKey` returns the rule it already made. Throws InvalidRuleError, or NotFoundError for a node that is not the
- * user's.
+ * stores it with its first due day and generates what is already due, so the inbox is current.
+ *
+ * A repeated `idempotencyKey` is looked up before anything is validated and answers with the rule it already made, however
+ * long ago (so a node archived since, or a start date that is now too far back, cannot turn a saved rule into a refusal).
+ * Two submits at once both pass that lookup: the loser meets the unique key at the insert and answers the same way.
+ * Throws InvalidRuleError, or NotFoundError for a node that is not the user's.
  */
 export async function createRule(userId: string, input: RuleInput & { idempotencyKey: string }): Promise<RuleView> {
+  const stored = await findRuleByKey(userId, input.idempotencyKey)
+  if (stored) return replayOf(userId, stored)
+
   const [from, to, today] = await Promise.all([
     requireNode(userId, input.fromNodeId),
     requireNode(userId, input.toNodeId),
@@ -204,8 +223,8 @@ export async function createRule(userId: string, input: RuleInput & { idempotenc
   try {
     rule = await insertRule(userId, { ...data, nextDueOn: firstDue(schedule), idempotencyKey: input.idempotencyKey })
   } catch (error) {
-    // A replay: the stored rule is the answer, however long ago it was made; nothing more is generated for it.
-    if (error instanceof DuplicateRuleKeyError) return viewOf(userId, error.existing)
+    // The race loser: the stored row is the winner's, read before its generation finished, so it is re-read after ours.
+    if (error instanceof DuplicateRuleKeyError) return replayOf(userId, error.existing)
     throw error
   }
   return viewAfterGeneration(userId, rule.id)

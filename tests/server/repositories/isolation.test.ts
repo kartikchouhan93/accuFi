@@ -815,6 +815,14 @@ describe("recurring repository", () => {
     expect(await recurringRepo.countRulesNaming(b.user.id, a.food.id)).toBe(0)
   })
 
+  isolation("findRuleByKey", "does not find, or reveal, a rule through another user's idempotency key", async () => {
+    const key = `findkey-${bRule.id}`
+    await prisma.recurringRule.update({ where: { id: bRule.id }, data: { idempotencyKey: key } })
+    expect(await recurringRepo.findRuleByKey(a.user.id, key)).toBeNull()
+    expect(await inTransaction((uow) => recurringRepo.findRuleByKey(a.user.id, key, uow))).toBeNull()
+    expect((await recurringRepo.findRuleByKey(b.user.id, key))?.id).toBe(bRule.id)
+  })
+
   isolation("findRuleById", "returns null for another user's rule", async () => {
     expect(await recurringRepo.findRuleById(a.user.id, bRule.id)).toBeNull()
     expect(await inTransaction((uow) => recurringRepo.findRuleById(a.user.id, bRule.id, uow))).toBeNull()

@@ -4,7 +4,9 @@ import { calendarDate, fromDbDate } from "@/domain/calendar-date"
 import { datesDue, type Schedule } from "@/domain/recurrence"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
+import * as recurringRepo from "@/server/repositories/recurring-repository"
 import { findRules, RuleVersionConflictError } from "@/server/repositories/recurring-repository"
+import { updateNode } from "@/server/repositories/node-repository"
 import { dismissOccurrence, postOccurrence } from "@/server/services/occurrence-service"
 import { generateDue } from "@/server/services/recurring-generation"
 import {
@@ -22,7 +24,10 @@ import { createRegistry } from "../repositories/fixtures"
 
 const registry = createRegistry()
 afterAll(registry.cleanup)
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 const at = (iso: string) => vi.useFakeTimers({ toFake: ["Date"], now: new Date(iso) })
 const day = (value: string) => calendarDate(value)
@@ -181,6 +186,112 @@ describe("createRule", () => {
     const w = await setup()
     const other = await setup()
     await expect(createRule(w.user.id, monthly(w, { toNodeId: other.food.id }))).rejects.toBeInstanceOf(NotFoundError)
+  })
+})
+
+// A replay is the answer to a request already made, however long ago: it is looked up first and never re-validated, since
+// the world may have moved on (a node archived, today later) and refusing would tell a user their saved rule failed.
+describe("createRule replays", () => {
+  it("returns the stored rule when the destination has been archived since, and stores one row", async () => {
+    at(TODAY)
+    const w = await setup()
+    const input = monthly(w, { frequency: "WEEKLY", startDate: day("2026-05-09") })
+    const first = await createRule(w.user.id, input)
+    await updateNode(w.user.id, w.food.id, { archivedAt: new Date() })
+
+    const again = await createRule(w.user.id, input)
+    expect(again.id).toBe(first.id)
+    expect(again.state).toBe("blocked") // as the rules screen now shows it, not refused
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
+  })
+
+  it("returns the stored rule when its start date would now make more than 100 entries due", async () => {
+    at(TODAY)
+    const w = await setup()
+    // Exactly 100 due on the day it was made: 99 days back to today.
+    const input = monthly(w, { frequency: "DAILY", startDate: day("2026-02-09") })
+    const first = await createRule(w.user.id, input)
+    expect(await occurrencesOf(first.id)).toHaveLength(100)
+
+    at("2026-06-18T06:00:00Z") // a month on: the same input would now be 130 due and is refused as a new rule
+    await refusal(createRule(w.user.id, { ...input, idempotencyKey: randomUUID() }))
+    const again = await createRule(w.user.id, input)
+    expect(again.id).toBe(first.id)
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
+  })
+
+  it("makes sure what is due has been generated for the stored rule, and answers with it as it then is", async () => {
+    at(TODAY)
+    const w = await setup()
+    const input = monthly(w, { frequency: "WEEKLY", startDate: day("2026-05-09") })
+    const first = await createRule(w.user.id, input)
+    expect(await datesOf(first.id)).toEqual(["2026-05-09", "2026-05-16"])
+
+    at("2026-05-25T06:00:00Z") // the 23rd has fallen due since
+    const again = await createRule(w.user.id, input)
+    expect(await datesOf(first.id)).toEqual(["2026-05-09", "2026-05-16", "2026-05-23"])
+    expect(again.nextDueOn).toBe("2026-05-30")
+    expect(again.version).toBe((await storedRule(first.id)).version)
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
+  })
+
+  it("does not hand back a deleted rule as if it were live: it is refused, under the request key, and nothing is made", async () => {
+    at(TODAY)
+    const w = await setup()
+    const input = monthly(w)
+    const first = await createRule(w.user.id, input)
+    await deleteRule(w.user.id, first.id)
+
+    const error = await refusal(createRule(w.user.id, input))
+    expect(fieldsOf(error)).toEqual(["idempotencyKey"])
+    expect(error.message).toMatch(/already created and then deleted/i)
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
+    expect((await storedRule(first.id)).deletedAt).not.toBeNull()
+  })
+
+  it("the loser of a race answers with the rule after generation, not as it was inserted", async () => {
+    at(TODAY)
+    const w = await setup()
+    const input = monthly(w, { frequency: "WEEKLY", startDate: day("2026-05-09") })
+    const winner = await createRule(w.user.id, input)
+    expect(winner.version).toBeGreaterThan(0) // generation moved the next due day, which bumps the version
+
+    // The loser looked, found nothing, and then collided on insert, holding the row as it was when inserted.
+    const asInserted = { ...(await storedRule(winner.id)), version: 0, nextDueOn: new Date("2026-05-09T00:00:00Z") }
+    vi.spyOn(recurringRepo, "findRuleByKey").mockResolvedValueOnce(null)
+    vi.spyOn(recurringRepo, "insertRule").mockRejectedValueOnce(new recurringRepo.DuplicateRuleKeyError(asInserted))
+
+    const loser = await createRule(w.user.id, input)
+    expect(loser.id).toBe(winner.id)
+    expect(loser.version).toBe(winner.version)
+    expect(loser.nextDueOn).toBe(winner.nextDueOn)
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
+  })
+
+  it("two submits at once make one rule, and both answers are the rule after generation", async () => {
+    at(TODAY)
+    const w = await setup()
+    const input = monthly(w, { frequency: "WEEKLY", startDate: day("2026-05-09") })
+    const [one, two] = await Promise.all([createRule(w.user.id, input), createRule(w.user.id, input)])
+    expect(one.id).toBe(two.id)
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
+    expect(await occurrencesOf(one.id)).toHaveLength(2)
+    const stored = await storedRule(one.id)
+    for (const view of [one, two]) {
+      expect(view.version).toBe(stored.version)
+      expect(view.nextDueOn).toBe("2026-05-23")
+    }
+  })
+
+  it("does not answer one user's key with another user's rule", async () => {
+    at(TODAY)
+    const w = await setup()
+    const other = await setup()
+    const theirs = await createRule(other.user.id, monthly(other))
+    const key = (await storedRule(theirs.id)).idempotencyKey!
+    const mine = await createRule(w.user.id, { ...monthly(w), idempotencyKey: key })
+    expect(mine.id).not.toBe(theirs.id)
+    expect(await prisma.recurringRule.count({ where: { userId: w.user.id } })).toBe(1)
   })
 })
 

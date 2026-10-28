@@ -450,3 +450,24 @@ describe("countRulesNaming", () => {
     expect(await repo.countRulesNaming(w.user.id, other.food.id)).toBe(0)
   })
 })
+
+describe("findRuleByKey", () => {
+  it("finds the user's rule by its idempotency key, a deleted one included, and nothing for an unknown key", async () => {
+    const w = await registry.makeWorld()
+    const idempotencyKey = uniqueKey()
+    const rule = await repo.insertRule(w.user.id, { ...withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }), idempotencyKey })
+    expect(await repo.findRuleByKey(w.user.id, idempotencyKey)).toEqual(rule)
+    expect(await inTransaction((uow) => repo.findRuleByKey(w.user.id, idempotencyKey, uow))).toEqual(rule)
+    expect(await repo.findRuleByKey(w.user.id, "no-such-key")).toBeNull()
+    await inTransaction((uow) => repo.softDeleteRule(w.user.id, rule.id, uow))
+    expect((await repo.findRuleByKey(w.user.id, idempotencyKey))?.deletedAt).not.toBeNull()
+  })
+
+  it("is per user: the same key for another user is not found", async () => {
+    const w = await registry.makeWorld()
+    const other = await registry.makeWorld()
+    const idempotencyKey = uniqueKey()
+    await repo.insertRule(w.user.id, { ...withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }), idempotencyKey })
+    expect(await repo.findRuleByKey(other.user.id, idempotencyKey)).toBeNull()
+  })
+})

@@ -98,11 +98,20 @@ export async function insertRule(
     // The only unique constraint a rule insert can hit is (userId, idempotencyKey). The failed statement aborted a
     // database transaction if there is one, so the lookup runs outside it, scoped to the user like every query.
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002" && key !== null) {
-      const existing = await prisma.recurringRule.findFirst({ where: { userId, idempotencyKey: key } })
+      const existing = await findRuleByKey(userId, key)
       if (existing) throw new DuplicateRuleKeyError(existing)
     }
     throw error
   }
+}
+
+/**
+ * The user's rule made under `idempotencyKey`, or null. Unlike every other read of a rule this one returns a soft-deleted
+ * rule too: a replayed request must be able to tell "made, then deleted" from "never made". Only the user's own rules are
+ * searched, so another user's key finds nothing. `uow`, when given, reads inside the caller's open transaction.
+ */
+export function findRuleByKey(userId: string, idempotencyKey: string, uow?: UnitOfWork): Promise<RecurringRule | null> {
+  return dbOf(uow).recurringRule.findFirst({ where: { userId, idempotencyKey } })
 }
 
 /** A soft-deleted rule is not found. `uow`, when given, reads inside the caller's open transaction. */
