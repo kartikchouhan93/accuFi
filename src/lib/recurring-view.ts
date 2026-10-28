@@ -1,5 +1,7 @@
 import type { LedgerNode, RecurringOccurrence, RecurringRule } from "@prisma/client"
 import { fromDbDate } from "../domain/calendar-date"
+import type { Schedule } from "../domain/recurrence"
+import { describeSchedule } from "./recurring-text"
 import { serialisePaise } from "./serialise"
 
 // An occurrence as it crosses to the browser: the card the inbox shows. Not the Prisma rows: paise are decimal text (a
@@ -77,5 +79,91 @@ export function toOccurrenceView(
     unitLabel: needsQuantity ? toNode.unitLabel : null,
     nodeArchived: fromNode.archivedAt !== null || toNode.archivedAt !== null,
     transactionId: occurrence.transactionId,
+  }
+}
+
+// A rule as the rules screen and its form show it: the same crossing as an occurrence (paise as text, days as
+// "YYYY-MM-DD"), with the state worked out here so every screen says the same thing about a rule.
+
+export type RuleState = "active" | "paused" | "finished" | "blocked"
+
+export interface RuleView {
+  id: string
+  name: string
+  fromNodeId: string
+  toNodeId: string
+  fromName: string
+  toName: string
+  /** Paise, as a decimal string. */
+  amountPaise: string
+  note: string | null
+  tags: string[]
+  frequency: RecurringRule["frequency"]
+  interval: number
+  dayOfMonth: number | null
+  dayOfWeek: number | null
+  startDate: string
+  endDate: string | null
+  occurrenceLimit: number | null
+  autoPost: boolean
+  /** The next day an entry will be proposed; null once the schedule has run out. */
+  nextDueOn: string | null
+  /** Paused by the user; finished (no next day); blocked (an end is archived, so nothing is generated); else active. */
+  state: RuleState
+  /** "Every 2 weeks on Monday": the cadence in words. */
+  scheduleText: string
+  /** What an edit must send back as `expectedVersion`. */
+  version: number
+}
+
+/** The stored rule's schedule, as the domain functions take it. Pure. */
+export function scheduleOfRule(rule: RecurringRule): Schedule {
+  return {
+    frequency: rule.frequency,
+    interval: rule.interval,
+    dayOfMonth: rule.dayOfMonth,
+    dayOfWeek: rule.dayOfWeek,
+    startDate: fromDbDate(rule.startDate),
+    endDate: rule.endDate === null ? null : fromDbDate(rule.endDate),
+    occurrenceLimit: rule.occurrenceLimit,
+  }
+}
+
+/**
+ * `fromNode` and `toNode` are the rule's two ends, archived or not. A pause is the user's decision and wins; a rule with
+ * no next day is finished whatever its ends; otherwise an archived end blocks it (it generates nothing until restored).
+ * Pure: no reads.
+ */
+export function toRuleView(rule: RecurringRule, fromNode: LedgerNode, toNode: LedgerNode): RuleView {
+  const state: RuleState =
+    rule.pausedAt !== null
+      ? "paused"
+      : rule.nextDueOn === null
+        ? "finished"
+        : fromNode.archivedAt !== null || toNode.archivedAt !== null
+          ? "blocked"
+          : "active"
+  return {
+    id: rule.id,
+    name: rule.name,
+    fromNodeId: fromNode.id,
+    toNodeId: toNode.id,
+    fromName: fromNode.name,
+    toName: toNode.name,
+    amountPaise: serialisePaise(rule.amountPaise),
+    note: rule.note,
+    tags: [...rule.tags],
+    frequency: rule.frequency,
+    interval: rule.interval,
+    dayOfMonth: rule.dayOfMonth,
+    dayOfWeek: rule.dayOfWeek,
+    startDate: fromDbDate(rule.startDate),
+    endDate: rule.endDate === null ? null : fromDbDate(rule.endDate),
+    occurrenceLimit: rule.occurrenceLimit,
+    autoPost: rule.autoPost,
+    nextDueOn: rule.nextDueOn === null ? null : fromDbDate(rule.nextDueOn),
+    state,
+    scheduleText: describeSchedule(scheduleOfRule(rule)),
+    version: rule.version,
   }
 }

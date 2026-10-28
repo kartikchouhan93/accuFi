@@ -59,6 +59,7 @@ export {
   note as noteField,
   occurredAt as occurredAtField,
   quantity as quantityField,
+  tags as tagsField,
 }
 
 export const recordTransactionSchema = z.strictObject({

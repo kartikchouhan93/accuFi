@@ -150,7 +150,7 @@ const asOfFor = (today: CalendarDate, occurredAt: CalendarDate): CalendarDate =>
   compareDates(occurredAt, today) > 0 ? occurredAt : today
 
 export const cleanNote = (note: string | null | undefined): string | null => note?.trim() || null
-const cleanTags = (tags: readonly string[]): string[] => [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))]
+export const cleanTags = (tags: readonly string[]): string[] => [...new Set(tags.map((tag) => tag.trim()).filter((tag) => tag !== ""))]
 
 const legalityViolations = (from: LedgerNode, to: LedgerNode, amount: Paise, occurredAt: CalendarDate, allowArchived: boolean) =>
   validateTransaction({ fromNode: from, toNode: to, amount, occurredAt }, { allowArchived })
