@@ -57,6 +57,7 @@ export default defineConfig({
     // Never adopt a server that might be pointed at the dev database.
     reuseExistingServer: false,
     timeout: 120_000,
-    env: { DATABASE_URL: process.env.DATABASE_URL, AUTH_URL: baseURL },
+    // RECURRING_SWEEP off: a background sweep must not generate occurrences underneath a test that seeds its own rules.
+    env: { DATABASE_URL: process.env.DATABASE_URL, AUTH_URL: baseURL, RECURRING_SWEEP: "off" },
   },
 })
