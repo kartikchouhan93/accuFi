@@ -1,6 +1,6 @@
 # AccuFi M4 — Recurring entries: design
 
-**Status:** Draft, awaiting approval. **Date:** 2026-10-28. **Builds on:** `2026-09-11-accufi-design.md` §8.4 (recurring entries), §6.4, §4.2, EC-40/41/42/43/44/45/47, decision-log row "Recurring proposes rather than posts". M0–M3 are merged and pushed.
+**Status:** Approved, amended at planning (the rule idempotency key; the generation and edit details recorded in `docs/superpowers/decisions/2026-10-28-m4-rulings.md`), built on branch `feat/m4-recurring`. **Date:** 2026-10-28. **Builds on:** `2026-09-11-accufi-design.md` §8.4 (recurring entries), §6.4, §4.2, EC-40/41/42/43/44/45/47, decision-log row "Recurring proposes rather than posts". M0–M3 are merged and pushed.
 
 The user asked for the design to be drafted straight from the spec, without a question round. Everything the spec leaves open is decided here and listed in **Calls I made** at the end, each with what it costs if wrong. CSV import (and EC-46, matching imports to pending occurrences) is **M6**, not here; the spec's M4 row is recurring rules and the inbox only.
 

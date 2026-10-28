@@ -311,6 +311,8 @@ Every report honours the user's financial year (§6.4) and offers calendar-month
 
 ### 8.4 M4 — Recurring entries
 
+**Status:** built on `feat/m4-recurring`, 2026-10-28: rules and the inbox at `/recurring`, the rule form with a live schedule preview, "Make recurring" on a transaction, catch-up generation on sign-in and an hourly in-process sweep, the nav badge and the dashboard notice. Design: `docs/superpowers/specs/2026-10-28-accufi-m4-recurring-design.md`; decisions: `docs/superpowers/decisions/2026-10-28-m4-rulings.md`.
+
 A `RecurringRule` holds a transaction template plus a schedule: frequency (`DAILY` / `WEEKLY` / `MONTHLY` / `QUARTERLY` / `YEARLY`), interval, day-of-month or day-of-week, start date, optional end date or occurrence count.
 
 **Propose, do not post.** By default a due rule generates a `PendingOccurrence` that the user confirms, edits, or dismisses. Real salaries vary; real SIPs fail. A per-rule `autoPost` flag is available for the genuinely fixed cases.
