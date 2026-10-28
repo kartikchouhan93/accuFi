@@ -24,6 +24,10 @@ function testDatabaseUrl(): string {
   if (!/^\/[^/]+_test$/.test(url.pathname)) {
     throw new Error(`Refusing to run tests against "${url.pathname.slice(1)}": the database name must end in "_test"`)
   }
+  // Cap each worker's Prisma pool. The default is 2 * CPUs + 1 (31 on a 15-CPU host) per worker, and Vitest runs up to 15
+  // workers against a Postgres with max_connections=100, which intermittently fails with "too many clients already".
+  // 15 workers * 4 connections = 60. A connection_limit already on the URL (a user-supplied TEST_DATABASE_URL) wins.
+  if (!url.searchParams.has("connection_limit")) url.searchParams.set("connection_limit", "4")
   return url.toString()
 }
 

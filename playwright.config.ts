@@ -22,6 +22,10 @@ function testDatabaseUrl(): string {
   if (!/^\/[^/]+_test$/.test(url.pathname)) {
     throw new Error(`Refusing to run e2e tests against "${url.pathname.slice(1)}": the database name must end in "_test"`)
   }
+  // Cap the Prisma pool (the default is 2 * CPUs + 1 per process, against a Postgres with max_connections=100): the e2e
+  // run has 4 workers plus the Next server, so 5 * 10 = 50. A connection_limit already on the URL wins, which is also
+  // what makes this idempotent across the worker re-evaluations described above.
+  if (!url.searchParams.has("connection_limit")) url.searchParams.set("connection_limit", "10")
   return url.toString()
 }
 
