@@ -85,6 +85,11 @@ export function addDays(date: CalendarDate, days: number): CalendarDate {
   return fromDbDate(moved)
 }
 
+/** ISO weekday of a date: Monday 1 through Sunday 7. getUTCDay counts Sunday as 0, so that is mapped to 7. */
+export function isoWeekday(date: CalendarDate): number {
+  return toDbDate(date).getUTCDay() || 7
+}
+
 function assertMonth(month: number): void {
   if (!Number.isInteger(month) || month < 1 || month > 12) {
     throw new CalendarDateError(`Month must be an integer from 1 to 12, got ${month}`)

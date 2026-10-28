@@ -7,6 +7,7 @@ import {
   daysBetween,
   financialYearRange,
   fromDbDate,
+  isoWeekday,
   monthRange,
   toDbDate,
   todayIn,
@@ -227,5 +228,13 @@ describe("addDays", () => {
 
   it("returns the same day for zero", () => {
     expect(addDays(calendarDate("2026-10-27"), 0)).toBe("2026-10-27")
+  })
+})
+
+describe("isoWeekday", () => {
+  it("numbers Monday 1 through Sunday 7", () => {
+    expect(isoWeekday(calendarDate("2026-10-28"))).toBe(3) // Wednesday
+    expect(isoWeekday(calendarDate("2026-11-02"))).toBe(1) // Monday
+    expect(isoWeekday(calendarDate("2026-11-01"))).toBe(7) // Sunday: JS getUTCDay gives 0, ISO gives 7
   })
 })
