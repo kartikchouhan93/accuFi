@@ -1,6 +1,6 @@
 # AccuFi M3 — Reports: design
 
-**Status:** Draft for review. **Date:** 2026-10-27. **Builds on:** `2026-09-11-accufi-design.md` §8.3 (the six reports), §4.2, §6.4, §7.3, EC-9/10/20/23–25/32/38/39/62. M0–M2 are merged.
+**Status:** Approved 2026-10-27; amended at planning (sections 5 and 6.4); built on branch feat/m3-reports. **Date:** 2026-10-27. **Builds on:** `2026-09-11-accufi-design.md` §8.3 (the six reports), §4.2, §6.4, §7.3, EC-9/10/20/23–25/32/38/39/62. M0–M2 are merged.
 
 The user asked for the design to be drafted straight from the spec, without a question round. Everything the spec leaves open is decided here and listed in **Calls I made** at the end, each with what it costs if wrong.
 
