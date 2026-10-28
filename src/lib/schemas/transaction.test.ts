@@ -249,6 +249,14 @@ describe("transactionQuerySchema", () => {
     expect(spaced.success && spaced.data.node).toEqual(["a", "b"])
     const blank = parse("")
     expect(blank.success && blank.data.node).toBeUndefined()
+    // Only commas and spaces name no ledger: no filter, the same as blank, never an empty list that matches nothing.
+    for (const commas of [",", " , ", ",,", " ,, , "]) {
+      const parsed = parse(commas)
+      expect(parsed.success, JSON.stringify(commas)).toBe(true)
+      expect(parsed.success && parsed.data.node, JSON.stringify(commas)).toBeUndefined()
+    }
+    const listed = listTransactionsSchema.safeParse({ node: " , ", cursor: "abc" })
+    expect(listed.success && listed.data).toEqual({ cursor: "abc" })
     const fifty = parse(Array.from({ length: 50 }, (_, i) => `n${i}`).join(","))
     expect(fifty.success && fifty.data.node).toHaveLength(50)
     expect(issuePaths(parse(Array.from({ length: 51 }, (_, i) => `n${i}`).join(",")))).toEqual(["node"])

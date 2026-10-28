@@ -134,8 +134,12 @@ const filterNodes = z
   .transform((text) => [...new Set(text.split(",").map((id) => id.trim()).filter((id) => id !== ""))])
   .pipe(z.array(nodeId).max(FILTER_NODES_MAX, `At most ${FILTER_NODES_MAX} ledgers`))
 
+/** A comma-separated list that names nothing (",", " , ") is no filter, as blank is, not an empty list that matches nothing. */
+const blankList = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (typeof value === "string" && value.split(",").every((part) => part.trim() === "") ? undefined : value), schema.optional())
+
 const filterFields = {
-  node: blank(filterNodes),
+  node: blankList(filterNodes),
   flow: blank(z.enum(FLOWS)),
   kind: blank(z.enum(LEDGER_KINDS)),
   from: blank(occurredAt),
