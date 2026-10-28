@@ -22,7 +22,7 @@ export interface NavItem {
   href: string
   label: string
   icon: LucideIcon
-  /** A count shown over the icon (entries waiting); nothing is drawn for 0 or none. It is also part of the link's name. */
+  /** A count shown over the icon (entries waiting); nothing is drawn for 0 or none. It is also part of the link's name ("Recurring, 3 waiting"). */
   badge?: number
 }
 
@@ -236,6 +236,9 @@ function NavLink({
       onClick={onNavigate}
       onPointerEnter={onHover}
       aria-current={active ? "page" : undefined}
+      // The count is part of the name, as one string. As a second element (the label, then a screen-reader-only ", 3 waiting")
+      // the browser joins the two with a space of its own and reads "Recurring , 3 waiting". The name still starts with the label.
+      aria-label={badge > 0 ? `${item.label}, ${badge} waiting` : undefined}
       className={cn(
         "relative flex h-11 items-center gap-3 overflow-hidden rounded-xl px-[13px] text-sm font-medium transition-colors",
         active ? "bg-panel-raised text-fg" : hovered ? "text-fg" : "text-fg-soft",
@@ -266,7 +269,6 @@ function NavLink({
       </span>
       <span className="relative">
         <Label revealed={revealed}>{item.label}</Label>
-        {badge > 0 && <span className="sr-only">, {badge} waiting</span>}
       </span>
     </Link>
   )

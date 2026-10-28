@@ -25,8 +25,8 @@ const cards = (page: Page) => inbox(page).getByRole("listitem")
 /** The inbox card of a rule, by its name; with several cards of one rule, the first (the oldest). */
 const cardOf = (page: Page, name: string) => cards(page).filter({ has: page.getByRole("heading", { name, exact: true }) }).first()
 const navLink = (page: Page) => page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^Recurring/ }).first()
-/** The link's name is "Recurring" and then ", 3 waiting" (a screen reader's pause); the browser puts a space before the comma. */
-const waiting = (count: number) => new RegExp(`^Recurring\\s*,\\s*${count} waiting$`)
+/** The link's name is "Recurring, 3 waiting": one string, with no space before the comma. */
+const waiting = (count: number) => new RegExp(`^Recurring, ${count} waiting$`)
 const netWorth = (page: Page) => page.getByRole("region", { name: "Net worth", exact: true }).locator("p").first()
 
 async function openRecurring(page: Page) {

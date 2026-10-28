@@ -264,8 +264,11 @@ describe("the nav", () => {
     renderToStaticMarkup(createElement(AppNav, { current: "recurring", email: "a@b.test", signOut: async () => {}, pending }))
   /** Every link's accessible name, in order. */
   const names = (html: string) =>
-    [...html.matchAll(/<a[^>]*href="[^"]*"[^>]*>([\s\S]*?)<\/a>/g)].map((m) =>
-      accessibleText(m[1].replace(/<span[^>]*aria-hidden="true"[^>]*>[^<]*<\/span>/g, "")).replace(/\s+/g, " ").trim(),
+    [...html.matchAll(/<a([^>]*href="[^"]*"[^>]*)>([\s\S]*?)<\/a>/g)].map(
+      (m) =>
+        // An aria-label is the name as it is; without one the name is the link's text, less what is hidden from assistive technology.
+        /aria-label="([^"]*)"/.exec(m[1])?.[1] ??
+        accessibleText(m[2].replace(/<span[^>]*aria-hidden="true"[^>]*>[^<]*<\/span>/g, "")).replace(/\s+/g, " ").trim(),
     )
 
   it("has a Recurring destination", () => {
@@ -275,6 +278,10 @@ describe("the nav", () => {
   it("carries the pending count as a badge and in the accessible name", () => {
     const html = nav(3)
     expect(names(html)).toContain("Recurring, 3 waiting")
+    // The whole name is one string: made of two elements (the label and a screen-reader span) the browser reads a stray
+    // space between them, "Recurring , 3 waiting".
+    expect(html).toContain('aria-label="Recurring, 3 waiting"')
+    expect(html).not.toMatch(/Recurring[^<]*<\/span>[^<]*<span class="sr-only">, /)
     // On screen the badge is the bare number, hidden from the accessible name so it is not read twice.
     expect(html).toMatch(/<span[^>]*aria-hidden="true"[^>]*>3<\/span>/)
   })

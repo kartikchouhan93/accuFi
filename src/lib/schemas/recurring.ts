@@ -3,8 +3,9 @@ import { INTERVAL_MAX, OCCURRENCE_LIMIT_MAX, RECURRENCE_FREQUENCIES } from "../.
 import { positiveRupees } from "./rupees"
 import { idempotencyKeyField, nodeIdField, noteField, occurredAtField, quantityField, tagsField } from "./transaction"
 
-// What a client may send to create, edit, pause or delete a recurring rule. Strict like the transaction schemas:
-// `userId`, `version`, `nextDueOn`, `pausedAt` and the like are errors, not silently dropped. Rupee text becomes paise
+// What a client may send to create, edit, pause or delete a recurring rule (pause, resume and delete take `ruleIdSchema`,
+// the id alone). Strict like the transaction schemas: `userId`, `version`, `nextDueOn`, `pausedAt` and the like are errors,
+// not silently dropped. Rupee text becomes paise
 // and day text a CalendarDate here, as validation issues. What depends on the nodes or on today (the flow, an archived
 // end, how many entries a start date makes due) is the service's to refuse. No server imports, so the rule form can reuse
 // it; relative imports as in transaction.ts.
@@ -49,8 +50,6 @@ export const editRuleSchema = z.strictObject({
 })
 
 export const ruleIdSchema = z.strictObject({ id: z.string().min(1) })
-
-export const pauseRuleSchema = z.strictObject({ id: z.string().min(1), paused: z.boolean() })
 
 // Posting an occurrence as proposed sends the id alone. "Edit and post" adds what the user changed: the amount (rupee
 // text), the day, the note, and a quantity for a purchase into an investment valued by quantity (decimal text). Whether a

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { calendarDate, fromDbDate } from "@/domain/calendar-date"
-import { datesDue, type Schedule } from "@/domain/recurrence"
+import { datesDue } from "@/domain/recurrence"
+import { scheduleOfRule } from "@/lib/recurring-view"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import * as recurringRepo from "@/server/repositories/recurring-repository"
@@ -76,15 +77,6 @@ const occurrencesOf = (ruleId: string) =>
   prisma.recurringOccurrence.findMany({ where: { ruleId }, orderBy: { dueOn: "asc" } })
 const datesOf = async (ruleId: string) => (await occurrencesOf(ruleId)).map((o) => fromDbDate(o.dueOn))
 const storedRule = (id: string) => prisma.recurringRule.findUniqueOrThrow({ where: { id } })
-const scheduleOf = (rule: Awaited<ReturnType<typeof storedRule>>): Schedule => ({
-  frequency: rule.frequency,
-  interval: rule.interval,
-  dayOfMonth: rule.dayOfMonth,
-  dayOfWeek: rule.dayOfWeek,
-  startDate: fromDbDate(rule.startDate),
-  endDate: rule.endDate === null ? null : fromDbDate(rule.endDate),
-  occurrenceLimit: rule.occurrenceLimit,
-})
 
 /** The fields a refusal was filed under, and the whole refusal for a message check. */
 async function refusal(work: Promise<unknown>): Promise<InvalidRuleError> {
@@ -381,7 +373,7 @@ describe("editRule", () => {
     expect(fromDbDate(stored.startDate)).toBe("2026-02-28")
     expect(edited.nextDueOn).toBe("2027-02-28")
     expect(await occurrencesOf(view.id)).toHaveLength(3) // 28 Feb 2026 already had its entry: no second one
-    expect(datesDue(scheduleOf(stored), { from: day("2027-02-28"), count: 3, max: 2 })).toEqual(["2027-02-28", "2028-02-29"])
+    expect(datesDue(scheduleOfRule(stored), { from: day("2027-02-28"), count: 3, max: 2 })).toEqual(["2027-02-28", "2028-02-29"])
   })
 
   it("starts a changed schedule at the chosen next due date: every 2 months to every 3", async () => {
@@ -395,7 +387,7 @@ describe("editRule", () => {
     expect(edited.nextDueOn).toBe("2026-07-20")
     expect(edited.scheduleText).toBe("Every 3 months on the 20th")
     const stored = await storedRule(view.id)
-    expect(datesDue(scheduleOf(stored), { from: day("2026-07-20"), count: 0, max: 3 })).toEqual(["2026-07-20", "2026-10-20", "2027-01-20"])
+    expect(datesDue(scheduleOfRule(stored), { from: day("2026-07-20"), count: 0, max: 3 })).toEqual(["2026-07-20", "2026-10-20", "2027-01-20"])
   })
 
   it("catches up an earlier next due date, within the limit, and refuses one that is too far back", async () => {

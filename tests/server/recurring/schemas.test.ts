@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { createRuleSchema, editRuleSchema, pauseRuleSchema, ruleIdSchema } from "@/lib/schemas/recurring"
+import { createRuleSchema, editRuleSchema, ruleIdSchema } from "@/lib/schemas/recurring"
 
 const KEY = "0123456789abcdef"
 const ruleFields = {
@@ -109,13 +109,11 @@ describe("editRuleSchema", () => {
   })
 })
 
-describe("ruleIdSchema and pauseRuleSchema", () => {
-  it("take an id (and a switch), and nothing else", () => {
+describe("ruleIdSchema", () => {
+  it("takes an id, and nothing else", () => {
     expect(ruleIdSchema.parse({ id: "r1" })).toEqual({ id: "r1" })
     expect(ruleIdSchema.safeParse({ id: "" }).success).toBe(false)
     expect(ruleIdSchema.safeParse({ id: "r1", userId: "u" }).success).toBe(false)
-    expect(pauseRuleSchema.parse({ id: "r1", paused: true })).toEqual({ id: "r1", paused: true })
-    expect(pauseRuleSchema.safeParse({ id: "r1" }).success).toBe(false)
-    expect(pauseRuleSchema.safeParse({ id: "r1", paused: "true" }).success).toBe(false)
+    expect(ruleIdSchema.safeParse({ id: "r1", paused: true }).success).toBe(false) // the pause and resume actions are named for the switch, not sent it
   })
 })

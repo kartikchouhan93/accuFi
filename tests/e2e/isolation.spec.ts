@@ -923,7 +923,7 @@ async function recurringRowsOf(userId: string) {
 }
 
 const recurringNav = (page: Page) => page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^Recurring/ }).first()
-const waiting = (count: number) => new RegExp(`^Recurring\\s*,\\s*${count} waiting$`)
+const waiting = (count: number) => new RegExp(`^Recurring, ${count} waiting$`)
 const inboxCards = (page: Page) => page.getByRole("region", { name: "Inbox", exact: true }).getByRole("listitem")
 
 test("shows B none of A's rules or entries, and A's own screen all of them", async ({ pair: { a, b } }) => {
