@@ -144,6 +144,10 @@ test("every report opens on the range in its URL, with its tabs and its key figu
   const jan = growth.filter({ hasText: "Jan 2026" }).getByRole("row").first()
   await expect(jan.getByRole("cell").nth(0)).toHaveText("₹10,000.00")
   await expect(jan.getByRole("cell").nth(1)).toHaveText("Not valued")
+  // Gain is not valued either: a dash on screen, read as "not valued", never ₹0.00.
+  await expect(jan.getByRole("cell").nth(2)).toHaveText(/^—\s*not valued$/)
+  await expect(jan.getByRole("cell").nth(2)).not.toContainText("₹")
+  await expect(growth.filter({ hasText: "Jan 2026" })).toContainText("Gold not valued in this month.")
   const feb = growth.filter({ hasText: "Feb 2026" }).getByRole("row").first()
   await expect(feb.getByRole("cell").nth(0)).toHaveText("₹10,000.00")
   await expect(feb.getByRole("cell").nth(1)).toHaveText("₹12,000.00")
@@ -154,6 +158,16 @@ test("every report opens on the range in its URL, with its tabs and its key figu
   await which.getByRole("button", { name: "Show" }).click()
   await expect(page).toHaveURL(`/reports/investments?${QUARTER}&node=${await nodeId(userId, "Gold")}`)
   await expect(page.getByRole("img", { name: /^Gold: invested and value\./ })).toBeVisible()
+
+  // The lots and prices behind the value are on the Investments screen, at Gold's own card.
+  await page.getByRole("link", drill("Open Gold in Investments", ", where the lots and prices are listed")).click()
+  await expect(page).toHaveURL(`/investments#holding-${await nodeId(userId, "Gold")}`)
+  await expect(page.getByRole("region", { name: "Gold", exact: true })).toBeInViewport()
+  await page.goBack()
+  await which.getByLabel("Investment").selectOption({ label: "All investments" })
+  await which.getByRole("button", { name: "Show" }).click()
+  await expect(page).toHaveURL(`/reports/investments?${QUARTER}`)
+  await expect(page.getByRole("link", drill("Open Investments", ", where the lots and prices are listed"))).toHaveAttribute("href", "/investments")
 })
 
 test("a figure opens a list of entries that adds up to it", async ({ session: { page, userId } }) => {
@@ -298,18 +312,18 @@ test("a report is worked by keyboard, reads in both themes, and keeps still for 
     await expect(table.getByRole("row").filter({ hasText: "Jan 2026" })).toContainText("₹19,000.00")
   }
 
-  // Motion: with no preference, the chart arrives with its entrance and is animating; asked for less, it has neither.
+  // Motion: with no preference, the chart arrives with its entrance; asked for less, it has none.
   await page.emulateMedia({ reducedMotion: "no-preference" })
   await page.reload()
   await expect(chart).toHaveClass(/chart-enter/)
-  expect(await chart.evaluate((svg) => svg.getAnimations({ subtree: true }).length)).toBeGreaterThan(0)
+  // The entrance's name, not a count of running animations: one may be over before it is counted, and a colour
+  // transition elsewhere in the chart counts as one too.
   expect(await chart.locator("g.chart-grow").first().evaluate((bar) => getComputedStyle(bar).animationName)).toBe("chart-grow")
 
   await page.emulateMedia({ reducedMotion: "reduce" })
   await page.reload()
   // The server cannot know the preference, so the class comes off once the page has hydrated: wait for that.
   await expect(chart).not.toHaveClass(/chart-enter/)
-  expect(await chart.evaluate((svg) => svg.getAnimations({ subtree: true }).length)).toBe(0)
   expect(await chart.locator("g.chart-grow").first().evaluate((bar) => getComputedStyle(bar).animationName)).toBe("none")
 })
 

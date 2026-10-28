@@ -91,6 +91,17 @@ describe("resolveRange", () => {
     expect(() => resolveRange(choice, TODAY, 4)).toThrow(/10 years/)
   })
 
+  it("accepts a custom range of exactly 3660 days and rejects 3661, counting both ends", () => {
+    // 1 Jan 2010 to 1 Jan 2020 is 3652 days (ten years of 365, plus 29 Feb 2012 and 2016), so 1 Jan 2010 to 8 Jan 2020
+    // is 3659 days apart: 3660 days counting both ends. One more day is 3661. Today is far ahead, so nothing is clamped.
+    const today = d("2030-06-30")
+    const most: RangeChoice = { kind: "custom", from: d("2010-01-01"), to: d("2020-01-08") }
+    expect(resolveRange(most, today, 4)).toEqual({ from: "2010-01-01", to: "2020-01-08", requestedTo: "2020-01-08", clampedToToday: false })
+    const over: RangeChoice = { kind: "custom", from: d("2010-01-01"), to: d("2020-01-09") }
+    expect(() => resolveRange(over, today, 4)).toThrow(ReportRangeError)
+    expect(() => resolveRange(over, today, 4)).toThrow(/10 years/)
+  })
+
   it("rejects a custom range that starts after today", () => {
     const choice: RangeChoice = { kind: "custom", from: d("2026-11-01"), to: d("2026-12-01") }
     expect(() => resolveRange(choice, TODAY, 4)).toThrow(ReportRangeError)

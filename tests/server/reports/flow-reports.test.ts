@@ -135,6 +135,37 @@ describe("reconciliation with the Transactions screen", () => {
     }
   })
 
+  it("ties a range that cuts its first and last months short, bucket by bucket, to the flow filter", async () => {
+    // 15 Jan to 10 Mar, from the Scenario F table:
+    //   15–31 Jan: spending Dining 1,500 (15 Jan) + Rent 15,000 (20 Jan) = 16,500; income none (Salary was on 5 Jan).
+    //   Feb, whole: spending Rent 15,000 + card Groceries 2,500 - Groceries refund 500 = 17,000; income Salary 50,000 + Interest 300 = 50,300.
+    //   1–10 Mar: spending Rent 15,000 (8 Mar) + Dining 6,000 (9 Mar) = 21,000; income Salary 50,000 (5 Mar). The Dining
+    //   refund (12 Mar) and the sale (15, 16 Mar) are after the range.
+    //   Totals: spending 16,500 + 17,000 + 21,000 = 54,500; income 0 + 50,300 + 50,000 = 1,00,300.
+    const { user } = scenario
+    const view = await loadCashFlow(user.id, { kind: "custom", from: calendarDate("2026-01-15"), to: calendarDate("2026-03-10") })
+    expect(view.buckets.map((b) => [b.bucket.key, b.bucket.partial, b.spendingPaise, b.incomePaise])).toEqual([
+      ["2026-01", true, "1650000", "0"],
+      ["2026-02", false, "1700000", "5030000"],
+      ["2026-03", true, "2100000", "5000000"],
+    ])
+    expect(view.buckets[0].spendingDrill).toEqual({ flow: "spending", from: "2026-01-15", to: "2026-01-31" })
+    expect(view.buckets[0].incomeDrill.from).toBe("2026-01-15")
+    expect(view.buckets[2].spendingDrill).toEqual({ flow: "spending", from: "2026-03-01", to: "2026-03-10" })
+    expect(view.buckets[2].incomeDrill.to).toBe("2026-03-10")
+    expect([view.totals.spendingPaise, view.totals.incomePaise]).toEqual(["5450000", "10030000"])
+    expect(view.totals.spendingDrill).toEqual({ flow: "spending", from: "2026-01-15", to: "2026-03-10" })
+
+    const cells = [
+      ...view.buckets.map((b) => ({ spending: b.spendingDrill, income: b.incomeDrill, s: b.spendingPaise, i: b.incomePaise })),
+      { spending: view.totals.spendingDrill, income: view.totals.incomeDrill, s: view.totals.spendingPaise, i: view.totals.incomePaise },
+    ]
+    for (const cell of cells) {
+      expect(await net(user.id, { flow: "spending", from: cell.spending.from, to: cell.spending.to }), cell.spending.from).toBe(cell.s)
+      expect(negate(await net(user.id, { flow: "income", from: cell.income.from, to: cell.income.to })), cell.income.from).toBe(cell.i)
+    }
+  })
+
   async function listedIds(userId: string, query: Record<string, string>): Promise<string[]> {
     const screen = await loadTransactionScreen(userId, query)
     return screen.page.entries

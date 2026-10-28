@@ -6,6 +6,7 @@ import { prisma } from "@/server/db"
 import { getDashboard } from "@/server/services/balance-service"
 import { seedAccountNodes } from "@/server/services/account-seed"
 import { archiveLedgerNode, createLedgerNode } from "@/server/services/node-service"
+import { loadNetWorthReport } from "@/server/services/report-service"
 import { recordTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
 import { holdingsScenario } from "./reports/scenarios"
@@ -283,6 +284,14 @@ describe("getDashboard, this month and the net worth trend", () => {
       expect(view.trend[1]).toEqual({ asOf: "2026-02-28", totalPaise: "18550000", partial: false })
     }
     expect(view.trend.map((point) => point.asOf).slice(0, -1).every((day) => day < today)).toBe(true)
+    // The trend is drawn by the net worth report's own code; from January 2027 the twelve points no longer reach back to
+    // January 2026, so the first quarter's month-ends are pinned there too, whatever day the suite runs.
+    const quarter = await loadNetWorthReport(user.id, { kind: "custom", from: calendarDate("2026-01-01"), to: calendarDate("2026-03-31") })
+    expect(quarter.points.map((point) => [point.asOf, point.totalPaise, point.partial])).toEqual([
+      ["2026-01-31", "11000000", true],
+      ["2026-02-28", "18550000", false],
+      ["2026-03-31", "18700000", false],
+    ])
 
     // The figures the dashboard had before the trend, untouched. Bank: 2,00,000 - 70,000 - 10,000 - 37,000 + 60,800 =
     // 1,43,800. Gold: 15 g bought, 8 g sold, 7 g at 7,600 = 53,200; the fund 10,000: 63,200 invested. The card owes

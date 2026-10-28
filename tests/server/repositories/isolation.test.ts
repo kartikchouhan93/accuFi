@@ -639,6 +639,52 @@ describe("report repository", () => {
     ])
   })
 
+  isolation("findRealisedByMonth", "does not count a sale whose group, sold investment or gain or loss node is another user's", async () => {
+    // The repositories refuse to write these rows; nothing in the database does. Every leg is the caller's (its userId is
+    // A's), so only the group and node joins keep them out: one attack per join, each in a month of its own, and one real
+    // sale of A's in May so the answer is not empty by accident. Dropping any one of the four userId conditions
+    // (g, n, fn, tn) adds a row.
+    const own = await registry.makeWorld()
+    const other = await registry.makeWorld()
+    const node = (userId: string, kind: "INVESTMENT" | "INCOME_SOURCE" | "EXPENSE", name: string, systemRole?: "REALISED_GAIN" | "REALISED_LOSS") =>
+      registry.makeNode(userId, kind, name, systemRole ? { systemRole } : {})
+    const gold = await node(own.user.id, "INVESTMENT", "Gold")
+    const gain = await node(own.user.id, "INCOME_SOURCE", "Realised Gain", "REALISED_GAIN")
+    const theirGold = await node(other.user.id, "INVESTMENT", "Gold")
+    const theirGain = await node(other.user.id, "INCOME_SOURCE", "Realised Gain", "REALISED_GAIN")
+    const theirLoss = await node(other.user.id, "EXPENSE", "Realised Loss", "REALISED_LOSS")
+    const disposal = (userId: string) => prisma.transactionGroup.create({ data: { userId, kind: "DISPOSAL" } })
+    const leg = (groupId: string, fromNodeId: string, toNodeId: string, amountPaise: bigint, occurredAt: string) =>
+      prisma.transaction.create({
+        data: { userId: own.user.id, groupId, fromNodeId, toNodeId, amountPaise, occurredAt: toDbDate(calendarDate(occurredAt)) },
+      })
+
+    // May: A's own sale of A's gold, ₹1.00 of gain. The one row the caller should see.
+    const real = await disposal(own.user.id)
+    await leg(real.id, gold.id, own.bank.id, 10_000n, "2026-05-10")
+    await leg(real.id, gain.id, own.bank.id, 100n, "2026-05-10")
+    // June: A's legs in another user's DISPOSAL group (kept out by g."userId").
+    const theirs = await disposal(other.user.id)
+    await leg(theirs.id, gold.id, own.bank.id, 10_000n, "2026-06-10")
+    await leg(theirs.id, gain.id, own.bank.id, 200n, "2026-06-10")
+    // July: A's group, but the investment sold is another user's (kept out by n."userId").
+    const soldTheirs = await disposal(own.user.id)
+    await leg(soldTheirs.id, theirGold.id, own.bank.id, 10_000n, "2026-07-10")
+    await leg(soldTheirs.id, gain.id, own.bank.id, 300n, "2026-07-10")
+    // August: A's sale of A's gold, the gain leg drawn from another user's Realised Gain (kept out by fn."userId").
+    const gainTheirs = await disposal(own.user.id)
+    await leg(gainTheirs.id, gold.id, own.bank.id, 10_000n, "2026-08-10")
+    await leg(gainTheirs.id, theirGain.id, own.bank.id, 400n, "2026-08-10")
+    // September: A's sale of A's gold, the loss leg sent to another user's Realised Loss (kept out by tn."userId").
+    const lossTheirs = await disposal(own.user.id)
+    await leg(lossTheirs.id, gold.id, own.bank.id, 10_000n, "2026-09-10")
+    await leg(lossTheirs.id, gold.id, theirLoss.id, 500n, "2026-09-10")
+
+    expect(await reportRepo.findRealisedByMonth(own.user.id, range)).toEqual([{ nodeId: gold.id, bucket: "2026-05", gainPaise: 100n, lossPaise: 0n }])
+    // The other user has no legs at all: their group and nodes are only pointed at.
+    expect(await reportRepo.findRealisedByMonth(other.user.id, range)).toEqual([])
+  })
+
   isolation("findFirstTransactionDate", "reads only the caller's own entries", async () => {
     const own = await registry.makeWorld()
     const none = await registry.makeUser()
