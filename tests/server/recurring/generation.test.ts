@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { addDays, calendarDate, fromDbDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
+import * as recurringRepo from "@/server/repositories/recurring-repository"
 import { sumBalances } from "@/server/repositories/transaction-repository"
 import { getDashboard } from "@/server/services/balance-service"
 import { generateDue, generateInBackground, sweepAll } from "@/server/services/recurring-generation"
@@ -313,6 +314,73 @@ describe("honesty (EC-47)", () => {
     expect(await sumBalances(w.user.id)).toEqual(before.balances)
     expect(await getDashboard(w.user.id)).toEqual(before.dashboard)
     expect(await loadCashFlow(w.user.id, month)).toEqual(before.flow)
+  })
+})
+
+describe("one rule failing does not stop the user's others", () => {
+  /** Two daily rules that are due, `first` the older so it is generated first; both with two days due by 19 May. */
+  async function twoDueRules() {
+    at("2026-05-19T06:00:00Z")
+    const w = await setup()
+    const first = await rule(w, { name: "First", frequency: "DAILY", dayOfMonth: null, startDate: "2026-05-17", nextDueOn: "2026-05-17" })
+    const second = await rule(w, { name: "Second", frequency: "DAILY", dayOfMonth: null, startDate: "2026-05-18", nextDueOn: "2026-05-18" })
+    return { w, first, second }
+  }
+  /** The write of the first rule's occurrences fails, as a transient database error would; every other rule's goes through. */
+  function failFor(ruleId: string) {
+    const real = recurringRepo.insertOccurrences
+    return vi.spyOn(recurringRepo, "insertOccurrences").mockImplementation((userId, id, ...rest) =>
+      id === ruleId ? Promise.reject(new Error("deadlock detected")) : real(userId, id, ...rest),
+    )
+  }
+
+  it("generates the second rule, counts only what succeeded, and leaves the first untouched for the next run", async () => {
+    const { w, first, second } = await twoDueRules()
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+    const failing = failFor(first.id)
+
+    expect(await generateDue(w.user.id)).toEqual({ created: 2, posted: 0 }) // the second rule's 18th and 19th
+    expect(await datesOf(second.id)).toEqual(["2026-05-18", "2026-05-19"])
+    expect(await nextDueOf(second.id)).toBe("2026-05-20")
+    expect(await occurrencesOf(first.id)).toEqual([]) // rolled back: nothing half-made
+    expect(await nextDueOf(first.id)).toBe("2026-05-17") // still due, so the next run tries it again
+
+    // The failure is logged under the sweep's prefix, with the error itself.
+    expect(logged).toHaveBeenCalledTimes(1)
+    expect(String(logged.mock.calls[0][0])).toMatch(/^\[recurring-sweep\] /)
+    expect(logged.mock.calls[0]).toContainEqual(expect.objectContaining({ message: "deadlock detected" }))
+
+    // The next run, with the fault gone, catches the first rule up and does not touch the second again.
+    failing.mockRestore()
+    expect(await generateDue(w.user.id)).toEqual({ created: 3, posted: 0 })
+    expect(await datesOf(first.id)).toEqual(["2026-05-17", "2026-05-18", "2026-05-19"])
+    expect(await datesOf(second.id)).toEqual(["2026-05-18", "2026-05-19"])
+  })
+
+  it("lets the sweep carry on to the user's second rule too, and to the next user", async () => {
+    at("2001-03-10T10:30:00Z")
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+    const one = await setup()
+    const other = await setup()
+    const first = await rule(one, { name: "First", frequency: "DAILY", dayOfMonth: null, startDate: "2001-03-08", nextDueOn: "2001-03-08" })
+    const second = await rule(one, { name: "Second", frequency: "DAILY", dayOfMonth: null, startDate: "2001-03-09", nextDueOn: "2001-03-09" })
+    const theirs = await rule(other, { frequency: "DAILY", dayOfMonth: null, startDate: "2001-03-10", nextDueOn: "2001-03-10" })
+    failFor(first.id)
+
+    await expect(sweepAll()).resolves.toBeUndefined()
+    expect(await datesOf(second.id)).toEqual(["2001-03-09", "2001-03-10"])
+    expect(await datesOf(theirs.id)).toEqual(["2001-03-10"])
+    expect(await occurrencesOf(first.id)).toEqual([])
+    expect(logged.mock.calls.some(([message]) => String(message).startsWith("[recurring-sweep] "))).toBe(true)
+  })
+
+  it("with automatic posting on, the first rule failing still lets the second be generated and posted", async () => {
+    const { w, first, second } = await twoDueRules()
+    await prisma.recurringRule.updateMany({ where: { userId: w.user.id }, data: { autoPost: true } })
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    failFor(first.id)
+    expect(await generateDue(w.user.id)).toEqual({ created: 2, posted: 2 })
+    expect((await occurrencesOf(second.id)).map((o) => o.status)).toEqual(["POSTED", "POSTED"])
   })
 })
 

@@ -1,6 +1,7 @@
 import type { RecurringOccurrence, RecurringRule } from "@prisma/client"
 import { addDays, compareDates, fromDbDate, todayIn, type CalendarDate } from "@/domain/calendar-date"
-import { datesDue, MAX_DUE_PER_RUN, type Schedule } from "@/domain/recurrence"
+import { datesDue, MAX_DUE_PER_RUN } from "@/domain/recurrence"
+import { scheduleOfRule } from "@/lib/recurring-view"
 import { findNodeById } from "@/server/repositories/node-repository"
 import {
   countOccurrences,
@@ -28,16 +29,6 @@ import { InvalidTransactionError, OverdraftBlockedError } from "@/server/service
 
 const GENERIC_POST_FAILURE = "It could not be posted automatically."
 
-const scheduleOf = (rule: RecurringRule): Schedule => ({
-  frequency: rule.frequency,
-  interval: rule.interval,
-  dayOfMonth: rule.dayOfMonth,
-  dayOfWeek: rule.dayOfWeek,
-  startDate: fromDbDate(rule.startDate),
-  endDate: rule.endDate === null ? null : fromDbDate(rule.endDate),
-  occurrenceLimit: rule.occurrenceLimit,
-})
-
 interface Generated {
   rule: RecurringRule
   inserted: RecurringOccurrence[]
@@ -63,7 +54,7 @@ async function generateRule(userId: string, candidateId: string, today: Calendar
     ])
     if (!from || !to || from.archivedAt !== null || to.archivedAt !== null) return null
 
-    const schedule = scheduleOf(rule)
+    const schedule = scheduleOfRule(rule)
     const existing = await countOccurrences(userId, rule.id, uow)
     const due = datesDue(schedule, { from: nextDue, count: existing, upTo: today, max: MAX_DUE_PER_RUN })
     const inserted = await insertOccurrences(userId, rule.id, due, uow)
@@ -116,16 +107,24 @@ async function autoPost(userId: string, occurrences: RecurringOccurrence[]): Pro
  * Create the occurrences this user's rules have come due for, up to the user's own today (their timezone, so a user
  * ahead of or behind UTC is never run early or late), at most 100 per rule per call; a longer gap is caught up by the
  * next call. Returns how many were created and, for `autoPost` rules, how many of those were posted.
+ *
+ * Each rule stands alone: one that throws (a deadlock, a constraint, a bad row) is logged and left as it was, still due,
+ * and the user's other rules carry on, so a single bad rule cannot starve the rest on every run. What the others
+ * achieved is counted. Reading today or the user's rules failing is not a rule's failure, and still throws.
  */
 export async function generateDue(userId: string): Promise<{ created: number; posted: number }> {
   const today = await todayFor(userId)
   let created = 0
   let posted = 0
   for (const candidate of await findDueRules(userId, today)) {
-    const generated = await generateRule(userId, candidate.id, today)
-    if (!generated) continue
-    created += generated.inserted.length
-    if (generated.rule.autoPost) posted += await autoPost(userId, generated.inserted)
+    try {
+      const generated = await generateRule(userId, candidate.id, today)
+      if (!generated) continue
+      created += generated.inserted.length
+      if (generated.rule.autoPost) posted += await autoPost(userId, generated.inserted)
+    } catch (error) {
+      console.error(`[recurring-sweep] generation failed for rule ${candidate.id}`, error)
+    }
   }
   return { created, posted }
 }
