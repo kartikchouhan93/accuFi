@@ -20,7 +20,7 @@ import type { PickerNode } from "@/lib/transaction-list-view"
 import { formatDay, parseTags } from "@/lib/transaction-text"
 import type { ActionFailure } from "@/server/action-support"
 import { createRuleAction, editRuleAction } from "./actions"
-import { attempt, couldNot } from "./feedback"
+import { attempt, couldNot } from "@/app/feedback"
 import { leaveFlash, useFlash } from "./flash"
 import {
   AUTO_POST_REASON,

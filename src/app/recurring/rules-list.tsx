@@ -16,7 +16,7 @@ import type { RuleView } from "@/lib/recurring-view"
 import { formatDay } from "@/lib/transaction-text"
 import { cn } from "@/lib/utils"
 import { deleteRuleAction, pauseRuleAction, resumeRuleAction } from "./actions"
-import { attempt, couldNot, figure } from "./feedback"
+import { attempt, couldNot, figure } from "@/app/feedback"
 
 // Every rule, with its schedule in words, the next day it fires, and what state it is in: paused (by the user), finished
 // (it has run out) or blocked (an account it uses is archived, so nothing is generated until it is restored). Pause and

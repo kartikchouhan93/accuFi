@@ -19,7 +19,7 @@ import type { OccurrenceView } from "@/lib/recurring-view"
 import { formatDay, paiseTextToRupees } from "@/lib/transaction-text"
 import type { ActionFailure } from "@/server/action-support"
 import { dismissOccurrenceAction, postOccurrenceAction } from "./actions"
-import { attempt, couldNot, figure } from "./feedback"
+import { attempt, couldNot, figure } from "@/app/feedback"
 import { putBack } from "./recent-list"
 import { postPayload } from "./rule-fields"
 

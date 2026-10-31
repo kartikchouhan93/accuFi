@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { Amount } from "@/app/amount"
-import { figure } from "@/app/recurring/feedback"
+import { figure } from "@/app/feedback"
 import { monthLabel, type BudgetHistoryRow } from "@/lib/budget-view"
 import { StatusChip } from "./status-chip"
 

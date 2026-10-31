@@ -9,6 +9,7 @@ import { buttonClass } from "@/components/ui/styles"
 import { addMonths, type CalendarDate } from "@/domain/calendar-date"
 import { monthLabel, type BudgetsScreen } from "@/lib/budget-view"
 import { BudgetCardItem } from "./budget-card"
+import { useFlash } from "./flash"
 import { MonthPicker } from "./month-picker"
 
 // The client half of the Budgets screen: the month picker, a card per budget and the one message area they share. What is
@@ -19,6 +20,9 @@ import { MonthPicker } from "./month-picker"
 export function BudgetsWorkspace({ screen }: { screen: BudgetsScreen }) {
   const [notice, setNotice] = useState<ToastNotice | null>(null)
   const statusRef = useRef<HTMLDivElement>(null)
+
+  // What the budget form left for this screen when it saved: said once, as the screen opens.
+  useFlash(setNotice)
 
   // A deleted card takes the keyboard's place with it: the message is where focus lands then, as on the other screens.
   const announce: Announce = (next: TransactionNotice, moveFocus = false) => {

@@ -12,7 +12,7 @@ import type { OccurrenceView } from "@/lib/recurring-view"
 import { formatDay } from "@/lib/transaction-text"
 import { cn } from "@/lib/utils"
 import { restoreOccurrenceAction } from "./actions"
-import { attempt, couldNot, figure } from "./feedback"
+import { attempt, couldNot, figure } from "@/app/feedback"
 
 // What was posted or skipped lately, behind a disclosure: the screen is for what is waiting, and this is for the moment
 // after a mistake. A skipped entry can be put back; a posted one is a transaction now and is changed on the Transactions
