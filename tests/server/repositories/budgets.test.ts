@@ -205,9 +205,12 @@ describe("lockLedger", () => {
       await repo.lockLedger(w.user.id, w.food.id, uow)
       order.push("second locked")
     })
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    expect(order).toEqual([])
-    release()
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(order).toEqual([])
+    } finally {
+      release() // always: a failed assertion must not leave the first transaction held until Prisma's 5 s timeout
+    }
     await Promise.all([first, second])
     expect(order).toEqual(["first done", "second locked"])
   })
@@ -224,8 +227,11 @@ describe("lockLedger", () => {
       await held
     })
     await firstHasLock
-    expect(await inTransaction((uow) => repo.lockLedger(w.user.id, w.bank.id, uow))).toBe(true)
-    release()
+    try {
+      expect(await inTransaction((uow) => repo.lockLedger(w.user.id, w.bank.id, uow))).toBe(true)
+    } finally {
+      release()
+    }
     await first
   })
 })

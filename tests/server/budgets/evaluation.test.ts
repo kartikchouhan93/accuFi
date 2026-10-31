@@ -49,13 +49,16 @@ describe("reconciliation with the Transactions screen and the Spending report", 
     await w.spend(veg.id, "2026-05-10", 4_000n)
     await w.spend(dairy.id, "2026-05-11", 2_500n)
     await w.spend(w.food.id, "2026-04-20", 7_777n) // another month: not in May
+    await w.refund(veg.id, "2026-05-12", 1_000n) // a refund into a child lowers the parent's month too
+    // An internal transfer Food -> Vegetables moves spend inside the parent: the parent's month does not change.
+    await registry.makeTransaction(w.user.id, w.food.id, veg.id, { amountPaise: 900n, occurredAt: "2026-05-13" })
 
     const screen = await loadBudgetsScreen(w.user.id)
     const food = screen.cards.find((c) => c.nodeId === w.food.id)!
     const dairyCard = screen.cards.find((c) => c.nodeId === dairy.id)!
 
-    // The child's spend is in both cards, once in each.
-    expect(food.usedPaise).toBe("16500")
+    // The child's spend is in both cards, once in each; the refund is taken off and the internal transfer is not counted.
+    expect(food.usedPaise).toBe("15500")
     expect(food.countedNames).toEqual(["Vegetables", "Dairy"])
     expect(dairyCard.usedPaise).toBe("2500")
     expect(dairyCard.countedNames).toEqual([])

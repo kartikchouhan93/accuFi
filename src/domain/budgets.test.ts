@@ -49,6 +49,9 @@ describe("percentTenths and statusOf", () => {
   it("is on track below 80%, near from 80% through exactly 100%, over above", () => {
     expect(statusOf(paise(7_990n), paise(10_000n))).toBe("ON_TRACK")
     expect(statusOf(paise(8_000n), paise(10_000n))).toBe("NEAR")
+    // NEAR follows the rounded, displayed percent: 79.96% reads 80.0%, 79.94% reads 79.9%.
+    expect(statusOf(paise(7_996n), paise(10_000n))).toBe("NEAR")
+    expect(statusOf(paise(7_994n), paise(10_000n))).toBe("ON_TRACK")
     expect(statusOf(paise(10_000n), paise(10_000n))).toBe("NEAR")
     expect(statusOf(paise(10_001n), paise(10_000n))).toBe("OVER")
     // Over is by comparison, not by the rounded percent, which is still 100.0% here.
