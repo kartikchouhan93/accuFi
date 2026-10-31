@@ -27,7 +27,8 @@ async function makeUserWithNodes() {
 }
 
 afterAll(async () => {
-  // Recurring tables first: their foreign keys to transactions and nodes are RESTRICT.
+  // Budgets and the recurring tables first: their foreign keys to transactions and nodes are RESTRICT.
+  await prisma.budget.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.recurringOccurrence.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.recurringRule.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.lotConsumption.deleteMany({ where: { userId: { in: createdUserIds } } })
@@ -588,5 +589,113 @@ describe("recurring rules and occurrences", () => {
         WHERE table_schema = 'public' AND table_name = ${table} AND column_name = 'createdAt'`
       expect(col?.column_default, `${table}.createdAt`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
     }
+  })
+})
+
+describe("budgets", () => {
+  async function expectCheckViolation(promise: Promise<unknown>) {
+    const error = await promise.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error, "expected the insert to be rejected").toBeDefined()
+    expect(String(error)).toMatch(/check constraint/i)
+  }
+
+  async function makeBudgetWorld() {
+    const { user, to } = await makeUserWithNodes()
+    const budgetData = (over: Partial<Prisma.BudgetUncheckedCreateInput> = {}) => ({
+      userId: user.id,
+      nodeId: to.id,
+      amountPaise: 1_000_000n,
+      startMonth: toDbDate(calendarDate("2026-11-01")),
+      ...over,
+    })
+    return { user, to, budgetData }
+  }
+
+  it("stores a budget with its defaults, and reads its months back as the same calendar days", async () => {
+    const { budgetData } = await makeBudgetWorld()
+    const budget = await prisma.budget.create({
+      data: budgetData({ endMonth: toDbDate(calendarDate("2027-03-01")) }),
+    })
+    expect(budget.rollover).toBe(false)
+    expect(fromDbDate(budget.startMonth)).toBe("2026-11-01")
+    expect(budget.endMonth && fromDbDate(budget.endMonth)).toBe("2027-03-01")
+    const open = await prisma.budget.create({ data: budgetData() })
+    expect(open.endMonth).toBeNull()
+  })
+
+  it("rejects a budget with a zero or negative amount", async () => {
+    const { budgetData } = await makeBudgetWorld()
+    await expectCheckViolation(prisma.budget.create({ data: budgetData({ amountPaise: 0n }) }))
+    await expectCheckViolation(prisma.budget.create({ data: budgetData({ amountPaise: -1n }) }))
+  })
+
+  it("rejects a start month that is not the first of a month", async () => {
+    const { budgetData } = await makeBudgetWorld()
+    await expectCheckViolation(
+      prisma.budget.create({ data: budgetData({ startMonth: toDbDate(calendarDate("2026-11-15")) }) }),
+    )
+  })
+
+  it("rejects an end month that is not the first of a month, and one before the start", async () => {
+    const { budgetData } = await makeBudgetWorld()
+    await expectCheckViolation(
+      prisma.budget.create({ data: budgetData({ endMonth: toDbDate(calendarDate("2026-12-15")) }) }),
+    )
+    await expectCheckViolation(
+      prisma.budget.create({ data: budgetData({ endMonth: toDbDate(calendarDate("2026-10-01")) }) }),
+    )
+  })
+
+  it("accepts an end month equal to the start, and no end month at all", async () => {
+    const { budgetData } = await makeBudgetWorld()
+    await prisma.budget.create({ data: budgetData({ endMonth: toDbDate(calendarDate("2026-11-01")) }) })
+    await prisma.budget.create({ data: budgetData({ endMonth: null }) })
+  })
+
+  it("stamps updatedAt from the database clock on insert and on update (EC-66)", async () => {
+    const { budgetData } = await makeBudgetWorld()
+    const budget = await prisma.budget.create({
+      data: budgetData({ updatedAt: new Date("2000-01-01T00:00:00Z") }),
+    })
+    const [row] = await prisma.$queryRaw<{ same: boolean }[]>`
+      SELECT "updatedAt" = "createdAt" AS same FROM "Budget" WHERE "id" = ${budget.id}`
+    expect(row.same).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const updated = await prisma.budget.update({
+      where: { id: budget.id },
+      data: { amountPaise: 2_000_000n, updatedAt: new Date("2000-01-01T00:00:00Z") },
+    })
+    expect(updated.updatedAt.getTime()).toBeGreaterThan(budget.updatedAt.getTime())
+  })
+
+  it("does not stop a budget naming another user's node: ownership is the repository's job, not the database's", async () => {
+    const { user } = await makeBudgetWorld()
+    const other = await makeUserWithNodes()
+    const budget = await prisma.budget.create({
+      data: {
+        userId: user.id,
+        nodeId: other.to.id,
+        amountPaise: 500_000n,
+        startMonth: toDbDate(calendarDate("2026-11-01")),
+      },
+    })
+    expect(budget.nodeId).toBe(other.to.id)
+  })
+
+  it("refuses to delete a ledger or a user a budget still names (ON DELETE RESTRICT)", async () => {
+    const { user, to, budgetData } = await makeBudgetWorld()
+    await prisma.budget.create({ data: budgetData() })
+    await expect(prisma.ledgerNode.delete({ where: { id: to.id } })).rejects.toThrow()
+    await expect(prisma.user.delete({ where: { id: user.id } })).rejects.toThrow()
+  })
+
+  it("defaults createdAt to the database clock (EC-66)", async () => {
+    const [col] = await prisma.$queryRaw<{ column_default: string | null }[]>`
+      SELECT column_default FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'Budget' AND column_name = 'createdAt'`
+    expect(col?.column_default).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
   })
 })

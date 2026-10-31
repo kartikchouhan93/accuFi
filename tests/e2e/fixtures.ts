@@ -12,7 +12,8 @@ const PASSWORD = "correct horse battery"
 
 /** Deletes a user and everything it owns. Exported for tests that create their own users (through the signup form). */
 export async function deleteUser(userId: string) {
-  // The recurring and investment tables first: their foreign keys to transactions and nodes are RESTRICT.
+  // Budgets, then the recurring and investment tables: their foreign keys to transactions and nodes are RESTRICT.
+  await prisma.budget.deleteMany({ where: { userId } })
   await prisma.recurringOccurrence.deleteMany({ where: { userId } })
   await prisma.recurringRule.deleteMany({ where: { userId } })
   await prisma.lotConsumption.deleteMany({ where: { userId } })

@@ -11,7 +11,7 @@ generator client {
 // history (EC-66). updatedAt is different: `@updatedAt` makes Prisma supply a value itself on create and on update, so
 // the column default never applies. The database clock is enforced by a BEFORE INSERT OR UPDATE trigger on each table
 // with an updatedAt ("Transaction": migration updated_at_on_insert_and_keyset_index; "PriceSnapshot": migration
-// investments; "RecurringRule": migration recurring_rules), which overwrites whatever the statement sent.
+// investments; "RecurringRule": migration recurring_rules; "Budget": migration budgets), which overwrites whatever the statement sent.
 
 // Everything money can come from, sit in, or go to is a ledger node of one of these kinds.
 enum LedgerKind {
@@ -106,6 +106,7 @@ model User {
   priceSnapshots       PriceSnapshot[]
   recurringRules       RecurringRule[]
   recurringOccurrences RecurringOccurrence[]
+  budgets              Budget[]
 }
 
 // One table for every node of the ledger; `kind` says which. There is deliberately no balance column
@@ -141,6 +142,7 @@ model LedgerNode {
   priceSnapshots PriceSnapshot[]
   recurringFrom  RecurringRule[] @relation("RecurringFrom")
   recurringTo    RecurringRule[] @relation("RecurringTo")
+  budgets        Budget[]
 
   // NULLs are distinct in Postgres, so any number of ordinary nodes (systemRole null) coexist; at most one system node per role.
   @@unique([userId, systemRole])
@@ -325,4 +327,28 @@ model RecurringOccurrence {
 
   @@unique([ruleId, dueOn])
   @@index([userId, status, dueOn]) // the inbox
+}
+
+// A monthly spending cap on one expense ledger (M5 design §5). One row is a span of calendar months, startMonth to
+// endMonth inclusive (null: open-ended), with one amount; changing the amount from a later month splits the span in
+// two. Nothing else is stored: what was spent, the status and any rollover carry are computed from the transactions.
+// Months are DATE columns holding the first day of the month. amountPaise > 0, startMonth the first of a month, and
+// endMonth null or the first of a month and >= startMonth are CHECK constraints (migration budgets); Prisma cannot
+// express them. Overlapping spans for one ledger are refused by the service under a lock on the ledger row, not here
+// (an exclusion constraint would need btree_gist), and so is ownership of the ledger. Deletion is hard.
+model Budget {
+  id          String    @id @default(cuid())
+  userId      String
+  nodeId      String
+  amountPaise BigInt
+  startMonth  DateTime  @db.Date // the first day of a month
+  endMonth    DateTime? @db.Date // the first day of the last month it applies to
+  rollover    Boolean   @default(false)
+  createdAt   DateTime  @default(dbgenerated("now()")) @db.Timestamptz(3)
+  updatedAt   DateTime  @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
+
+  user User       @relation(fields: [userId], references: [id])
+  node LedgerNode @relation(fields: [nodeId], references: [id])
+
+  @@index([userId, nodeId, startMonth])
 }

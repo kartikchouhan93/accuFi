@@ -99,7 +99,8 @@ export function createRegistry() {
   }
 
   async function cleanup() {
-    // The recurring and investment tables first: their foreign keys to transactions and nodes are RESTRICT.
+    // Budgets, then the recurring and investment tables: their foreign keys to transactions and nodes are RESTRICT.
+    await prisma.budget.deleteMany({ where: { userId: { in: userIds } } })
     await prisma.recurringOccurrence.deleteMany({ where: { userId: { in: userIds } } })
     await prisma.recurringRule.deleteMany({ where: { userId: { in: userIds } } })
     await prisma.lotConsumption.deleteMany({ where: { userId: { in: userIds } } })
