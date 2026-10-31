@@ -5,6 +5,7 @@ import { parseRupees } from "@/domain/money"
 import { parseQuantity } from "@/domain/quantity"
 import { prisma } from "@/server/db"
 import { createLedgerNode, type CreateNodeInput } from "@/server/services/node-service"
+import { createBudget } from "@/server/services/budget-service"
 import { recordPrice } from "@/server/services/price-service"
 import { createRule } from "@/server/services/recurring-service"
 import { recordTransaction } from "@/server/services/transaction-service"
@@ -139,5 +140,23 @@ export async function recurringRule(
     occurrenceLimit: opts.occurrenceLimit,
     autoPost: opts.autoPost ?? false,
     idempotencyKey: randomUUID(),
+  })
+}
+
+/**
+ * Create a budget on an expense ledger named as it is on screen, through the service (so the same checks apply as for the
+ * form). `startMonth` and `endMonth` are "YYYY-MM-DD" days in the month, normalised to the first by the service; the amount is
+ * rupee text. Derive the months from `today(userId)`: a budget's months are never literals, so the test passes in any month.
+ */
+export async function budget(
+  userId: string,
+  opts: { ledger: string; rupees: string; startMonth: string; endMonth?: string; rollover?: boolean },
+) {
+  return createBudget(userId, {
+    nodeId: await nodeId(userId, opts.ledger),
+    amount: parseRupees(opts.rupees),
+    startMonth: calendarDate(opts.startMonth),
+    endMonth: opts.endMonth === undefined ? undefined : calendarDate(opts.endMonth),
+    rollover: opts.rollover ?? false,
   })
 }

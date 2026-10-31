@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { Page } from "@playwright/test"
-import { addDays, calendarDate } from "@/domain/calendar-date"
+import { addDays, calendarDate, monthOf } from "@/domain/calendar-date"
 import { parseQuantity } from "@/domain/quantity"
 import { parseRupees } from "@/domain/money"
 import { formatPaiseText } from "@/lib/node-money"
@@ -9,7 +9,7 @@ import { sellInvestment } from "@/server/services/investment-service"
 import { editTransaction } from "@/server/services/transaction-service"
 import { expect, section, test } from "./fixtures"
 import { balanceOf, editForm, entries, form, optionsOf, record, watchActions } from "./screens"
-import { account, addExpense, buy, card, incomeSource, investment, nodeId, post, price, recurringRule, today } from "./seed"
+import { account, addExpense, budget, buy, card, incomeSource, investment, nodeId, post, price, recurringRule, today } from "./seed"
 
 // Cross-user isolation, proven through a browser. The repository layer is tested exhaustively for it; this is the same
 // claim made where a user could actually break it: two people, two sessions, one server. Each test gets user A and user B
@@ -1060,5 +1060,177 @@ test.describe("a request B's browser sends, aimed at A's rule and entries", () =
     await b.page.goto("/recurring")
     await expect(ownCard(b.page)).toHaveCount(1)
     await expect(ownRule(b.page)).toHaveCount(1)
+  })
+})
+
+// Budgets (M5). A budget is one user's, named in a URL (the edit page) and by an id a Server Action carries (revise, settings,
+// delete). So B is shown none of A's budgets, ledgers or figures on any screen or in any page's HTML, B's dashboard counts only
+// B's own, and an id of A's in B's hands is answered as not found, exactly as an id that is nobody's, with A's rows as they
+// were. A has two budgets that are both over this month (A's dashboard says "2 budgets need attention"); B has one near its
+// limit ("1 budget needs attention"), so a count that leaked across users would show.
+
+const LARDER = "Zephyr Larder"
+
+/** A's budgets: Zephyr Larder ₹6,262.62 with ₹6,868.68 spent (over by ₹606.06), Zephyr Hobby ₹5,252.52 with ₹7,654.32 spent. */
+async function seedABudgets(userId: string) {
+  await seedA(userId)
+  await addExpense(userId, LARDER)
+  const startMonth = monthOf(await today(userId))
+  await post(userId, VAULT, LARDER, "6,868.68", { note: "Zephyr pantry" })
+  const larder = await budget(userId, { ledger: LARDER, rupees: "6,262.62", startMonth })
+  const hobby = await budget(userId, { ledger: HOBBY, rupees: "5,252.52", startMonth })
+  return { larder, hobby }
+}
+
+/** B's budget: ₹300 on Transport, with the ₹250 bus pass spent (83%, near the limit). */
+async function seedBBudget(userId: string) {
+  await seedB(userId)
+  return budget(userId, { ledger: "Transport", rupees: "300", startMonth: monthOf(await today(userId)) })
+}
+
+/** What identifies A's budgets: the ids, the names, and the caps, spend and excess as printed and as paise. */
+async function budgetSecretsOfA(userId: string): Promise<string[]> {
+  const budgets = await prisma.budget.findMany({ where: { userId } })
+  return [
+    ...(await secretsOfA(userId)),
+    ...budgets.map((row) => row.id),
+    LARDER,
+    ...["6,262.62", "626262", "6,868.68", "686868", "606.06", "60606", "5,252.52", "525252", "2,401.80", "240180"],
+  ]
+}
+
+/** Every budget row of a user as stored, in a fixed order, so "nothing changed" is a comparison of two reads. */
+const budgetRowsOf = (userId: string) => prisma.budget.findMany({ where: { userId }, orderBy: { id: "asc" } })
+
+const budgetCards = (page: Page) => page.getByRole("main").getByRole("list", { name: /^Budgets for / }).getByRole("listitem")
+const attention = (page: Page, text: string) => page.getByRole("main").getByRole("link", { name: text, exact: true })
+
+test("shows B none of A's budgets, on the budgets screen, the dashboard or in any page's HTML, and A's own screens all of them", async ({ pair: { a, b } }) => {
+  await seedABudgets(a.userId)
+  await seedBBudget(b.userId)
+  const secrets = await budgetSecretsOfA(a.userId)
+
+  // A's own screen and dashboard show both budgets, so a search that finds nothing on B's is not looking for the wrong thing.
+  await a.page.goto("/budgets")
+  await expect(budgetCards(a.page)).toHaveCount(2)
+  await expect(budgetCards(a.page).filter({ hasText: LARDER })).toContainText("Over budget")
+  await expect(budgetCards(a.page).filter({ hasText: LARDER })).toContainText("₹606.06")
+  expect((await leaksOn(a.page, secrets)).filter((secret) => /^[\d.,]+$/.test(secret)).length).toBeGreaterThan(0)
+  await a.page.goto("/")
+  await expect(attention(a.page, "2 budgets need attention")).toBeVisible()
+
+  // B has its own one budget and one near the limit, and nothing of A's, on the screen, in the HTML, on the other pages too.
+  await b.page.goto("/budgets")
+  await expect(budgetCards(b.page)).toHaveCount(1)
+  await expect(budgetCards(b.page)).toContainText("Transport")
+  await expect(budgetCards(b.page)).toContainText("₹300.00")
+  await expect(budgetCards(b.page)).toContainText("Near limit")
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  await b.page.goto("/")
+  await expect(attention(b.page, "1 budget needs attention")).toBeVisible()
+  await expect(attention(b.page, "2 budgets need attention")).toHaveCount(0)
+  expect(await leaksOn(b.page, secrets), "/").toEqual([])
+  for (const path of ["/budgets/new", "/transactions", "/nodes", "/recurring"]) {
+    await b.page.goto(path)
+    await expect(b.page.getByRole("heading", { level: 1 })).toBeVisible()
+    expect(await leaksOn(b.page, secrets), path).toEqual([])
+  }
+  // B's month picker offers no month before B's own first budget, and A's ledger is not one B can budget.
+  await b.page.goto("/budgets/new")
+  expect(await optionsOf(b.page.getByRole("form", { name: "New budget" }).getByLabel("Ledger", { exact: true }))).not.toContain(HOBBY)
+})
+
+test("answers B's visit to A's budget as not found, exactly as for an id that is nobody's", async ({ pair: { a, b } }) => {
+  const { larder } = await seedABudgets(a.userId)
+  await seedBBudget(b.userId)
+  const secrets = await budgetSecretsOfA(a.userId)
+  const GHOST = "cm0000000000000000000ghost"
+
+  /** What B gets at `path`: the not-found page, with nothing of A's in it (apart from the id B typed). */
+  const visit = async (path: string, typed: string) => {
+    await b.page.goto(path)
+    await expect(b.page.getByText("This page could not be found.")).toBeVisible()
+    await expect(b.page.getByRole("form")).toHaveCount(0)
+    expect(await leaksOn(b.page, secrets, [typed]), path).toEqual([])
+    return b.page.locator("body").innerText()
+  }
+  const ghost = await visit(`/budgets/${GHOST}/edit`, GHOST)
+  expect(await visit(`/budgets/${larder.id}/edit`, larder.id)).toBe(ghost)
+
+  // A, at the same URL, is let in: it is the owner that makes the difference.
+  await a.page.goto(`/budgets/${larder.id}/edit`)
+  await expect(a.page.getByRole("form", { name: "Amount" }).getByLabel("Monthly amount (₹)")).toHaveValue("6262.62")
+})
+
+test.describe("a request B's browser sends, aimed at A's budget", () => {
+  const GHOST = "cm0000000000000000000ghost"
+
+  /**
+   * B presses an ordinary button on its own screen, but the request the page sends has B's id swapped for `target`. The answer
+   * must be a plain "not found" with nothing of A's in it, and the same for an id that exists nowhere (the caller compares).
+   */
+  async function aimed(page: Page, own: string, target: string, act: () => Promise<void>) {
+    let swapped = 0
+    const replies = await watchActions(page, (body) => {
+      if (!body.includes(own)) return body
+      swapped += 1
+      return body.replaceAll(own, target)
+    })
+    await act()
+    await expect.poll(() => replies.length, "the answer that came back").toBe(1)
+    expect(swapped, "the request that was sent did carry B's own id, so it was really aimed").toBe(1)
+    await page.unroute("**/*")
+    const [reply] = replies
+    expect(reply.status).toBe(200)
+    expect(reply.body).toContain('"code":"not_found"')
+    expect(reply.body).not.toContain('"ok":true')
+    return reply.body
+  }
+
+  test("revise, settings and delete on A's id are refused as not found, and change nothing", async ({ pair: { a, b } }) => {
+    const { larder } = await seedABudgets(a.userId)
+    const own = await seedBBudget(b.userId)
+    const secrets = await budgetSecretsOfA(a.userId)
+    const aBefore = await budgetRowsOf(a.userId)
+    const bBefore = await budgetRowsOf(b.userId)
+    expect(aBefore).toHaveLength(2)
+
+    const attempts: Record<string, (target: string) => Promise<string>> = {
+      revise: async (target) => {
+        await b.page.goto(`/budgets/${own.id}/edit`)
+        const amount = b.page.getByRole("form", { name: "Amount" })
+        await amount.getByLabel("Monthly amount (₹)").fill("999")
+        return aimed(b.page, own.id, target, () => amount.getByRole("button", { name: "Save amount" }).click())
+      },
+      settings: async (target) => {
+        await b.page.goto(`/budgets/${own.id}/edit`)
+        const settings = b.page.getByRole("form", { name: "Settings" })
+        await settings.getByRole("checkbox", { name: "Carry unspent budget over" }).check()
+        return aimed(b.page, own.id, target, () => settings.getByRole("button", { name: "Save settings" }).click())
+      },
+      delete: async (target) => {
+        await b.page.goto("/budgets")
+        const own1 = budgetCards(b.page).filter({ hasText: "Transport" })
+        await own1.getByRole("button", { name: "Delete Transport budget", exact: true }).click()
+        return aimed(b.page, own.id, target, () => own1.getByRole("button", { name: "Delete budget Transport", exact: true }).click())
+      },
+    }
+
+    for (const [name, attempt] of Object.entries(attempts)) {
+      const toA = await attempt(larder.id)
+      expect(await leaksOn(b.page, secrets), `${name} aimed at A`).toEqual([])
+      expect(toA, `${name}: A's id is answered as an id that is nobody's is`).toEqual(await attempt(GHOST))
+      expect(await leaksOn(b.page, secrets), `${name} aimed at nothing`).toEqual([])
+    }
+
+    // A's budgets are exactly as they were, and so is B's: its own budget is still there, with its own amount.
+    expect(await budgetRowsOf(a.userId)).toEqual(aBefore)
+    expect(await budgetRowsOf(b.userId)).toEqual(bBefore)
+    await a.page.goto("/budgets")
+    await expect(budgetCards(a.page)).toHaveCount(2)
+    await expect(budgetCards(a.page).filter({ hasText: LARDER })).toContainText("₹6,262.62")
+    await b.page.goto("/budgets")
+    await expect(budgetCards(b.page)).toHaveCount(1)
+    await expect(budgetCards(b.page)).toContainText("₹300.00")
   })
 })
