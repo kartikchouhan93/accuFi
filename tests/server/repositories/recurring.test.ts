@@ -332,6 +332,41 @@ describe("insertOccurrences", () => {
   })
 })
 
+describe("findLastDueOn", () => {
+  const insert = (ruleId: string, days: string[]) =>
+    inTransaction((uow) => repo.insertOccurrences(a.user.id, ruleId, days.map(d), uow))
+
+  it("is the latest due day among the rule's occurrences, whatever their status, and null when it has none", async () => {
+    const rule = await repo.insertRule(a.user.id, withDue())
+    expect(await repo.findLastDueOn(a.user.id, rule.id)).toBeNull()
+
+    const [, , late] = await insert(rule.id, ["2026-04-05", "2026-05-05", "2026-06-05"])
+    expect(await repo.findLastDueOn(a.user.id, rule.id)).toBe("2026-06-05")
+    expect(await inTransaction((uow) => repo.findLastDueOn(a.user.id, rule.id, uow))).toBe("2026-06-05")
+
+    // The latest one resolved, either way, is still the latest: the answer is about dates, not what is pending.
+    await repo.markDismissed(a.user.id, late.id)
+    expect(await repo.findLastDueOn(a.user.id, rule.id)).toBe("2026-06-05")
+    const bought = await registry.makeTransaction(a.user.id, a.bank.id, a.food.id, { amountPaise: 100n })
+    await repo.markPending(a.user.id, late.id)
+    await repo.markPosted(a.user.id, late.id, bought.id)
+    expect(await repo.findLastDueOn(a.user.id, rule.id)).toBe("2026-06-05")
+
+    // A later date inserted before an earlier one was is still the latest: it is ordered by the date, not by insertion.
+    await insert(rule.id, ["2026-03-05"])
+    expect(await repo.findLastDueOn(a.user.id, rule.id)).toBe("2026-06-05")
+  })
+
+  it("looks at one rule only", async () => {
+    const one = await repo.insertRule(a.user.id, withDue())
+    const other = await repo.insertRule(a.user.id, withDue())
+    await insert(one.id, ["2026-04-05"])
+    await insert(other.id, ["2026-09-05"])
+    expect(await repo.findLastDueOn(a.user.id, one.id)).toBe("2026-04-05")
+    expect(await repo.findLastDueOn(a.user.id, other.id)).toBe("2026-09-05")
+  })
+})
+
 describe("occurrence reads and state changes", () => {
   async function pendingOne(dueOn = "2026-04-05") {
     const rule = await repo.insertRule(a.user.id, withDue())

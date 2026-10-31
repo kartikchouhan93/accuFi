@@ -27,6 +27,7 @@ import { toTransactionView } from "@/lib/transaction-view"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
   countOccurrences,
+  findLastDueOn,
   countPending,
   DuplicateRuleKeyError,
   findPending,
@@ -245,18 +246,26 @@ export async function editRule(
   expectedVersion: number,
   input: Omit<RuleInput, "startDate"> & { nextDue: CalendarDate },
 ): Promise<RuleView> {
-  const [from, to, today, existing, current] = await Promise.all([
+  const [from, to, today, existing, current, lastDueOn] = await Promise.all([
     requireNode(userId, input.fromNodeId),
     requireNode(userId, input.toNodeId),
     todayFor(userId),
     countOccurrences(userId, id),
     findRuleById(userId, id),
+    findLastDueOn(userId, id),
   ])
   if (!current) throw new NotFoundError("rule")
   // Whether it is paused is read here and acted on with the version below: a pause or resume in between changes the version.
   const { data, schedule } = prepare(input, input.nextDue, "nextDue", from, to, existing, today, current.pausedAt !== null)
+  // A rule that has run out of dates is edited from its last real occurrence (see `valuesOfRule`). That day already has its
+  // entry, and `existing` already counts it, so the new schedule starts looking after it: the entry is not made twice, and
+  // an occurrence limit is not spent on it twice (raising a spent limit by two makes two more entries, not one).
+  const nextDueOn =
+    lastDueOn === input.nextDue
+      ? (datesDue(schedule, { from: addDays(input.nextDue, 1), count: existing, max: 1 })[0] ?? null)
+      : firstDue(schedule, existing)
   // `updateRule` is where a stale version, or a rule that is not the user's or is gone, is refused.
-  await updateRule(userId, id, expectedVersion, { ...data, nextDueOn: firstDue(schedule, existing) })
+  await updateRule(userId, id, expectedVersion, { ...data, nextDueOn })
   return viewAfterGeneration(userId, id)
 }
 
@@ -373,22 +382,37 @@ export function countPendingFor(userId: string): Promise<number> {
 }
 
 /**
- * The rule as the edit form opens it, with the nodes, today, and how many entries the rule already has (what the form's
- * preview needs to show only what an occurrence limit has left). NotFoundError if it is not the user's or is deleted.
+ * The rule as the edit form opens it, with the nodes, today, how many entries the rule already has (what the form's
+ * preview needs to show only what an occurrence limit has left), and the due day of its last entry in any state (the
+ * date the form offers for a rule with no next due day; null if it never made one). NotFoundError if it is not the
+ * user's or is deleted.
  */
 export async function loadRuleForEdit(
   userId: string,
   id: string,
-): Promise<{ rule: RuleView; nodes: PickerNode[]; today: CalendarDate; occurrences: number }> {
-  const [rule, nodes, today, occurrences] = await Promise.all([
+): Promise<{
+  rule: RuleView
+  nodes: PickerNode[]
+  today: CalendarDate
+  occurrences: number
+  lastDueOn: CalendarDate | null
+}> {
+  const [rule, nodes, today, occurrences, lastDueOn] = await Promise.all([
     findRuleById(userId, id),
     listAllNodes(userId),
     todayFor(userId),
     countOccurrences(userId, id),
+    findLastDueOn(userId, id),
   ])
   if (!rule) throw new NotFoundError("rule")
   const node = nodeLookup(nodes)
-  return { rule: toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId)), nodes: nodes.map(toPickerNode), today, occurrences }
+  return {
+    rule: toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId)),
+    nodes: nodes.map(toPickerNode),
+    today,
+    occurrences,
+    lastDueOn,
+  }
 }
 
 /** What the blank new-rule form needs: every node (the form narrows them itself) and today in the user's own zone. */

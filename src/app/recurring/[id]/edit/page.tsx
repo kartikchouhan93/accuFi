@@ -25,7 +25,7 @@ export default async function EditRulePage({ params }: { params: Promise<{ id: s
     if (error instanceof NotFoundError) notFound()
     throw error
   }
-  const { rule, nodes, today, occurrences } = loaded
+  const { rule, nodes, today, occurrences, lastDueOn } = loaded
   return (
     <AppShell current="recurring">
       <main className="mx-auto max-w-2xl px-4 pb-28 pt-8 sm:px-8">
@@ -43,7 +43,7 @@ export default async function EditRulePage({ params }: { params: Promise<{ id: s
             key={`${rule.id}:${rule.version}`}
             nodes={nodes}
             today={today}
-            initial={valuesOfRule(rule, today)}
+            initial={valuesOfRule(rule, today, lastDueOn)}
             editing={{ id: rule.id, version: rule.version, occurrences, paused: rule.state === "paused" }}
           />
         </div>

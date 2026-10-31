@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
+import { valuesOfRule } from "@/app/recurring/rule-fields"
 import { calendarDate, fromDbDate } from "@/domain/calendar-date"
 import { datesDue } from "@/domain/recurrence"
 import { scheduleOfRule } from "@/lib/recurring-view"
@@ -15,6 +16,7 @@ import {
   deleteRule,
   editRule,
   InvalidRuleError,
+  loadRuleForEdit,
   setPaused,
   type RuleInput,
 } from "@/server/services/recurring-service"
@@ -88,6 +90,13 @@ async function refusal(work: Promise<unknown>): Promise<InvalidRuleError> {
   return error as InvalidRuleError
 }
 const fieldsOf = (error: InvalidRuleError) => error.violations.map((v) => v.field)
+
+/** The date the edit form opens on for the rule, built the way the edit page builds it: the loader's answer through `valuesOfRule`. */
+async function formAnchor(w: World, ruleId: string): Promise<string> {
+  const loaded = await loadRuleForEdit(w.user.id, ruleId)
+  return valuesOfRule(loaded.rule, loaded.today, loaded.lastDueOn).anchor
+}
+const transactionsOf = (w: World) => prisma.transaction.count({ where: { userId: w.user.id } })
 
 describe("createRule", () => {
   it("brings the inbox up to date at once: a weekly rule that started 10 days ago has two pending entries and a future next due", async () => {
@@ -437,7 +446,7 @@ describe("editing a rule that is paused or has ended", () => {
     expect(fieldsOf(error)).toEqual(["nextDue"])
   })
 
-  it("edits a rule that ended by its end date when the form's date is the end date, and it stays ended", async () => {
+  it("edits a rule that ended by its end date from the date the form offers, and it stays ended", async () => {
     at(TODAY)
     const w = await setup()
     const view = await createRule(
@@ -447,8 +456,10 @@ describe("editing a rule that is paused or has ended", () => {
     expect(view.state).toBe("finished")
     expect(await datesOf(view.id)).toEqual(["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"])
 
-    // What the form offers for it (see valuesOfRule): the end date, not today, which is after the end.
-    const renamed = await editRule(w.user.id, view.id, view.version, editOf(w, "2026-04-30", { name: "Flat rent", dayOfMonth: 31, endDate: day("2026-04-30") }))
+    // What the form offers for it: the rule's last real occurrence (here also its end date), not today, which is after the end.
+    const anchor = await formAnchor(w, view.id)
+    expect(anchor).toBe("2026-04-30")
+    const renamed = await editRule(w.user.id, view.id, view.version, editOf(w, anchor, { name: "Flat rent", dayOfMonth: 31, endDate: day("2026-04-30") }))
     expect(renamed.name).toBe("Flat rent")
     expect(renamed.state).toBe("finished")
     expect(renamed.nextDueOn).toBeNull()
@@ -457,6 +468,178 @@ describe("editing a rule that is paused or has ended", () => {
     // Today as the date, which is what it used to offer, is after the end date: refused, which is why it was never usable.
     const error = await refusal(editRule(w.user.id, view.id, renamed.version, editOf(w, "2026-05-19", { dayOfMonth: 31, endDate: day("2026-04-30") })))
     expect(fieldsOf(error)).toEqual(["endDate"])
+  })
+})
+
+// An edit re-anchors the schedule on the date the form offers, and the date a rule that has run out is offered is its last
+// real occurrence: its own, so the grid lands on a day the rule already has and proposes nothing the schedule never had.
+// (It used to be the end date, which is on the schedule's grid only by luck.) Each case below is a rule that ended in a way
+// the end date is NOT one of its dates, with automatic posting on so that a stray entry would also be a stray transaction.
+describe("editing a rule that has run out of dates", () => {
+  const AUTO = { autoPost: true, amount: 10_00n }
+
+  /** Rename the rule from the date its form offers, over the fields that make its schedule, and assert it changed nothing else. */
+  async function renameFromTheForm(
+    w: World,
+    rule: RuleInput & { idempotencyKey: string },
+    expected: string[],
+    expectedNextDueOn: string | null = null,
+  ) {
+    const view = await createRule(w.user.id, rule)
+    expect(await datesOf(view.id)).toEqual(expected)
+    expect(view.nextDueOn).toBe(expectedNextDueOn)
+    const transactionsBefore = await transactionsOf(w)
+    expect(transactionsBefore).toBe(1 + expected.length) // the seed deposit and one automatic post each: the posting does run
+
+    const anchor = await formAnchor(w, view.id)
+    const renamed = await editRule(
+      w.user.id,
+      view.id,
+      view.version,
+      editOf(w, anchor, {
+        name: "Flat rent",
+        amount: rule.amount,
+        autoPost: rule.autoPost,
+        frequency: rule.frequency,
+        interval: rule.interval,
+        dayOfMonth: view.dayOfMonth ?? undefined,
+        dayOfWeek: view.dayOfWeek ?? undefined,
+        endDate: rule.endDate,
+        occurrenceLimit: rule.occurrenceLimit,
+      }),
+    )
+    expect(renamed.name).toBe("Flat rent")
+    expect(await datesOf(view.id)).toEqual(expected) // (a) not one more, and not a day moved
+    expect(await occurrencesOf(view.id)).toHaveLength(expected.length)
+    expect(renamed.nextDueOn).toBe(expectedNextDueOn) // (b) still ended
+    expect((await storedRule(view.id)).nextDueOn === null ? null : fromDbDate((await storedRule(view.id)).nextDueOn!)).toBe(expectedNextDueOn)
+    expect(await transactionsOf(w)).toBe(transactionsBefore) // (c) and nothing recorded
+    return { view: renamed, anchor }
+  }
+
+  it("a daily rule every 2 days from 1 April to 30 April (its dates are the odd days, the 30th is not one): a rename adds nothing", async () => {
+    at(TODAY)
+    const w = await setup()
+    const dates = Array.from({ length: 15 }, (_, i) => `2026-04-${String(1 + 2 * i).padStart(2, "0")}`) // 1, 3, ... 29
+    const { anchor } = await renameFromTheForm(
+      w,
+      monthly(w, { ...AUTO, frequency: "DAILY", interval: 2, startDate: day("2026-04-01"), endDate: day("2026-04-30") }),
+      dates,
+    )
+    expect(anchor).toBe("2026-04-29") // its last real date, not the end date
+  })
+
+  it("a quarterly rule on the 1st from 1 January to 1 June (1 January and 1 April; the next would be 1 July): a rename adds nothing", async () => {
+    at("2026-07-15T06:00:00Z") // after the end date, as a rule that has ended is read
+    const w = await setup()
+    const { anchor } = await renameFromTheForm(
+      w,
+      monthly(w, { ...AUTO, frequency: "QUARTERLY", dayOfMonth: 1, startDate: day("2026-01-01"), endDate: day("2026-06-01") }),
+      ["2026-01-01", "2026-04-01"],
+    )
+    expect(anchor).toBe("2026-04-01")
+  })
+
+  it("a fortnightly Monday rule from 2 March to 6 April (2, 16 and 30 March; the 6 April is a Monday but not one of its Mondays): a rename adds nothing", async () => {
+    at(TODAY)
+    const w = await setup()
+    const { anchor } = await renameFromTheForm(
+      w,
+      monthly(w, { ...AUTO, frequency: "WEEKLY", interval: 2, dayOfWeek: 1, startDate: day("2026-03-02"), endDate: day("2026-04-06") }),
+      ["2026-03-02", "2026-03-16", "2026-03-30"],
+    )
+    expect(anchor).toBe("2026-03-30")
+  })
+
+  it("a rule whose next date is past an end date that is still ahead (every 3 days to tomorrow): a rename does not propose today", async () => {
+    at(TODAY) // 19 May; the rule's dates are 15 and 18 May, the next would be 21 May, after the end on 20 May
+    const w = await setup()
+    const { anchor } = await renameFromTheForm(
+      w,
+      monthly(w, { ...AUTO, frequency: "DAILY", interval: 3, startDate: day("2026-05-15"), endDate: day("2026-05-20") }),
+      ["2026-05-15", "2026-05-18"],
+    )
+    expect(anchor).toBe("2026-05-18") // not today
+  })
+
+  it("a rule that spent its occurrence limit: a rename adds nothing", async () => {
+    at(TODAY)
+    const w = await setup()
+    const { anchor } = await renameFromTheForm(
+      w,
+      monthly(w, { ...AUTO, dayOfMonth: 1, startDate: day("2026-02-01"), occurrenceLimit: 3 }),
+      ["2026-02-01", "2026-03-01", "2026-04-01"],
+    )
+    expect(anchor).toBe("2026-04-01")
+  })
+
+  it("a rule whose last occurrence was skipped is anchored on it all the same, and it stays skipped", async () => {
+    at(TODAY)
+    const w = await setup()
+    const view = await createRule(w.user.id, monthly(w, { frequency: "DAILY", interval: 2, startDate: day("2026-04-01"), endDate: day("2026-04-30") }))
+    const [last] = (await occurrencesOf(view.id)).slice(-1)
+    await dismissOccurrence(w.user.id, last.id)
+    expect(await formAnchor(w, view.id)).toBe("2026-04-29")
+    const after = await editRule(w.user.id, view.id, (await storedRule(view.id)).version, editOf(w, "2026-04-29", { name: "Flat rent", frequency: "DAILY", interval: 2, endDate: day("2026-04-30") }))
+    expect(after.nextDueOn).toBeNull()
+    expect(await occurrencesOf(view.id)).toHaveLength(15)
+    expect((await occurrencesOf(view.id)).slice(-1)[0].status).toBe("DISMISSED") // left as it was
+  })
+
+  it("changing the interval too is a real edit: the dates the new grid puts after the last one are proposed, up to the end date", async () => {
+    at(TODAY)
+    const w = await setup()
+    const rule = monthly(w, { ...AUTO, frequency: "DAILY", interval: 2, startDate: day("2026-04-01"), endDate: day("2026-04-30") })
+    const view = await createRule(w.user.id, rule)
+    const before = await datesOf(view.id)
+    const transactionsBefore = await transactionsOf(w)
+
+    const anchor = await formAnchor(w, view.id)
+    const everyDay = await editRule(w.user.id, view.id, view.version, editOf(w, anchor, { ...AUTO, frequency: "DAILY", interval: 1, endDate: day("2026-04-30") }))
+    expect(await datesOf(view.id)).toEqual([...before, "2026-04-30"]) // the 29th it already had is not made twice
+    expect(everyDay.nextDueOn).toBeNull()
+    expect(await transactionsOf(w)).toBe(transactionsBefore + 1)
+  })
+
+  it("moving the end date out proposes the dates after the last one only, up to the end date and today", async () => {
+    at(TODAY)
+    const w = await setup()
+    const rule = monthly(w, { ...AUTO, frequency: "DAILY", interval: 2, startDate: day("2026-04-01"), endDate: day("2026-04-30") })
+    const view = await createRule(w.user.id, rule)
+    const before = await datesOf(view.id)
+
+    // Ending 8 May: the grid goes on from 29 April, 1, 3, 5 and 7 May.
+    const shorter = await editRule(w.user.id, view.id, view.version, editOf(w, await formAnchor(w, view.id), { ...AUTO, frequency: "DAILY", interval: 2, endDate: day("2026-05-08") }))
+    expect(await datesOf(view.id)).toEqual([...before, "2026-05-01", "2026-05-03", "2026-05-05", "2026-05-07"])
+    expect(shorter.nextDueOn).toBeNull()
+
+    // Ending after today: what is due by 19 May is made, and the rule goes on from the next date on its grid.
+    const longer = await editRule(w.user.id, view.id, shorter.version, editOf(w, await formAnchor(w, view.id), { ...AUTO, frequency: "DAILY", interval: 2, endDate: day("2026-05-30") }))
+    expect((await datesOf(view.id)).slice(-6)).toEqual(["2026-05-09", "2026-05-11", "2026-05-13", "2026-05-15", "2026-05-17", "2026-05-19"])
+    expect(longer.nextDueOn).toBe("2026-05-21")
+    expect(new Set(await datesOf(view.id)).size).toBe((await datesOf(view.id)).length)
+  })
+
+  it("raising a spent occurrence limit makes exactly the extra entries it allows: the last one it already had is not counted again", async () => {
+    at(TODAY)
+    const w = await setup()
+    const view = await createRule(w.user.id, monthly(w, { ...AUTO, dayOfMonth: 1, startDate: day("2026-01-01"), occurrenceLimit: 3 }))
+    expect(await datesOf(view.id)).toEqual(["2026-01-01", "2026-02-01", "2026-03-01"])
+    expect(view.nextDueOn).toBeNull()
+
+    // Limit 5: the 1st of April and of May are due by now, and that is five in all.
+    const five = await editRule(w.user.id, view.id, view.version, editOf(w, await formAnchor(w, view.id), { ...AUTO, dayOfMonth: 1, occurrenceLimit: 5 }))
+    expect(await datesOf(view.id)).toEqual(["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01", "2026-05-01"])
+    expect(five.nextDueOn).toBeNull()
+
+    // Limit 8: three more allowed, the next of them on 1 June.
+    const eight = await editRule(w.user.id, view.id, five.version, editOf(w, await formAnchor(w, view.id), { ...AUTO, dayOfMonth: 1, occurrenceLimit: 8 }))
+    expect(await occurrencesOf(view.id)).toHaveLength(5)
+    expect(eight.nextDueOn).toBe("2026-06-01")
+    at("2026-09-15T06:00:00Z")
+    await generateDue(w.user.id)
+    expect(await datesOf(view.id)).toEqual(["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01"])
+    expect((await storedRule(view.id)).nextDueOn).toBeNull()
   })
 })
 

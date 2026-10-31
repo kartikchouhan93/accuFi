@@ -514,7 +514,20 @@ describe("loadRuleForEdit", () => {
     expect(loaded.nodes.length).toBe(4)
     expect(loaded.today).toBe("2026-04-01")
     expect(loaded.occurrences).toBeGreaterThan(0) // the rule has the entry `pending()` made for it
+    expect(loaded.lastDueOn).toBe("2026-03-05") // that entry's due day: what the form offers once the rule has run out
     expectNoBigint(loaded)
+  })
+
+  it("answers the due day of the latest entry in any state, and null for a rule that never made one", async () => {
+    const w = await signedInWorld()
+    const { rule } = await w.pending({ name: "Gym" }, "2026-03-05")
+    const later = await registry.makeOccurrence(w.user.id, rule.id, "2026-05-05", { status: "DISMISSED", resolvedAt: new Date() })
+    await registry.makeOccurrence(w.user.id, rule.id, "2026-04-05")
+    expect((await service.loadRuleForEdit(w.user.id, rule.id)).lastDueOn).toBe("2026-05-05")
+    expect(later.status).toBe("DISMISSED")
+
+    const empty = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { name: "Never ran" })
+    expect((await service.loadRuleForEdit(w.user.id, empty.id)).lastDueOn).toBeNull()
   })
 
   it("refuses a rule that is not the user's or is deleted", async () => {

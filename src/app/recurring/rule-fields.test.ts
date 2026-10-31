@@ -268,7 +268,8 @@ describe("the values a form starts from", () => {
       endDate: "2027-01-01",
       occurrenceLimit: "10",
     })
-    expect(valuesOfRule({ ...rule, nextDueOn: null }, today).anchor).toBe("2026-10-28")
+    expect(valuesOfRule({ ...rule, nextDueOn: null }, today).anchor).toBe("2026-10-28") // it never made an entry
+    expect(valuesOfRule({ ...rule, nextDueOn: null }, today, day("2026-10-26")).anchor).toBe("2026-10-26")
   })
 
   describe("the date offered for a rule with no next due day", () => {
@@ -279,16 +280,25 @@ describe("the values a form starts from", () => {
     }
     const today = day("2026-10-28")
 
-    it("is the end date when the rule ended before today: today would be after its end, and the save would be refused", () => {
-      expect(valuesOfRule({ ...finished, endDate: "2026-04-30" }, today).anchor).toBe("2026-04-30")
+    it("is the due day of its last entry, whether it ended by its end date (before or after today) or by its limit", () => {
+      // Every 2 days from 1 April to 30 April: the real dates end on the 29th, so the end date is NOT what it is offered.
+      expect(valuesOfRule({ ...finished, endDate: "2026-04-30" }, today, day("2026-04-29")).anchor).toBe("2026-04-29")
+      expect(valuesOfRule({ ...finished, endDate: "2027-01-01" }, today, day("2026-10-27")).anchor).toBe("2026-10-27")
+      expect(valuesOfRule({ ...finished, occurrenceLimit: 4 }, today, day("2026-04-30")).anchor).toBe("2026-04-30")
+      expect(valuesOfRule({ ...finished }, today, day("2026-04-30")).anchor).toBe("2026-04-30")
     })
-    it("is today when the end date is today or later, or there is none (a spent limit)", () => {
-      expect(valuesOfRule({ ...finished, endDate: "2026-10-28" }, today).anchor).toBe("2026-10-28")
+    it("is never after the end date, which a save would refuse (an edit can end a rule before its last entry)", () => {
+      expect(valuesOfRule({ ...finished, endDate: "2026-04-02" }, today, day("2026-06-01")).anchor).toBe("2026-04-02")
+    })
+    it("is today for a rule that never made an entry, or its end date when that is before today", () => {
+      expect(valuesOfRule({ ...finished, occurrenceLimit: 4 }, today, null).anchor).toBe("2026-10-28")
       expect(valuesOfRule({ ...finished, endDate: "2027-01-01" }, today).anchor).toBe("2026-10-28")
-      expect(valuesOfRule({ ...finished, occurrenceLimit: 4 }, today).anchor).toBe("2026-10-28")
+      expect(valuesOfRule({ ...finished, endDate: "2026-10-28" }, today).anchor).toBe("2026-10-28")
+      expect(valuesOfRule({ ...finished, endDate: "2026-04-30" }, today, null).anchor).toBe("2026-04-30")
     })
-    it("is the next due day whenever there is one, whatever the end date", () => {
-      expect(valuesOfRule({ ...finished, nextDueOn: "2026-11-30", endDate: "2026-12-31" }, today).anchor).toBe("2026-11-30")
+    it("is the next due day whenever there is one, whatever the end date and the last entry", () => {
+      expect(valuesOfRule({ ...finished, nextDueOn: "2026-11-30", endDate: "2026-12-31" }, today, day("2026-10-31")).anchor).toBe("2026-11-30")
+      expect(valuesOfRule({ ...finished, nextDueOn: "2026-11-30" }, today).anchor).toBe("2026-11-30")
     })
   })
 })

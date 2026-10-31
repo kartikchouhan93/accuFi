@@ -1,5 +1,5 @@
 import { Prisma, type RecurrenceFrequency, type RecurringOccurrence, type RecurringRule } from "@prisma/client"
-import { toDbDate, type CalendarDate } from "@/domain/calendar-date"
+import { fromDbDate, toDbDate, type CalendarDate } from "@/domain/calendar-date"
 import type { Paise } from "@/domain/money"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "./errors"
@@ -269,6 +269,20 @@ export async function insertOccurrences(
 /** How many occurrences, in any state, the rule has. `uow`, when given, reads inside the caller's transaction. */
 export function countOccurrences(userId: string, ruleId: string, uow?: UnitOfWork): Promise<number> {
   return dbOf(uow).recurringOccurrence.count({ where: { userId, ruleId } })
+}
+
+/**
+ * The latest due day among the rule's occurrences, in any state (a posted or skipped one is still the day the rule fell
+ * due), or null if the rule has none or is not this user's. It is the last date the schedule really produced, which is
+ * what an edit of a rule that has run out of dates anchors on. `uow`, when given, reads inside the caller's transaction.
+ */
+export async function findLastDueOn(userId: string, ruleId: string, uow?: UnitOfWork): Promise<CalendarDate | null> {
+  const last = await dbOf(uow).recurringOccurrence.findFirst({
+    where: { userId, ruleId },
+    orderBy: { dueOn: "desc" },
+    select: { dueOn: true },
+  })
+  return last === null ? null : fromDbDate(last.dueOn)
 }
 
 /** The occurrence with its rule, in any state, or null if it is not this user's. */

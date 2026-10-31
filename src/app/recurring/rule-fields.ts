@@ -197,13 +197,20 @@ export const valuesOfDraft = (draft: RuleDraft): RuleFormValues => ({
   autoPost: draft.autoPost,
 })
 
+/** `date` held to the end date, if the rule has one: a start after the end is refused on save. */
+const anchorOfRunOutRule = (endDate: string | null, date: CalendarDate): CalendarDate =>
+  endDate !== null && endDate < date ? (endDate as CalendarDate) : date
+
 /**
  * A rule being edited. The schedule is re-anchored on save, so the date the form asks for is the next due day. A rule with
- * none has run out: if it ended by its end date, today may be after that end and a save from today would be refused
- * ("the end date cannot be before the start"), so it offers the end date itself; otherwise (a spent limit) it offers today.
- * The stored day of the month or week is shown, since it is what the rule uses.
+ * none has run out (its end date or its occurrence limit was reached), and what it is offered is the due day of its LAST
+ * entry, `lastDueOn`: a date of its own schedule, so a save from it starts the grid on a day the rule already has and
+ * proposes nothing new (an end date, or today, is on the grid only by luck, and a save from one would make an entry the
+ * schedule never had). It is never after the end date, which a save would refuse. A rule that never made an entry (null)
+ * is offered today, or its end date if that is before today. The stored day of the month or week is shown, since it is
+ * what the rule uses.
  */
-export const valuesOfRule = (rule: RuleView, today: CalendarDate): RuleFormValues => ({
+export const valuesOfRule = (rule: RuleView, today: CalendarDate, lastDueOn: CalendarDate | null = null): RuleFormValues => ({
   name: rule.name,
   from: rule.fromNodeId,
   to: rule.toNodeId,
@@ -215,7 +222,7 @@ export const valuesOfRule = (rule: RuleView, today: CalendarDate): RuleFormValue
   interval: String(rule.interval),
   dayOfMonth: rule.dayOfMonth === null ? "" : String(rule.dayOfMonth),
   dayOfWeek: rule.dayOfWeek === null ? "" : String(rule.dayOfWeek),
-  anchor: rule.nextDueOn ?? (rule.endDate !== null && rule.endDate < today ? rule.endDate : today),
+  anchor: rule.nextDueOn ?? anchorOfRunOutRule(rule.endDate, lastDueOn ?? today),
   endDate: rule.endDate ?? "",
   occurrenceLimit: rule.occurrenceLimit === null ? "" : String(rule.occurrenceLimit),
 })
