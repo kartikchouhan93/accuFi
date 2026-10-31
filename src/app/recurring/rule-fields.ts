@@ -1,5 +1,5 @@
 import { calendarDate, CalendarDateError, compareDates, type CalendarDate } from "@/domain/calendar-date"
-import { datesDue, MAX_DUE_PER_RUN, normaliseSchedule, scheduleViolations, type RecurrenceFrequency, type Schedule } from "@/domain/recurrence"
+import { datesFromAnchor, MAX_DUE_PER_RUN, normaliseSchedule, scheduleViolations, type RecurrenceFrequency, type Schedule } from "@/domain/recurrence"
 import type { OccurrenceView, RuleDraft, RuleView } from "@/lib/recurring-view"
 import type { PickerNode } from "@/lib/transaction-list-view"
 import { paiseTextToRupees } from "@/lib/transaction-text"
@@ -45,9 +45,10 @@ export const NOW_DISPLAY_CAP = MAX_DUE_PER_RUN
 /**
  * How many entries the schedule makes due through `today` (today included), counting from its start date and given the
  * `existing` entries the rule already has. One more than the cap is as far as it counts: that is enough to say "more than".
+ * `lastDueOn` is the due day of the rule's last entry when it is being edited (see `datesFromAnchor`).
  */
-export function entriesDueNow(schedule: Schedule, existing: number, today: CalendarDate): number {
-  return datesDue(schedule, { from: schedule.startDate, count: existing, upTo: today, max: NOW_DISPLAY_CAP + 1 }).length
+export function entriesDueNow(schedule: Schedule, existing: number, today: CalendarDate, lastDueOn: CalendarDate | null = null): number {
+  return datesFromAnchor(schedule, { count: existing, lastDueOn, upTo: today, max: NOW_DISPLAY_CAP + 1 }).length
 }
 
 /** Said when a save would make more than the cap due at once: the server refuses it, so the line says so and what to do. */
@@ -204,11 +205,11 @@ const anchorOfRunOutRule = (endDate: string | null, date: CalendarDate): Calenda
 /**
  * A rule being edited. The schedule is re-anchored on save, so the date the form asks for is the next due day. A rule with
  * none has run out (its end date or its occurrence limit was reached), and what it is offered is the due day of its LAST
- * entry, `lastDueOn`: a date of its own schedule, so a save from it starts the grid on a day the rule already has and
- * proposes nothing new (an end date, or today, is on the grid only by luck, and a save from one would make an entry the
- * schedule never had). It is never after the end date, which a save would refuse. A rule that never made an entry (null)
- * is offered today, or its end date if that is before today. The stored day of the month or week is shown, since it is
- * what the rule uses.
+ * entry on or before its end date, `lastDueOn` (the loader bounds it): a date of its own schedule, so a save from it starts
+ * the grid on a day the rule already has and proposes nothing new (an end date, or today, is on the grid only by luck, and a
+ * save from one would make an entry the schedule never had). A rule with no entry within its end (null) is offered today,
+ * held to the end date, which a save would refuse to start after. The stored day of the month or week is shown, since it
+ * is what the rule uses.
  */
 export const valuesOfRule = (rule: RuleView, today: CalendarDate, lastDueOn: CalendarDate | null = null): RuleFormValues => ({
   name: rule.name,

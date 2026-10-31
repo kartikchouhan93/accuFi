@@ -152,6 +152,26 @@ export function datesDue(
   return dates
 }
 
+/**
+ * The dates a save that re-anchors the schedule on `schedule.startDate` has still to make: `datesDue` from the anchor, except
+ * that when the anchor is the due day of the rule's last entry (`lastDueOn`) that entry exists and is already in `count`, so
+ * the dates are looked for after it. Counting it again as a new date would put it in a preview that the save does not make
+ * and spend an occurrence limit on it twice. One function, so the save, the "too many due" check and the form's preview
+ * cannot disagree. `lastDueOn` is null for a rule being created.
+ */
+export function datesFromAnchor(
+  schedule: Schedule,
+  opts: { count: number; lastDueOn: CalendarDate | null; upTo?: CalendarDate; max: number },
+): CalendarDate[] {
+  const occupied = opts.lastDueOn !== null && compareDates(opts.lastDueOn, schedule.startDate) === 0
+  return datesDue(schedule, {
+    from: occupied ? addDays(schedule.startDate, 1) : schedule.startDate,
+    count: opts.count,
+    upTo: opts.upTo,
+    max: opts.max,
+  })
+}
+
 /** The first date the rule fires, or null when it never will (already finished, or the end is before the first date). */
 export function firstDue(schedule: Schedule, count = 0): CalendarDate | null {
   return datesDue(schedule, { from: schedule.startDate, count, max: 1 })[0] ?? null

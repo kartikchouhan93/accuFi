@@ -274,11 +274,18 @@ export function countOccurrences(userId: string, ruleId: string, uow?: UnitOfWor
 /**
  * The latest due day among the rule's occurrences, in any state (a posted or skipped one is still the day the rule fell
  * due), or null if the rule has none or is not this user's. It is the last date the schedule really produced, which is
- * what an edit of a rule that has run out of dates anchors on. `uow`, when given, reads inside the caller's transaction.
+ * what an edit of a rule that has run out of dates anchors on. With `onOrBefore` only days up to it, inclusive, are
+ * considered (null or absent: all): a rule whose end date was edited to before its last entry is anchored on the latest
+ * entry it has within its end. `uow`, when given, reads inside the caller's transaction.
  */
-export async function findLastDueOn(userId: string, ruleId: string, uow?: UnitOfWork): Promise<CalendarDate | null> {
+export async function findLastDueOn(
+  userId: string,
+  ruleId: string,
+  onOrBefore: CalendarDate | null = null,
+  uow?: UnitOfWork,
+): Promise<CalendarDate | null> {
   const last = await dbOf(uow).recurringOccurrence.findFirst({
-    where: { userId, ruleId },
+    where: { userId, ruleId, ...(onOrBefore === null ? {} : { dueOn: { lte: toDbDate(onOrBefore) } }) },
     orderBy: { dueOn: "desc" },
     select: { dueOn: true },
   })

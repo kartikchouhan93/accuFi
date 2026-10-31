@@ -620,6 +620,60 @@ describe("editing a rule that has run out of dates", () => {
     expect(new Set(await datesOf(view.id)).size).toBe((await datesOf(view.id)).length)
   })
 
+  it("raising a limit spent on a skipped last entry makes exactly the extra entries it allows too", async () => {
+    at(TODAY)
+    const w = await setup()
+    const view = await createRule(w.user.id, monthly(w, { dayOfMonth: 1, startDate: day("2026-01-01"), occurrenceLimit: 3 }))
+    const last = (await occurrencesOf(view.id)).slice(-1)[0]
+    await dismissOccurrence(w.user.id, last.id) // 1 March is skipped, not posted
+    const transactionsBefore = await transactionsOf(w)
+
+    const five = await editRule(w.user.id, view.id, (await storedRule(view.id)).version, editOf(w, await formAnchor(w, view.id), { dayOfMonth: 1, occurrenceLimit: 5 }))
+    expect(await datesOf(view.id)).toEqual(["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01", "2026-05-01"])
+    expect((await occurrencesOf(view.id))[2].status).toBe("DISMISSED") // still skipped
+    expect(five.nextDueOn).toBeNull()
+    expect(await transactionsOf(w)).toBe(transactionsBefore) // nothing posts itself
+    expect((await occurrencesOf(view.id)).filter((o) => o.status === "PENDING")).toHaveLength(4) // 1 Jan, 1 Feb, 1 Apr, 1 May
+  })
+
+  it("a rule edited to end before its last entry is renamed from an entry it has, so nothing is added on its end date", async () => {
+    at(TODAY)
+    const w = await setup()
+    // Every 2 days from 1 April to 30 April: the odd days. Then moved onto every 3 days from 10 April, ending 18 April (not
+    // on the days it already has): it makes 10 and 16 April (13 April it has), and its last entry (29 April) is after its end.
+    const view = await createRule(w.user.id, monthly(w, { ...AUTO, frequency: "DAILY", interval: 2, startDate: day("2026-04-01"), endDate: day("2026-04-30") }))
+    const edited = await editRule(w.user.id, view.id, view.version, editOf(w, "2026-04-10", { ...AUTO, frequency: "DAILY", interval: 3, endDate: day("2026-04-18") }))
+    const dates = await datesOf(view.id)
+    expect(dates).toContain("2026-04-10")
+    expect(dates).toContain("2026-04-16")
+    expect(dates).not.toContain("2026-04-18")
+    expect(dates.slice(-1)[0]).toBe("2026-04-29")
+    expect(edited.nextDueOn).toBeNull()
+    const transactionsBefore = await transactionsOf(w)
+
+    // The form offers the latest entry on or before the end date (17 April), which is one it has.
+    expect(await formAnchor(w, view.id)).toBe("2026-04-17")
+    const renamed = await editRule(w.user.id, view.id, edited.version, editOf(w, "2026-04-17", { name: "Flat rent", ...AUTO, frequency: "DAILY", interval: 3, endDate: day("2026-04-18") }))
+    expect(renamed.name).toBe("Flat rent")
+    expect(await datesOf(view.id)).toEqual(dates) // not 18 April
+    expect(renamed.nextDueOn).toBeNull()
+    expect(await transactionsOf(w)).toBe(transactionsBefore)
+  })
+
+  it("does not count the day it saves from against the 100 that may fall due at once", async () => {
+    at(TODAY)
+    const w = await setup()
+    // Daily 1-8 February, ended. Open-ended from its last entry (8 February), the dates after it through today (19 May) are
+    // exactly 100: 9-28 February, March, April and 19 days of May. Counting the 8th as well would make 101 and refuse it.
+    const view = await createRule(w.user.id, monthly(w, { frequency: "DAILY", startDate: day("2026-02-01"), endDate: day("2026-02-08") }))
+    expect(await datesOf(view.id)).toHaveLength(8)
+    const anchor = await formAnchor(w, view.id)
+    expect(anchor).toBe("2026-02-08")
+    const reopened = await editRule(w.user.id, view.id, view.version, editOf(w, anchor, { frequency: "DAILY", interval: 1 }))
+    expect(await occurrencesOf(view.id)).toHaveLength(108)
+    expect(reopened.nextDueOn).toBe("2026-05-20")
+  })
+
   it("raising a spent occurrence limit makes exactly the extra entries it allows: the last one it already had is not counted again", async () => {
     at(TODAY)
     const w = await setup()

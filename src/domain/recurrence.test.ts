@@ -4,6 +4,7 @@ import {
   INTERVAL_MAX,
   OCCURRENCE_LIMIT_MAX,
   datesDue,
+  datesFromAnchor,
   firstDue,
   normaliseSchedule,
   scheduleViolations,
@@ -175,6 +176,33 @@ describe("firstDue", () => {
     expect(firstDue(limited, 1)).toBeNull()
     const backwards = schedule({ frequency: "DAILY", startDate: d("2026-05-02"), endDate: d("2026-05-01") })
     expect(firstDue(backwards)).toBeNull()
+  })
+})
+
+describe("datesFromAnchor", () => {
+  // Every 2 days from 1 April: 1, 3, ... 29 April. Saving from the 29th, which the rule already has an entry for.
+  const s = schedule({ frequency: "DAILY", interval: 2, startDate: d("2026-04-29"), endDate: d("2026-05-08") })
+
+  it("is the schedule's own dates from the anchor when the rule has nothing on it", () => {
+    expect(datesFromAnchor(s, { count: 15, lastDueOn: null, max: 10 })).toEqual(["2026-04-29", "2026-05-01", "2026-05-03", "2026-05-05", "2026-05-07"])
+    expect(datesFromAnchor(s, { count: 15, lastDueOn: d("2026-04-27"), max: 10 })).toEqual(["2026-04-29", "2026-05-01", "2026-05-03", "2026-05-05", "2026-05-07"])
+  })
+
+  it("skips the anchor when it is the rule's last entry: that day has its entry already", () => {
+    expect(datesFromAnchor(s, { count: 15, lastDueOn: d("2026-04-29"), max: 10 })).toEqual(["2026-05-01", "2026-05-03", "2026-05-05", "2026-05-07"])
+    expect(datesFromAnchor(s, { count: 15, lastDueOn: d("2026-04-29"), upTo: d("2026-05-03"), max: 10 })).toEqual(["2026-05-01", "2026-05-03"])
+  })
+
+  it("spends an occurrence limit on the entry the anchor day already has only once", () => {
+    // Monthly on the 1st, limit 5 with 3 made (the last on 1 March): two more are left, 1 April and 1 May.
+    const limited = schedule({ frequency: "MONTHLY", dayOfMonth: 1, startDate: d("2026-03-01"), occurrenceLimit: 5 })
+    expect(datesFromAnchor(limited, { count: 3, lastDueOn: d("2026-03-01"), max: 10 })).toEqual(["2026-04-01", "2026-05-01"])
+    expect(datesFromAnchor(limited, { count: 3, lastDueOn: null, max: 10 })).toEqual(["2026-03-01", "2026-04-01"])
+  })
+
+  it("is empty when nothing is left after the anchor", () => {
+    const ended = schedule({ frequency: "DAILY", interval: 2, startDate: d("2026-04-29"), endDate: d("2026-04-30") })
+    expect(datesFromAnchor(ended, { count: 15, lastDueOn: d("2026-04-29"), max: 1 })).toEqual([])
   })
 })
 

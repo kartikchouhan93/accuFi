@@ -895,11 +895,14 @@ describe("recurring repository", () => {
 
   isolation("findLastDueOn", "finds nothing for another user's rule, and its own latest day for the owner", async () => {
     expect(await recurringRepo.findLastDueOn(a.user.id, bRule.id)).toBeNull()
-    expect(await inTransaction((uow) => recurringRepo.findLastDueOn(a.user.id, bRule.id, uow))).toBeNull()
+    expect(await inTransaction((uow) => recurringRepo.findLastDueOn(a.user.id, bRule.id, null, uow))).toBeNull()
     // B's latest is 2026-04-01 (its pending one); the posted and dismissed ones are earlier.
     expect(await recurringRepo.findLastDueOn(b.user.id, bRule.id)).toBe("2026-04-01")
     // Naming the other user's rule with one's own id learns nothing either way round.
     expect(await recurringRepo.findLastDueOn(b.user.id, aRule.id)).toBeNull()
+    // The bound narrows within the owner's rows and never widens to another user's: A, bounded, still learns nothing of B's.
+    expect(await recurringRepo.findLastDueOn(a.user.id, bRule.id, calendarDate("2099-01-01"))).toBeNull()
+    expect(await recurringRepo.findLastDueOn(b.user.id, bRule.id, calendarDate("2026-03-15"))).toBe("2026-03-01")
   })
 
   isolation("findOccurrenceById", "returns null for another user's occurrence, whatever its state", async () => {

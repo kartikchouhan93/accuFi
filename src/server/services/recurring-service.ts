@@ -3,6 +3,7 @@ import { addDays, fromDbDate, sameDayNextMonth, type CalendarDate } from "@/doma
 import type { Paise } from "@/domain/money"
 import {
   datesDue,
+  datesFromAnchor,
   firstDue,
   MAX_DUE_PER_RUN,
   normaliseSchedule,
@@ -109,7 +110,8 @@ interface Prepared {
 /**
  * Everything the template and the schedule must satisfy, or InvalidRuleError carrying every violation. `anchor` is the
  * day the schedule starts on (the start date, or the edit's next due) and `existing` how many occurrences the rule
- * already has, since the occurrence limit and the "too many due now" check both count them. A `paused` rule is not held
+ * already has, since the occurrence limit and the "too many due now" check both count them, and `lastDueOn` the due day of
+ * its last entry when editing (the anchor day is then not counted as a new date, as `editRule` makes none for it). A `paused` rule is not held
  * to that check: it generates nothing while paused, and resuming recomputes where it stands from after today, so a stale
  * anchor (a daily rule paused for months) cannot dump anything into the inbox and must not stop it being edited.
  */
@@ -122,6 +124,7 @@ function prepare(
   existing: number,
   today: CalendarDate,
   paused = false,
+  lastDueOn: CalendarDate | null = null,
 ): Prepared {
   const violations: RuleViolation[] = []
 
@@ -151,7 +154,7 @@ function prepare(
   for (const violation of scheduleProblems) violations.push(violation)
   if (scheduleProblems.length === 0 && !paused) {
     // One more than the limit is enough to know it is exceeded, without walking years of a daily rule.
-    const due = datesDue(schedule, { from: anchor, count: existing, upTo: today, max: MAX_DUE_PER_RUN + 1 })
+    const due = datesFromAnchor(schedule, { count: existing, lastDueOn, upTo: today, max: MAX_DUE_PER_RUN + 1 })
     if (due.length > MAX_DUE_PER_RUN) violations.push({ field: anchorField, message: TOO_MANY_DUE })
   }
 
@@ -246,24 +249,21 @@ export async function editRule(
   expectedVersion: number,
   input: Omit<RuleInput, "startDate"> & { nextDue: CalendarDate },
 ): Promise<RuleView> {
-  const [from, to, today, existing, current, lastDueOn] = await Promise.all([
+  const current = await findRuleById(userId, id)
+  if (!current) throw new NotFoundError("rule")
+  // The rule's last entry on or before its stored end date: where its edit form anchors a rule that ran out (see `valuesOfRule`).
+  const [from, to, today, existing, lastDueOn] = await Promise.all([
     requireNode(userId, input.fromNodeId),
     requireNode(userId, input.toNodeId),
     todayFor(userId),
     countOccurrences(userId, id),
-    findRuleById(userId, id),
-    findLastDueOn(userId, id),
+    findLastDueOn(userId, id, current.endDate === null ? null : fromDbDate(current.endDate)),
   ])
-  if (!current) throw new NotFoundError("rule")
   // Whether it is paused is read here and acted on with the version below: a pause or resume in between changes the version.
-  const { data, schedule } = prepare(input, input.nextDue, "nextDue", from, to, existing, today, current.pausedAt !== null)
-  // A rule that has run out of dates is edited from its last real occurrence (see `valuesOfRule`). That day already has its
-  // entry, and `existing` already counts it, so the new schedule starts looking after it: the entry is not made twice, and
-  // an occurrence limit is not spent on it twice (raising a spent limit by two makes two more entries, not one).
-  const nextDueOn =
-    lastDueOn === input.nextDue
-      ? (datesDue(schedule, { from: addDays(input.nextDue, 1), count: existing, max: 1 })[0] ?? null)
-      : firstDue(schedule, existing)
+  const { data, schedule } = prepare(input, input.nextDue, "nextDue", from, to, existing, today, current.pausedAt !== null, lastDueOn)
+  // Saving from that entry's own day makes nothing for it: the day already has its entry, and `existing` already counts it,
+  // so the next due day is looked for after it (an occurrence limit is not spent on it twice, and nothing is made twice).
+  const nextDueOn = datesFromAnchor(schedule, { count: existing, lastDueOn, max: 1 })[0] ?? null
   // `updateRule` is where a stale version, or a rule that is not the user's or is gone, is refused.
   await updateRule(userId, id, expectedVersion, { ...data, nextDueOn })
   return viewAfterGeneration(userId, id)
@@ -384,8 +384,9 @@ export function countPendingFor(userId: string): Promise<number> {
 /**
  * The rule as the edit form opens it, with the nodes, today, how many entries the rule already has (what the form's
  * preview needs to show only what an occurrence limit has left), and the due day of its last entry in any state (the
- * date the form offers for a rule with no next due day; null if it never made one). NotFoundError if it is not the
- * user's or is deleted.
+ * date the form offers for a rule with no next due day; null if it never made one). With an end date, the last one on or
+ * before it, so a rule edited to end before its last entry is still anchored on an entry it has. NotFoundError if it is
+ * not the user's or is deleted.
  */
 export async function loadRuleForEdit(
   userId: string,
@@ -397,14 +398,14 @@ export async function loadRuleForEdit(
   occurrences: number
   lastDueOn: CalendarDate | null
 }> {
-  const [rule, nodes, today, occurrences, lastDueOn] = await Promise.all([
-    findRuleById(userId, id),
+  const rule = await findRuleById(userId, id)
+  if (!rule) throw new NotFoundError("rule")
+  const [nodes, today, occurrences, lastDueOn] = await Promise.all([
     listAllNodes(userId),
     todayFor(userId),
     countOccurrences(userId, id),
-    findLastDueOn(userId, id),
+    findLastDueOn(userId, id, rule.endDate === null ? null : fromDbDate(rule.endDate)),
   ])
-  if (!rule) throw new NotFoundError("rule")
   const node = nodeLookup(nodes)
   return {
     rule: toRuleView(rule, node(rule.fromNodeId), node(rule.toNodeId)),

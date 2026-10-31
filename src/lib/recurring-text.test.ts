@@ -80,4 +80,10 @@ describe("nextDatesPreview", () => {
   it("is empty for a count of zero or below", () => {
     expect(nextDatesPreview(schedule({ dayOfMonth: 15 }), 0, 0)).toEqual([])
   })
+
+  it("starts after the start date when that is the day of the rule's last entry, as a save from it does", () => {
+    const from = schedule({ dayOfMonth: 1, startDate: calendarDate("2026-03-01"), occurrenceLimit: 5 })
+    expect(nextDatesPreview(from, 3, 3, calendarDate("2026-03-01"))).toEqual(dates(["2026-04-01", "2026-05-01"]))
+    expect(nextDatesPreview(from, 3, 3, calendarDate("2026-02-01"))).toEqual(dates(["2026-03-01", "2026-04-01"]))
+  })
 })

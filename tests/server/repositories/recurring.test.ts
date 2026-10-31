@@ -342,7 +342,7 @@ describe("findLastDueOn", () => {
 
     const [, , late] = await insert(rule.id, ["2026-04-05", "2026-05-05", "2026-06-05"])
     expect(await repo.findLastDueOn(a.user.id, rule.id)).toBe("2026-06-05")
-    expect(await inTransaction((uow) => repo.findLastDueOn(a.user.id, rule.id, uow))).toBe("2026-06-05")
+    expect(await inTransaction((uow) => repo.findLastDueOn(a.user.id, rule.id, null, uow))).toBe("2026-06-05")
 
     // The latest one resolved, either way, is still the latest: the answer is about dates, not what is pending.
     await repo.markDismissed(a.user.id, late.id)
@@ -355,6 +355,18 @@ describe("findLastDueOn", () => {
     // A later date inserted before an earlier one was is still the latest: it is ordered by the date, not by insertion.
     await insert(rule.id, ["2026-03-05"])
     expect(await repo.findLastDueOn(a.user.id, rule.id)).toBe("2026-06-05")
+  })
+
+  it("with a bound, is the latest due day on or before it, inclusive, and null when none is that early", async () => {
+    const rule = await repo.insertRule(a.user.id, withDue())
+    await insert(rule.id, ["2026-04-05", "2026-05-05", "2026-06-05"])
+    expect(await repo.findLastDueOn(a.user.id, rule.id, d("2026-06-05"))).toBe("2026-06-05")
+    expect(await repo.findLastDueOn(a.user.id, rule.id, d("2026-06-04"))).toBe("2026-05-05")
+    expect(await repo.findLastDueOn(a.user.id, rule.id, d("2026-05-05"))).toBe("2026-05-05")
+    expect(await repo.findLastDueOn(a.user.id, rule.id, d("2026-04-04"))).toBeNull()
+    expect(await repo.findLastDueOn(a.user.id, rule.id, d("2099-01-01"))).toBe("2026-06-05")
+    expect(await repo.findLastDueOn(a.user.id, rule.id, null)).toBe("2026-06-05")
+    expect(await inTransaction((uow) => repo.findLastDueOn(a.user.id, rule.id, d("2026-06-04"), uow))).toBe("2026-05-05")
   })
 
   it("looks at one rule only", async () => {

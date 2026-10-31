@@ -44,7 +44,7 @@ export default async function EditRulePage({ params }: { params: Promise<{ id: s
             nodes={nodes}
             today={today}
             initial={valuesOfRule(rule, today, lastDueOn)}
-            editing={{ id: rule.id, version: rule.version, occurrences, paused: rule.state === "paused" }}
+            editing={{ id: rule.id, version: rule.version, occurrences, lastDueOn, paused: rule.state === "paused" }}
           />
         </div>
       </main>

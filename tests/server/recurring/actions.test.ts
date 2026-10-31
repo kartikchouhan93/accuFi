@@ -526,6 +526,14 @@ describe("loadRuleForEdit", () => {
     expect((await service.loadRuleForEdit(w.user.id, rule.id)).lastDueOn).toBe("2026-05-05")
     expect(later.status).toBe("DISMISSED")
 
+    // With an end date before its latest entry (an edit can do that), the latest ON OR BEFORE the end is the date to offer.
+    const ended = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { name: "Cut short", endDate: new Date("2026-04-18T00:00:00Z") })
+    for (const d of ["2026-04-11", "2026-04-17", "2026-04-29"]) await registry.makeOccurrence(w.user.id, ended.id, d)
+    expect((await service.loadRuleForEdit(w.user.id, ended.id)).lastDueOn).toBe("2026-04-17")
+    const early = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { name: "All after", endDate: new Date("2026-04-01T00:00:00Z") })
+    await registry.makeOccurrence(w.user.id, early.id, "2026-04-29")
+    expect((await service.loadRuleForEdit(w.user.id, early.id)).lastDueOn).toBeNull()
+
     const empty = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { name: "Never ran" })
     expect((await service.loadRuleForEdit(w.user.id, empty.id)).lastDueOn).toBeNull()
   })

@@ -50,7 +50,7 @@ const NODES: PickerNode[] = [
 ]
 
 type Values = ReturnType<typeof blankValues>
-const form = (values: Partial<Values> = {}, over: { today?: CalendarDate; editing?: { id: string; version: number; occurrences: number; paused?: boolean } | null; nodes?: PickerNode[] } = {}) =>
+const form = (values: Partial<Values> = {}, over: { today?: CalendarDate; editing?: { id: string; version: number; occurrences: number; paused?: boolean; lastDueOn?: CalendarDate | null } | null; nodes?: PickerNode[] } = {}) =>
   renderToStaticMarkup(
     createElement(RuleForm, {
       nodes: over.nodes ?? NODES,
@@ -365,8 +365,9 @@ describe("the edit page", () => {
     const found = formOf(await page(rule.id))
     expect(found).toBeDefined()
     expect(found!.key).toBe(`${rule.id}:4`)
-    const props = found!.props as unknown as { initial: Values; editing: { id: string; version: number; occurrences: number; paused: boolean } }
-    expect(props.editing).toEqual({ id: rule.id, version: 4, occurrences: 1, paused: false })
+    const props = found!.props as unknown as { initial: Values; editing: { id: string; version: number; occurrences: number; lastDueOn: string | null; paused: boolean } }
+    // lastDueOn: the due day of its last entry, which the form needs to preview a save from that day exactly as it is made.
+    expect(props.editing).toEqual({ id: rule.id, version: 4, occurrences: 1, lastDueOn: "2026-10-01", paused: false })
     expect(props.initial).toMatchObject({ name: "Rent", from: w.bank.id, to: w.food.id, amount: "15000.00", anchor: "2026-11-01", frequency: "MONTHLY", dayOfMonth: "1" })
   })
 
@@ -388,6 +389,55 @@ describe("the edit page", () => {
     await expect(page("no-such-rule")).rejects.toMatchObject(notFound)
     await expect(page(theirs.id)).rejects.toMatchObject(notFound)
     await expect(page(gone.id)).rejects.toMatchObject(notFound)
+  })
+
+  // An edit saves from the date the form offers, and that date, for a rule that ran out, is its last entry: the entry exists,
+  // so the preview must not list it as a new date or count it as one that will be made (editRule does neither).
+  describe("a rule that ran out of dates", () => {
+    const ended = (over: Partial<RuleView>): RuleView => ({
+      id: "r1", name: "Gym", fromNodeId: "bank", toNodeId: "food", fromName: "HDFC Savings", toName: "Food", amountPaise: "10000",
+      note: null, tags: [], frequency: "DAILY", interval: 2, dayOfMonth: null, dayOfWeek: null, startDate: "2026-04-01", endDate: "2026-04-30",
+      occurrenceLimit: null, autoPost: true, nextDueOn: null, state: "finished", scheduleText: "Every 2 days", version: 1, ...over,
+    })
+    const open = (view: RuleView, lastDueOn: CalendarDate | null, occurrences: number, today: CalendarDate, change: Partial<Values> = {}) =>
+      renderToStaticMarkup(
+        createElement(RuleForm, {
+          nodes: NODES,
+          today,
+          initial: { ...valuesOfRule(view, today, lastDueOn), ...change },
+          editing: { id: view.id, version: view.version, occurrences, lastDueOn },
+        }),
+      )
+    const previewOf = (html: string) => text(html.slice(html.indexOf('aria-label="Schedule preview"')))
+
+    it("every 2 days from 1 to 30 April, opened in May: 29 April is not a next date, and no entry is said to be posted now", () => {
+      const html = open(ended({}), day("2026-04-29"), 15, day("2026-05-19"))
+      expect(html).toContain('value="2026-04-29"') // the date it opens on
+      const preview = previewOf(html)
+      expect(preview).toContain("It has no dates left")
+      expect(preview).not.toContain("Next dates")
+      expect(preview).not.toContain("29 Apr 2026")
+      expect(preview).not.toMatch(/will be posted now|will appear in your inbox/)
+    })
+
+    it("raising a limit of 3 to 5: the preview is what the save makes, 1 April and 1 May, not 1 March", () => {
+      const view = ended({ frequency: "MONTHLY", interval: 1, dayOfMonth: 1, startDate: "2026-01-01", endDate: null, occurrenceLimit: 3, autoPost: false })
+      const html = open(view, day("2026-03-01"), 3, day("2026-05-19"), { occurrenceLimit: "5" })
+      const preview = previewOf(html)
+      expect(preview).toContain("1 Apr 2026")
+      expect(preview).toContain("1 May 2026")
+      expect(preview).not.toContain("1 Mar 2026")
+      expect(preview).toContain("2 entries will appear in your inbox now.")
+      // With nothing changed it says it has none, and not that one is waiting to be made.
+      expect(previewOf(open(view, day("2026-03-01"), 3, day("2026-05-19")))).toContain("It has no dates left")
+    })
+
+    it("a rule that never made an entry is previewed from the date it opens on, as any new schedule", () => {
+      const view = ended({ frequency: "MONTHLY", interval: 1, dayOfMonth: 1, startDate: "2026-01-01", endDate: null, occurrenceLimit: 3, autoPost: false })
+      const preview = previewOf(open(view, null, 0, day("2026-05-19")))
+      expect(preview).toContain("1 Jun 2026")
+      expect(preview).toContain("1 Aug 2026")
+    })
   })
 
   it("renders a form that edits, from the values of the rule view", () => {

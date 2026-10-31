@@ -72,6 +72,10 @@ describe("entriesDueNow", () => {
     expect(entriesDueNow(schedule({ occurrenceLimit: 2 }), 0, today)).toBe(2)
     expect(entriesDueNow(schedule({ occurrenceLimit: 3 }), 2, today)).toBe(1)
     expect(entriesDueNow(schedule({ occurrenceLimit: 3 }), 3, today)).toBe(0)
+    // From the day of the rule's last entry the anchor is not counted: that entry exists.
+    const anchored = schedule({ frequency: "DAILY", interval: 2, startDate: day("2026-10-26"), endDate: day("2026-10-30") })
+    expect(entriesDueNow(anchored, 5, today)).toBe(2) // 26 (new), 28
+    expect(entriesDueNow(anchored, 5, today, day("2026-10-26"))).toBe(1) // 28 only
   })
   it("counts one past the cap and no further, so a daily rule from years ago is cheap", () => {
     const old = schedule({ frequency: "DAILY", startDate: day("2020-01-01") })

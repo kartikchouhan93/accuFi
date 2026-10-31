@@ -53,10 +53,11 @@ interface Props {
   /** What the form starts from: blank, a transaction's, or the rule's own. */
   initial: RuleFormValues
   /**
-   * The rule being edited, with the version it was opened at, how many entries it already has and whether it is paused (a
-   * paused rule makes no entries, so the preview must not promise any); null to create.
+   * The rule being edited, with the version it was opened at, how many entries it already has, the due day of its last one
+   * (a save from that day does not make it again, so the preview does not list it) and whether it is paused (a paused rule
+   * makes no entries, so the preview must not promise any); null to create.
    */
-  editing: { id: string; version: number; occurrences: number; paused?: boolean } | null
+  editing: { id: string; version: number; occurrences: number; lastDueOn?: CalendarDate | null; paused?: boolean } | null
 }
 
 interface Outcome {
@@ -130,8 +131,9 @@ export function RuleForm({ nodes, today, initial, editing }: Props) {
   const errorsAt = (key: string) => outcome?.fieldErrors[key]
 
   const schedule = scheduleOfFields(values)
-  const dates = schedule ? nextDatesPreview(schedule, existing, 3) : []
-  const nowLine = schedule ? entriesNowLine(entriesDueNow(schedule, existing, today), values.autoPost && offered, editing?.paused === true) : null
+  const lastDueOn = editing?.lastDueOn ?? null
+  const dates = schedule ? nextDatesPreview(schedule, existing, 3, lastDueOn) : []
+  const nowLine = schedule ? entriesNowLine(entriesDueNow(schedule, existing, today, lastDueOn), values.autoPost && offered, editing?.paused === true) : null
   const interval = wholeNumber(values.interval)
   const unit = `${UNIT[values.frequency]}${values.interval.trim() === "1" ? "" : "s"}`
   const anchorLabel = editing ? "Next due on" : "Starts on"

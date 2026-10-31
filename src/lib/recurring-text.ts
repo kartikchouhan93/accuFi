@@ -1,5 +1,5 @@
 import { isoWeekday, type CalendarDate } from "../domain/calendar-date"
-import { datesDue, normaliseSchedule, type Schedule } from "../domain/recurrence"
+import { datesFromAnchor, normaliseSchedule, type Schedule } from "../domain/recurrence"
 
 // The words a schedule is shown in, and the dates a form previews for it. Pure and importing only domain code, so the
 // rule form (a client component) can use them as it is edited, and the server's rule view uses the same ones.
@@ -59,8 +59,10 @@ export function describeSchedule(input: Schedule): string {
 /**
  * The first `n` dates the schedule fires on, from its start date, as the form previews them. `count` is how many
  * occurrences the rule already has (0 for a new one), so a limit that is partly spent shows only what is left.
+ * `lastDueOn` is the due day of the rule's last entry when it is being edited: a start date that is that day is not a new
+ * date (see `datesFromAnchor`, which the save uses too).
  */
-export function nextDatesPreview(schedule: Schedule, count: number, n: number): CalendarDate[] {
+export function nextDatesPreview(schedule: Schedule, count: number, n: number, lastDueOn: CalendarDate | null = null): CalendarDate[] {
   if (!(n > 0)) return []
-  return datesDue(normaliseSchedule(schedule), { from: schedule.startDate, count, max: n })
+  return datesFromAnchor(normaliseSchedule(schedule), { count, lastDueOn, max: n })
 }
