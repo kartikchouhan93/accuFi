@@ -3,6 +3,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import * as reportRepository from "@/server/repositories/report-repository"
+import { budgetWarningsForRows } from "@/server/services/budget-report"
 import { editTransaction, recordSplit, recordTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "../repositories/fixtures"
 
@@ -112,9 +113,38 @@ describe("budget warnings on a recorded entry", () => {
     await registry.makeBudget(w.user.id, w.food.id, { amountPaise: BUDGET, startMonth: "2026-03-01" })
     await w.record(w.food, 10_000n, "2026-05-02") // May is quiet
     const april = await w.record(w.food, 105_000n, "2026-04-10")
-    expect(budgetWarnings(april)).toEqual([{ code: "BUDGET_OVER", message: "Food is over budget by ₹50.00 this month." }])
+    // It names the month it is about: "this month" would be false for an entry dated in April.
+    expect(budgetWarnings(april)).toEqual([{ code: "BUDGET_OVER", message: "Food is over budget by ₹50.00 in Apr 2026." }])
     const before = await w.record(w.food, 105_000n, "2026-02-10") // before the budget began: nothing covers it
     expect(budgetWarnings(before)).toEqual([])
+  })
+
+  it("a backdated entry that ends near names its month and not \"this month\"; one dated this month keeps \"this month\"", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.food.id, { amountPaise: BUDGET, startMonth: "2026-03-01" })
+    const april = await w.record(w.food, 85_000n, "2026-04-10")
+    expect(budgetWarnings(april)).toEqual([{ code: "BUDGET_NEAR", message: "Food is at 85% of its budget in Apr 2026." }])
+    const may = await w.record(w.food, 85_000n, "2026-05-01") // the first day of the current month is still this month
+    expect(budgetWarnings(may)).toEqual([{ code: "BUDGET_NEAR", message: "Food is at 85% of its budget this month." }])
+    const lastDay = await w.record(w.food, 5_000n, "2026-04-30") // 90,000: still near, April's last day is April
+    expect(budgetWarnings(lastDay)).toEqual([{ code: "BUDGET_NEAR", message: "Food is at 90% of its budget in Apr 2026." }])
+  })
+
+  it("two months over for one ledger give two warnings, each naming its own month", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.food.id, { amountPaise: BUDGET, startMonth: "2026-03-01" })
+    await w.record(w.food, 105_000n, "2026-04-10")
+    await w.record(w.food, 120_000n, "2026-03-10")
+    const rows = await prisma.transaction.findMany({ where: { userId: w.user.id, toNodeId: w.food.id } })
+    expect(rows).toHaveLength(2)
+    const warnings = await budgetWarningsForRows(w.user.id, rows, calendarDate("2026-05-19"))
+    expect(warnings.map((x) => x.code)).toEqual(["BUDGET_OVER", "BUDGET_OVER"])
+    expect(warnings.map((x) => x.message).sort()).toEqual([
+      "Food is over budget by ₹200.00 in Mar 2026.",
+      "Food is over budget by ₹50.00 in Apr 2026.",
+    ])
   })
 
   it("a child entry warns for both the child's budget and its parent's, each naming its own ledger", async () => {

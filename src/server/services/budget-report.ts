@@ -16,7 +16,7 @@ import {
 } from "@/domain/calendar-date"
 import { formatPaise, type Paise } from "@/domain/money"
 import { flowOf } from "@/domain/reports"
-import { toBudgetSettingsView, type BudgetCard, type BudgetHistoryRow, type BudgetSettingsView, type BudgetsScreen } from "@/lib/budget-view"
+import { monthLabel, toBudgetSettingsView, type BudgetCard, type BudgetHistoryRow, type BudgetSettingsView, type BudgetsScreen } from "@/lib/budget-view"
 import { transactionsHref } from "@/lib/report-drill"
 import { toPickerNode, type PickerNode } from "@/lib/transaction-list-view"
 import { serialisePaise } from "@/lib/serialise"
@@ -277,13 +277,15 @@ export async function budgetWarningsForRows(userId: string, rows: readonly Trans
       for (const month of months) {
         const figures = ledger.rows.find((row) => row.month === month)
         if (!figures) continue
+        // "this month" is true only of the current month; an entry backdated into another one names that month, as the screen does.
+        const when = month === evaluation.currentMonth ? "this month" : `in ${monthLabel(month)}`
         if (figures.status === "OVER") {
           over.push({
             code: "BUDGET_OVER",
-            message: `${ledger.name} is over budget by ${formatPaise(figures.usedPaise - figures.availablePaise)} this month.`,
+            message: `${ledger.name} is over budget by ${formatPaise(figures.usedPaise - figures.availablePaise)} ${when}.`,
           })
         } else if (figures.status === "NEAR" && figures.percentTenths !== null) {
-          near.push({ code: "BUDGET_NEAR", message: `${ledger.name} is at ${figures.percentTenths / 10n}% of its budget this month.` })
+          near.push({ code: "BUDGET_NEAR", message: `${ledger.name} is at ${figures.percentTenths / 10n}% of its budget ${when}.` })
         }
       }
     }

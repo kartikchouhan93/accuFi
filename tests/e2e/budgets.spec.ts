@@ -70,7 +70,8 @@ test("exit criterion: an expense dated last month that crosses the cap turns tha
   await page.goto("/transactions")
   const crossing = dayIn(lastMonth, 12)
   await record(page, "Bank", "Groceries", "2,500", { date: crossing, note: "Family dinner party" })
-  await expect(toast(page)).toContainText("Groceries is over budget by ₹500.00 this month.")
+  await expect(toast(page)).toContainText(`Groceries is over budget by ₹500.00 in ${shortMonth(lastMonth)}.`) // the entry is dated last month, so it says which month
+  await expect(toast(page)).not.toContainText("this month")
   await expect(toast(page)).toContainText("Recorded Bank → Groceries, ₹2,500.00.") // warned, and recorded all the same
 
   // Last month's own card says over by exactly that, and its used figure leads to entries that add up to it.
