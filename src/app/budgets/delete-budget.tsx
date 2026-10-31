@@ -2,7 +2,7 @@
 
 import { LoaderCircle, Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { useEffect, useId, useRef, useState, useTransition, type ReactNode, type RefObject } from "react"
+import { useEffect, useId, useRef, useState, useTransition, type ReactNode } from "react"
 import { attempt, couldNot } from "@/app/feedback"
 import type { Announce } from "@/app/transactions/notice"
 import { Collapse } from "@/components/ui/collapse"
@@ -19,9 +19,10 @@ import { deleteBudgetAction } from "./actions"
 export interface DeleteControl {
   confirming: boolean
   pending: boolean
+  /** The ids the two buttons and the confirm carry: focus moves between them by id, so no ref travels in this object. */
   confirmId: string
-  keepButton: RefObject<HTMLButtonElement | null>
-  deleteButton: RefObject<HTMLButtonElement | null>
+  keepId: string
+  deleteId: string
   toggle: () => void
   keep: () => void
   remove: () => void
@@ -30,16 +31,16 @@ export interface DeleteControl {
 export function useDeleteBudget({ budgetId, name }: { budgetId: string; name: string }, announce: Announce): DeleteControl {
   const router = useRouter()
   const confirmId = useId()
+  const keepId = `${confirmId}-keep`
+  const deleteId = `${confirmId}-delete`
   const inFlight = useRef(false)
-  const keepButton = useRef<HTMLButtonElement>(null)
-  const deleteButton = useRef<HTMLButtonElement>(null)
   const [confirming, setConfirming] = useState(false)
   const [pending, startTransition] = useTransition()
 
   // The confirm has just opened: the safe choice has the keyboard, so Enter cannot delete by accident.
   useEffect(() => {
-    if (confirming) keepButton.current?.focus()
-  }, [confirming])
+    if (confirming) document.getElementById(keepId)?.focus()
+  }, [confirming, keepId])
 
   function remove() {
     if (inFlight.current) return
@@ -64,15 +65,15 @@ export function useDeleteBudget({ budgetId, name }: { budgetId: string; name: st
     confirming,
     pending,
     confirmId,
-    keepButton,
-    deleteButton,
+    keepId,
+    deleteId,
     toggle: () => {
       if (!pending) setConfirming((current) => !current)
     },
     keep: () => {
       if (pending) return
       setConfirming(false)
-      deleteButton.current?.focus()
+      document.getElementById(deleteId)?.focus()
     },
     remove,
   }
@@ -82,7 +83,7 @@ export function DeleteButton({ control, name }: { control: DeleteControl; name: 
   return (
     <button
       type="button"
-      ref={control.deleteButton}
+      id={control.deleteId}
       aria-expanded={control.confirming}
       aria-controls={control.confirming ? control.confirmId : undefined}
       aria-disabled={control.pending}
@@ -114,7 +115,7 @@ export function DeleteConfirm({ control, name, children }: { control: DeleteCont
           </button>
           <button
             type="button"
-            ref={control.keepButton}
+            id={control.keepId}
             aria-disabled={control.pending}
             onClick={control.keep}
             className={buttonClass({ variant: "secondary", size: "sm", className: "aria-disabled:opacity-55" })}
