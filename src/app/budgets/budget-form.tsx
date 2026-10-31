@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState, useTransition } from "react"
 import { attempt, couldNot } from "@/app/feedback"
 import { groupWithSetup } from "@/app/transactions/pickers"
 import { Field, NodePicker } from "@/app/transactions/transaction-form"
+import { NoticeToast, type ToastNotice } from "@/components/ui/notice-toast"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { buttonClass, inputClass } from "@/components/ui/styles"
 import { Switch } from "@/components/ui/switch"
@@ -22,12 +23,15 @@ import {
   describeFailure,
   describeRevision,
   endMonthOptions,
+  fitAppliesFrom,
   landingMonth,
   ledgerChoices,
   monthText,
   monthValue,
+  revisionLines,
   ROLLOVER_NOTE,
   startMonthOptions,
+  unsavedSentence,
   valuesOfBudget,
   type EditBudgetValues,
   type NewBudgetValues,
@@ -38,7 +42,9 @@ import { leaveFlash } from "./flash"
 // One form for a budget. New: the ledger (a live expense ledger), the monthly amount, the month it starts in, an optional
 // last month and whether unspent budget carries over. Edit: the ledger is shown and fixed, and there are two sections, each
 // saved on its own: Amount (a new amount and the month it applies from, with a sentence saying in words what that will do)
-// and Settings (the last month and the rollover). A save goes to /budgets, which says what was done.
+// and Settings (the last month and the rollover). A save goes to /budgets, which says what was done. The two sections share
+// what is typed but save separately: when a section is saved while the other holds a change, that change is not sent, so the
+// page stays (with it still filled in) and the message says it was not saved, rather than losing it behind a redirect.
 //
 // There is no request key: a second submit of a new budget is refused by the server (a ledger cannot have two budgets for
 // the same month), and the in-flight guard below stops it being sent in the first place. A refusal is shown beside its
@@ -71,16 +77,22 @@ interface Save {
   saving: string
   call: () => Promise<ActionResult<Saved>>
   said: (saved: BudgetSettingsView[]) => string[]
+  /** What this save leaves unsaved in the other section, in a sentence; null or absent when nothing. Says "stay on the page". */
+  unsaved?: string | null
+  /** The page stays: the budget as the server now holds it, which the sections go on editing. */
+  stay?: (saved: BudgetSettingsView[]) => void
 }
 
-/** Sending, the guard against a second send, filing a refusal, and the hop to /budgets with its message. */
+/** Sending, the guard against a second send, filing a refusal, and the hop to /budgets with its message (or staying on the page). */
 function useSaver(today: CalendarDate) {
   const router = useRouter()
   const inFlight = useRef(false)
+  const statusRef = useRef<HTMLDivElement>(null)
   const [outcome, setOutcome] = useState<(Outcome & { section: Section }) | null>(null)
+  const [notice, setNotice] = useState<ToastNotice | null>(null)
   const [pending, startTransition] = useTransition()
 
-  function save({ section, saving, call, said }: Save) {
+  function save({ section, saving, call, said, unsaved, stay }: Save) {
     // The buttons are disabled while a request is out, but a second submit can still arrive (Enter held down, a double click
     // before the disabled state paints): this makes it a no-op rather than a second request.
     if (inFlight.current) return
@@ -98,6 +110,15 @@ function useSaver(today: CalendarDate) {
         }
         const saved = Array.isArray(result.data) ? result.data : [result.data]
         const last = saved[saved.length - 1]
+        if (unsaved) {
+          // Something typed in the other section was not sent: stay, say so, and leave it filled in. The disabled button took
+          // the keyboard's place with it, so the message is where focus lands.
+          stay?.(saved)
+          setOutcome(null)
+          setNotice({ tone: "warning", lines: [...said(saved), unsaved] })
+          requestAnimationFrame(() => statusRef.current?.focus())
+          return
+        }
         leaveFlash({ tone: "success", lines: said(saved) })
         // Pending stays on until the next screen is there, so a button cannot be pressed again in between.
         router.push(`/budgets?month=${landingMonth(last, today)}`)
@@ -112,7 +133,7 @@ function useSaver(today: CalendarDate) {
     setOutcome({ section, fieldErrors, message: "Check the highlighted fields.", isFieldProblem: true })
   }
 
-  return { outcome, pending, save, refuse }
+  return { outcome, pending, save, refuse, notice, dismiss: () => setNotice(null), statusRef }
 }
 
 const money = (paise: string) => formatPaiseText(paise)
@@ -121,7 +142,7 @@ const spanLine = (budget: BudgetSettingsView) =>
 
 export function BudgetForm({ nodes, today, budget }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const { outcome, pending, save, refuse } = useSaver(today)
+  const { outcome, pending, save, refuse, notice, dismiss, statusRef } = useSaver(today)
 
   // A refusal moves the keyboard to the first field that needs attention, so a screen-reader user hears what is wrong.
   useEffect(() => {
@@ -141,15 +162,18 @@ export function BudgetForm({ nodes, today, budget }: Props) {
   }
 
   return (
-    <SpotlightCard className="surface rounded-3xl" radius={340} strength={10}>
-      <div ref={containerRef}>
-        {budget ? (
-          <EditSections nodes={nodes} today={today} budget={budget} pending={pending} save={save} feedback={feedback} />
-        ) : (
-          <NewBudget nodes={nodes} today={today} pending={pending} save={save} refuse={refuse} feedback={feedback} />
-        )}
-      </div>
-    </SpotlightCard>
+    <>
+      <SpotlightCard className="surface rounded-3xl" radius={340} strength={10}>
+        <div ref={containerRef}>
+          {budget ? (
+            <EditSections nodes={nodes} today={today} budget={budget} pending={pending} save={save} feedback={feedback} />
+          ) : (
+            <NewBudget nodes={nodes} today={today} pending={pending} save={save} refuse={refuse} feedback={feedback} />
+          )}
+        </div>
+      </SpotlightCard>
+      <NoticeToast notice={notice} onDismiss={dismiss} statusRef={statusRef} />
+    </>
   )
 }
 
@@ -309,26 +333,33 @@ function NewBudget({ nodes, today, pending, save, refuse, feedback }: NewProps) 
 
 // -- Edit -----------------------------------------------------------------------------------------------------------------
 
-function EditSections({ nodes, today, budget, pending, save, feedback }: SectionProps & { budget: BudgetSettingsView }) {
+function EditSections({ nodes, today, budget: loaded, pending, save, feedback }: SectionProps & { budget: BudgetSettingsView }) {
   const formId = useId()
-  const [values, setValues] = useState<EditBudgetValues>(() => valuesOfBudget(budget, today))
+  // The budget as the server holds it now: what was loaded, then what each save that stayed on the page answered.
+  const [budget, setBudget] = useState(loaded)
+  const [values, setValues] = useState<EditBudgetValues>(() => valuesOfBudget(loaded, today))
   const amount = feedback("amount", ["amount", "appliesFrom"])
   const settings = feedback("settings", ["endMonth"])
   const startMonth = monthValue(budget.startMonth)
   const endMonth = budget.endMonth === null ? null : monthValue(budget.endMonth)
   const patch = (change: Partial<EditBudgetValues>) => setValues((current) => ({ ...current, ...change }))
 
+  // The page stays after a save that left a change behind: the budget is the one the server answered with (a split is now the
+  // new span), and a month the select no longer offers gives way to one it does.
+  function stay(saved: BudgetSettingsView[]) {
+    const next = saved[saved.length - 1]
+    setBudget(next)
+    patch({ appliesFrom: fitAppliesFrom(values.appliesFrom, next, today) })
+  }
+
   function saveAmount() {
     save({
       section: "amount",
       saving: "save the amount",
       call: () => reviseBudgetAction({ id: budget.id, amount: values.amount, appliesFrom: values.appliesFrom }),
-      said: (saved) => {
-        const last = saved[saved.length - 1]
-        return saved.length === 2
-          ? [`Changed the ${last.nodeName} budget to ${money(last.amountPaise)} from ${monthText(last.startMonth)}.`, "Earlier months keep the old amount."]
-          : [`Corrected the ${last.nodeName} budget to ${money(last.amountPaise)} for every month of it.`]
-      },
+      said: (saved) => revisionLines(budget, saved),
+      unsaved: unsavedSentence("amount", values, budget),
+      stay,
     })
   }
 
@@ -339,6 +370,8 @@ function EditSections({ nodes, today, budget, pending, save, feedback }: Section
       call: () =>
         updateBudgetSettingsAction({ id: budget.id, endMonth: values.endMonth === "" ? null : values.endMonth, rollover: values.rollover }),
       said: ([saved]) => [`Saved the settings for the ${saved.nodeName} budget.`, spanLine(saved)],
+      unsaved: unsavedSentence("settings", values, budget),
+      stay,
     })
   }
 
@@ -385,7 +418,7 @@ function EditSections({ nodes, today, budget, pending, save, feedback }: Section
           <Field idBase={`${formId}-applies-from`} label="Applies from" errors={amount.errorsAt("appliesFrom")}>
             {(props) => (
               <select {...props} value={values.appliesFrom} onChange={(event) => patch({ appliesFrom: event.target.value })} className={inputClass}>
-                {options(appliesFromOptions(startMonth, today))}
+                {options(appliesFromOptions(startMonth, today, endMonth))}
               </select>
             )}
           </Field>

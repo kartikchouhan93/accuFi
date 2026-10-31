@@ -165,7 +165,26 @@ describe("the edit budget form", () => {
   it("says in words what saving the amount will do, from describeRevision", () => {
     expect(text(editForm())).toContain(REVISION)
     expect(text(editForm({ startMonth: "2026-11-01" }))).toContain("Corrects the amount for every month of this budget.")
-    expect(text(editForm({ endMonth: "2026-10-01" }))).toContain("This budget ended in October 2026. Pick a month it applies to.")
+  })
+
+  it("opens an ended budget on its end month, offers nothing after it, and does not open on the refusal sentence", () => {
+    const html = editForm({ endMonth: "2026-10-01" })
+    expect(selectedValue(html, "applies-from")).toBe("2026-10")
+    expect(optionNames(html, "applies-from")[0]).toBe("April 2026")
+    expect(optionNames(html, "applies-from").at(-1)).toBe("October 2026")
+    expect(optionNames(html, "applies-from")).not.toContain("November 2026")
+    expect(text(html)).toContain("Changes the amount from October 2026; earlier months keep the old amount.")
+    expect(text(html)).not.toContain("This budget ended in")
+    // A one-month budget in the past: its only month, which corrects it in place.
+    const single = editForm({ startMonth: "2026-04-01", endMonth: "2026-04-01" })
+    expect(optionNames(single, "applies-from")).toEqual(["April 2026"])
+    expect(text(single)).toContain("Corrects the amount for every month of this budget.")
+  })
+
+  it("an end month in the future does not cap the applies-from list", () => {
+    const html = editForm({ endMonth: "2027-03-01" })
+    expect(optionNames(html, "applies-from").at(-1)).toBe("November 2026")
+    expect(selectedValue(html, "applies-from")).toBe("2026-11")
   })
 
   it("puts that sentence in a polite live region, so a change of month is heard", () => {
