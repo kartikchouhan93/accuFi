@@ -211,6 +211,34 @@ describe("reviseBudgetAction", () => {
     expect(await budgetCount(w.user.id)).toBe(2)
   })
 
+  it("says in plain words when the budget ended, naming the month once", async () => {
+    at(TODAY)
+    const w = await signedInWorld()
+    const budget = await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-01-01", endMonth: "2026-03-01" })
+    const result = await actions.reviseBudgetAction({ id: budget.id, amount: "9000", appliesFrom: "2026-05" })
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "invalid",
+        message: "This budget ended in Mar 2026. Pick a month it applies to.",
+        fieldErrors: { appliesFrom: ["This budget ended in Mar 2026. Pick a month it applies to."] },
+      },
+    })
+    expect(revalidatePath).not.toHaveBeenCalled()
+  })
+
+  it("an unchanged amount answers with the one span as it is, writes nothing and creates no split", async () => {
+    at(TODAY)
+    const w = await signedInWorld()
+    const budget = await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-03-01" })
+    const result = await actions.reviseBudgetAction({ id: budget.id, amount: "5,000.00", appliesFrom: "2026-05" })
+    expect(result).toMatchObject({ ok: true, data: [{ id: budget.id, amountPaise: "500000", startMonth: "2026-03-01", endMonth: null }] })
+    expect((result as { data: unknown[] }).data).toHaveLength(1)
+    expectNoBigint(result)
+    expect(await budgetCount(w.user.id)).toBe(1)
+    expect(await prisma.budget.findUniqueOrThrow({ where: { id: budget.id } })).toEqual(budget)
+  })
+
   it("files a future month under appliesFrom and writes nothing", async () => {
     at(TODAY)
     const w = await signedInWorld()

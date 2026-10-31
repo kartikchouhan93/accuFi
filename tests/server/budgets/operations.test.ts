@@ -309,6 +309,53 @@ describe("reviseBudget", () => {
     ])
   })
 
+  it("says when the budget ended, once: a month, not a span from the month to itself", async () => {
+    at(TODAY)
+    const { w, row } = await budgetOf({ startMonth: "2026-01-01", endMonth: "2026-03-01" })
+    const error = await invalid(reviseBudget(w.user.id, row.id, { amount: 800_000n, appliesFrom: m("2026-05-01") }))
+    expect(error.violations).toEqual([{ field: "appliesFrom", message: "This budget ended in Mar 2026. Pick a month it applies to." }])
+    expect(error.message).toBe("This budget ended in Mar 2026. Pick a month it applies to.")
+  })
+
+  describe("an amount that is the stored one", () => {
+    it("from this month writes nothing and answers with the budget as it is: still one span, untouched", async () => {
+      at(TODAY)
+      const { w, row } = await budgetOf({ endMonth: "2026-12-01", rollover: true })
+      const views = await reviseBudget(w.user.id, row.id, { amount: 500_000n, appliesFrom: m("2026-05-01") })
+      expect(views).toEqual([toBudgetSettingsView(row, "Food")])
+      const stored = await rows(w.user.id, w.food.id)
+      expect(stored).toHaveLength(1)
+      expect(stored[0]).toEqual(row) // the amount, the end and the timestamps are all as they were
+    })
+
+    it("from the start month, or before it, writes nothing either", async () => {
+      at(TODAY)
+      const { w, row } = await budgetOf()
+      expect(await reviseBudget(w.user.id, row.id, { amount: 500_000n, appliesFrom: m("2026-03-01") })).toEqual([toBudgetSettingsView(row, "Food")])
+      expect(await reviseBudget(w.user.id, row.id, { amount: 500_000n, appliesFrom: m("2025-01-01") })).toEqual([toBudgetSettingsView(row, "Food")])
+      expect(await rows(w.user.id, w.food.id)).toEqual([row])
+    })
+
+    it("answers for the span that was revised when the ledger has several", async () => {
+      at(TODAY)
+      const w = await registry.makeWorld()
+      const first = await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-01-01", endMonth: "2026-03-01", amountPaise: 300_000n })
+      const second = await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-04-01", amountPaise: 500_000n })
+      const views = await reviseBudget(w.user.id, second.id, { amount: 500_000n, appliesFrom: m("2026-05-01") })
+      expect(views.map((v) => v.id)).toEqual([second.id])
+      expect(await rows(w.user.id, w.food.id)).toEqual([first, second])
+    })
+
+    it("is still refused for a month it may not apply from: no change of amount makes a bad month good", async () => {
+      at(TODAY)
+      const { w, row } = await budgetOf({ endMonth: "2026-04-01" })
+      const future = await invalid(reviseBudget(w.user.id, row.id, { amount: 500_000n, appliesFrom: m("2026-06-01") }))
+      expect(future.violations.map((v) => v.field)).toEqual(["appliesFrom"])
+      const ended = await invalid(reviseBudget(w.user.id, row.id, { amount: 500_000n, appliesFrom: m("2026-05-01") }))
+      expect(ended.message).toBe("This budget ended in Apr 2026. Pick a month it applies to.")
+    })
+  })
+
   it("refuses an amount that is not positive", async () => {
     at(TODAY)
     const { w, row } = await budgetOf()

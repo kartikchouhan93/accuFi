@@ -2,7 +2,7 @@ import type { Budget } from "@prisma/client"
 import { spansOverlap } from "@/domain/budgets"
 import { addMonths, compareDates, fromDbDate, monthOf, type CalendarDate } from "@/domain/calendar-date"
 import type { Paise } from "@/domain/money"
-import { toBudgetSettingsView, spanLabel, type BudgetSettingsView } from "@/lib/budget-view"
+import { monthLabel, spanLabel, toBudgetSettingsView, type BudgetSettingsView } from "@/lib/budget-view"
 import {
   deleteBudget as deleteBudgetRow,
   findBudgetById,
@@ -126,7 +126,8 @@ export async function createBudget(userId: string, input: BudgetInput): Promise<
  * Change a budget's amount from `appliesFrom` on. From its start month or earlier the amount is corrected for the whole
  * span, in place (one view). From a later month it splits: the old span ends the month before and a new one starts there
  * with the new amount, the same rollover and the old end (two views: the shortened old span, then the new one). Months
- * after the current month, or after the budget's end, are refused. Works on an archived ledger's budget.
+ * after the current month, or after the budget's end, are refused. An amount equal to the stored one changes nothing: it
+ * writes nothing and answers with that one span as it is (R7). Works on an archived ledger's budget.
  */
 export async function reviseBudget(
   userId: string,
@@ -145,9 +146,13 @@ export async function reviseBudget(
     if (compareDates(appliesFrom, currentMonth) > 0) {
       violations.push({ field: "appliesFrom", message: "A new amount can apply from this month or an earlier one, not from a future month" })
     } else if (endMonth !== null && compareDates(appliesFrom, endMonth) > 0) {
-      violations.push({ field: "appliesFrom", message: `This budget ended in ${spanLabel(endMonth, endMonth)}. Pick a month it applies to.` })
+      violations.push({ field: "appliesFrom", message: `This budget ended in ${monthLabel(endMonth)}. Pick a month it applies to.` })
     }
     if (violations.length > 0) throw new InvalidBudgetError(violations)
+
+    // The amount the budget already has is not a revision: a split would add a span that says the same thing, and an
+    // in-place write would only move the timestamp. Nothing is written and the answer is the budget as it is.
+    if (input.amount === budget.amountPaise) return [toBudgetSettingsView(budget, node.name)]
 
     if (compareDates(appliesFrom, startMonth) <= 0) {
       const updated = await updateBudget(userId, id, { amountPaise: input.amount }, uow)
