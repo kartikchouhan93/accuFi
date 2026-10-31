@@ -75,8 +75,9 @@ export async function hasLiveSession(): Promise<boolean> {
  * ledger with its balances, the investments with their values, and the home page with net worth. One list for every
  * action file, because a write in one place moves figures in the others (an account created with an opening balance changes net worth on "/" and the
  * balances on "/transactions"), and `router.refresh()` renews only the page the user happens to be on. The investment
- * screens are listed too: a sale moves the holdings and a price moves their values, and both move net worth. Reads and
- * refused writes do not call it.
+ * screens are listed too: a sale moves the holdings and a price moves their values, and both move net worth. The budgets
+ * screen is listed as well: a transaction moves what a budget has used, and a node write can archive a budgeted ledger.
+ * Reads and refused writes do not call it.
  */
 export function wrote(): void {
   revalidatePath("/transactions")
@@ -84,6 +85,7 @@ export function wrote(): void {
   revalidatePath("/investments")
   revalidatePath("/investments/prices")
   revalidatePath("/recurring")
+  revalidatePath("/budgets")
   revalidatePath("/")
 }
 

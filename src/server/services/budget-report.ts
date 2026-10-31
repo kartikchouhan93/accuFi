@@ -16,11 +16,13 @@ import {
 } from "@/domain/calendar-date"
 import { formatPaise, type Paise } from "@/domain/money"
 import { flowOf } from "@/domain/reports"
-import type { BudgetCard, BudgetHistoryRow, BudgetsScreen } from "@/lib/budget-view"
+import { toBudgetSettingsView, type BudgetCard, type BudgetHistoryRow, type BudgetSettingsView, type BudgetsScreen } from "@/lib/budget-view"
 import { transactionsHref } from "@/lib/report-drill"
+import { toPickerNode, type PickerNode } from "@/lib/transaction-list-view"
 import { serialisePaise } from "@/lib/serialise"
 import type { Warning } from "@/lib/transaction-view"
-import { findBudgets } from "@/server/repositories/budget-repository"
+import { findBudgetById, findBudgets } from "@/server/repositories/budget-repository"
+import { NotFoundError } from "@/server/repositories/errors"
 import { findMoves } from "@/server/repositories/report-repository"
 import { todayFor } from "@/server/services/clock"
 import { listAllNodes } from "@/server/services/node-service"
@@ -283,5 +285,29 @@ export async function budgetWarningsForRows(userId: string, rows: readonly Trans
   } catch (error) {
     console.error("[budgets] could not judge the budget warnings; showing none", error)
     return []
+  }
+}
+
+/**
+ * What the budget form needs: the ledgers it may name (the user's live, non-system expense ledgers) and today in the
+ * user's zone, and, to edit, the budget itself. A budget's own ledger is offered even when it has been archived since, so
+ * the form can show what the budget is on. NotFoundError("budget") for an id that is not the user's or does not exist.
+ */
+export async function loadBudgetForm(
+  userId: string,
+  budgetId?: string,
+): Promise<{ nodes: PickerNode[]; budget: BudgetSettingsView | null; today: CalendarDate }> {
+  const [budget, expenses, today] = await Promise.all([
+    budgetId === undefined ? null : findBudgetById(userId, budgetId),
+    listAllNodes(userId, ["EXPENSE"]),
+    todayFor(userId),
+  ])
+  if (budgetId !== undefined && !budget) throw new NotFoundError("budget")
+  const offered = expenses.filter((node) => node.id === budget?.nodeId || (node.archivedAt === null && node.systemRole === null))
+  const own = budget ? expenses.find((node) => node.id === budget.nodeId) : undefined
+  return {
+    nodes: offered.map(toPickerNode),
+    budget: budget && own ? toBudgetSettingsView(budget, own.name) : null,
+    today,
   }
 }
