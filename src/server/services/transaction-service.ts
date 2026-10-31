@@ -26,6 +26,7 @@ import {
   type UpdateDraft,
 } from "@/server/repositories/transaction-repository"
 import { inTransaction, type UnitOfWork } from "@/server/repositories/unit-of-work"
+import { budgetWarningsForRows } from "@/server/services/budget-report"
 import { todayFor } from "@/server/services/clock"
 import {
   applyLotEdit,
@@ -207,9 +208,18 @@ async function writeUnlessOverdrawn<T>(
  * source only: the node it lowers. An edit touches all four ends, as the overdraft guard does, because money can leave a
  * node at either end of either version of the row (lowering a deposit overdraws its destination, not its source).
  * A card whose balance is -60,000 against a 50,000 limit is over it (owed = -balance); an asset below zero is
- * overdrawn; a liability or an expense below zero says nothing. Ordered OVERDRAWN, OVER_CREDIT_LIMIT, FUTURE_DATED.
+ * overdrawn; a liability or an expense below zero says nothing. Ordered OVERDRAWN, OVER_CREDIT_LIMIT, FUTURE_DATED, then
+ * the budget warnings BUDGET_OVER, BUDGET_NEAR (budget-report.ts: judged on the state the write left, for `row`, or for
+ * every row of `written` when the write was several, as a split is). A budget failure is caught there and costs only its
+ * own warnings: it never fails the write or the other warnings.
  */
-async function warningsFor(userId: string, row: Transaction, touched: readonly LedgerNode[], today: CalendarDate): Promise<Warning[]> {
+async function warningsFor(
+  userId: string,
+  row: Transaction,
+  touched: readonly LedgerNode[],
+  today: CalendarDate,
+  written: readonly Transaction[] = [row],
+): Promise<Warning[]> {
   const occurredAt = fromDbDate(row.occurredAt)
   const balances = new Map((await sumBalances(userId, asOfFor(today, occurredAt))).map((b) => [b.nodeId, b.balance]))
   const nodes = [...new Map(touched.map((node) => [node.id, node])).values()]
@@ -236,7 +246,7 @@ async function warningsFor(userId: string, row: Transaction, touched: readonly L
           },
         ]
       : []
-  return [...overdrawn, ...overLimit, ...future]
+  return [...overdrawn, ...overLimit, ...future, ...(await budgetWarningsForRows(userId, written, today))]
 }
 
 /**
@@ -525,8 +535,9 @@ async function storedSplit(userId: string, key: string, legCount: number): Promi
  * The group row and all legs are written in one database transaction, so a failure anywhere (a duplicate key, an
  * overdraft) leaves neither. The overdraft guard reads the source before and after the whole group, so legs that each
  * fit but together overdraw a `blockNegative` asset are refused. Warnings are those of a single create (the source
- * node only) judged against the balance after the whole group, and they are the same on every leg's view because each
- * leg is one of the writes that left the source in that state; show them once.
+ * node only) judged against the balance after the whole group, plus the budget warnings for every leg's destination
+ * (a budget several legs land in warns once), and they are the same on every leg's view because each leg is one of the
+ * writes that left things in that state; show them once.
  *
  * A replay returns the stored legs and writes nothing (EC-17): looked up first only as a shortcut, so that a node
  * archived since does not turn a replay into an error; the unique key remains the arbiter between concurrent submissions.
@@ -592,7 +603,7 @@ export async function recordSplit(userId: string, input: RecordSplitInput): Prom
     throw error
   }
   // All legs share a day and a source, so one judgement serves them all.
-  const warnings = await warningsFor(userId, rows[0], [from], today)
+  const warnings = await warningsFor(userId, rows[0], [from], today, rows)
   return rows.map((row) => toTransactionView(row, warnings))
 }
 

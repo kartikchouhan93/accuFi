@@ -10,7 +10,7 @@ import { serialisePaise } from "./serialise"
 // `userId` is left off (the client has no use for it) and so are the audit timestamps (nothing displays them yet).
 
 export interface Warning {
-  code: "OVERDRAWN" | "OVER_CREDIT_LIMIT" | "FUTURE_DATED"
+  code: "OVERDRAWN" | "OVER_CREDIT_LIMIT" | "FUTURE_DATED" | "BUDGET_OVER" | "BUDGET_NEAR"
   message: string
 }
 

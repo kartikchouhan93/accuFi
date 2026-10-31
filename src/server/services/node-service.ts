@@ -13,6 +13,7 @@ import {
   findNodes,
   updateNode,
 } from "@/server/repositories/node-repository"
+import { countBudgetsNaming } from "@/server/repositories/budget-repository"
 import { deletePricesOfNode } from "@/server/repositories/price-repository"
 import { countRulesNaming } from "@/server/repositories/recurring-repository"
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
@@ -46,6 +47,14 @@ export class NodeInRecurringRuleError extends Error {
   constructor() {
     super("A recurring rule uses this account. Archive it instead.")
     this.name = "NodeInRecurringRuleError"
+  }
+}
+
+/** A budget (live; a deleted budget is gone) still names the ledger. Archiving the ledger keeps its budget. */
+export class NodeInBudgetError extends Error {
+  constructor() {
+    super("A budget uses this ledger. Delete the budget, or archive the ledger instead.")
+    this.name = "NodeInBudgetError"
   }
 }
 
@@ -288,9 +297,10 @@ export async function restoreLedgerNode(userId: string, nodeId: string): Promise
 }
 
 /**
- * Only a node with no transactions and no recurring rule can be deleted (EC-29, EC-33). Anything with history is archived
- * instead, and so is a node a rule names: a deleted rule stays in the table and its foreign keys to the node are RESTRICT,
- * so it counts as much as a live one. Its price
+ * Only a node with no transactions, no recurring rule and no budget can be deleted (EC-29, EC-33). Anything with history
+ * is archived instead, and so is a node a rule names: a deleted rule stays in the table and its foreign keys to the node
+ * are RESTRICT, so it counts as much as a live one. A budget on the node is refused with its own message (delete the
+ * budget, or archive the ledger); it comes last, after the history and rule checks, so those keep their wording. Its price
  * snapshots are not history in that sense (they move no money), but their foreign key to the node is RESTRICT, so they
  * are deleted with it, in one transaction: a failure leaves both.
  */
@@ -298,6 +308,7 @@ export async function removeLedgerNode(userId: string, nodeId: string): Promise<
   await requireMutableNode(userId, nodeId)
   if ((await countTransactionsForNode(userId, nodeId)) > 0) throw new NodeHasHistoryError()
   if ((await countRulesNaming(userId, nodeId)) > 0) throw new NodeInRecurringRuleError()
+  if ((await countBudgetsNaming(userId, nodeId)) > 0) throw new NodeInBudgetError()
   await inTransaction(async (uow) => {
     await deletePricesOfNode(userId, nodeId, uow)
     await deleteNode(userId, nodeId, uow)

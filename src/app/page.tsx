@@ -4,6 +4,8 @@ import Link from "next/link"
 import { AccountSummary, summaryKinds } from "@/app/account-summary"
 import { AppShell } from "@/app/app-shell"
 import { NetWorthCard } from "@/app/net-worth-card"
+import { budgetAttention } from "@/app/budget-attention"
+import { BudgetNotice } from "@/app/budget-notice"
 import { pendingCount } from "@/app/pending-count"
 import { PendingNotice } from "@/app/pending-notice"
 import { RecentTransactions } from "@/app/recent-transactions"
@@ -21,9 +23,10 @@ export const metadata: Metadata = { title: "Dashboard" }
 export default async function DashboardPage() {
   let dashboard: Awaited<ReturnType<typeof getDashboard>>
   let pending: number
+  let needAttention: number
   try {
     const userId = await requireUserId()
-    ;[dashboard, pending] = await Promise.all([getDashboard(userId), pendingCount(userId)])
+    ;[dashboard, pending, needAttention] = await Promise.all([getDashboard(userId), pendingCount(userId), budgetAttention(userId)])
   } catch (error) {
     redirectIfUnauthenticated(error)
     throw error
@@ -40,7 +43,12 @@ export default async function DashboardPage() {
             </Link>
           )}
         </div>
-        {pending > 0 && <PendingNotice count={pending} />}
+        {(pending > 0 || needAttention > 0) && (
+          <div className="flex flex-wrap gap-x-3">
+            {pending > 0 && <PendingNotice count={pending} />}
+            {needAttention > 0 && <BudgetNotice count={needAttention} />}
+          </div>
+        )}
         {dashboard.isEmpty ? (
           <section aria-labelledby="start-heading" className="surface mt-8 max-w-xl rounded-3xl p-8">
             <span aria-hidden className="grid size-12 place-items-center rounded-2xl bg-panel-raised text-accent-edge">

@@ -1,3 +1,4 @@
+import type { Transaction } from "@prisma/client"
 import {
   countedNodeIds,
   evaluateMonths,
@@ -13,11 +14,12 @@ import {
   monthOf,
   type CalendarDate,
 } from "@/domain/calendar-date"
-import type { Paise } from "@/domain/money"
+import { formatPaise, type Paise } from "@/domain/money"
 import { flowOf } from "@/domain/reports"
 import type { BudgetCard, BudgetHistoryRow, BudgetsScreen } from "@/lib/budget-view"
 import { transactionsHref } from "@/lib/report-drill"
 import { serialisePaise } from "@/lib/serialise"
+import type { Warning } from "@/lib/transaction-view"
 import { findBudgets } from "@/server/repositories/budget-repository"
 import { findMoves } from "@/server/repositories/report-repository"
 import { todayFor } from "@/server/services/clock"
@@ -56,7 +58,11 @@ function lastDayOf(month: CalendarDate): CalendarDate {
   return `${month.slice(0, 8)}${String(daysInMonth(month)).padStart(2, "0")}` as CalendarDate
 }
 
-async function evaluateAll(userId: string): Promise<Evaluation> {
+/**
+ * `only`, when given, narrows the evaluation to the budgeted ledgers that count one of those nodes (the warnings need
+ * nothing else, and an entry nothing budgets then costs no spending query).
+ */
+async function evaluateAll(userId: string, only?: ReadonlySet<string>): Promise<Evaluation> {
   const [today, budgetRows, nodes] = await Promise.all([todayFor(userId), findBudgets(userId), listAllNodes(userId, ["EXPENSE"])])
   const currentMonth = monthOf(today)
 
@@ -78,6 +84,7 @@ async function evaluateAll(userId: string): Promise<Evaluation> {
     const node = nodeById.get(nodeId)
     if (!node) return []
     const counted = countedNodeIds(nodeId, nodes)
+    if (only && !counted.some((id) => only.has(id))) return []
     return [{ node, spans, counted }]
   })
 
@@ -228,5 +235,53 @@ export async function loadBudgetAttention(userId: string): Promise<{ near: numbe
   return {
     near: cards.filter((card) => card.status === "NEAR").length,
     over: cards.filter((card) => card.status === "OVER").length,
+  }
+}
+
+/**
+ * The budget warnings the stored entry `row` carries (design §7), after the write and in the entry's own month: for every
+ * budget covering that month whose counted ledgers include the entry's destination, `BUDGET_OVER` when it ends over and
+ * `BUDGET_NEAR` when it ends near (80% and not over), over first. Judged on the state the write left and nothing else, so
+ * a second entry while already over warns again and an edit that lowers the spend but still ends over still warns. A
+ * refund (the destination is not an expense ledger) and an entry dated after today carry none. The percent is the whole
+ * percent, rounded down, so a budget at 99.9% never reads as 100%.
+ */
+export function budgetWarningsFor(userId: string, row: Transaction, today: CalendarDate): Promise<Warning[]> {
+  return budgetWarningsForRows(userId, [row], today)
+}
+
+/**
+ * `budgetWarningsFor` for rows written together (the legs of a split, one day, one source): one evaluation judges them
+ * all, and a budget that several legs land in warns once. Any failure is logged under `[budgets]` and answers `[]`: a
+ * budget is never a reason for a write to fail, so this never throws.
+ */
+export async function budgetWarningsForRows(userId: string, rows: readonly Transaction[], today: CalendarDate): Promise<Warning[]> {
+  try {
+    const dated = rows.map((row) => ({ toNodeId: row.toNodeId, month: monthOf(fromDbDate(row.occurredAt)), day: fromDbDate(row.occurredAt) }))
+    const judged = dated.filter(({ day }) => compareDates(day, today) <= 0)
+    if (judged.length === 0) return []
+    const evaluation = await evaluateAll(userId, new Set(judged.map((row) => row.toNodeId)))
+
+    const over: Warning[] = []
+    const near: Warning[] = []
+    for (const ledger of evaluation.ledgers) {
+      const months = new Set(judged.filter((row) => ledger.counted.includes(row.toNodeId)).map((row) => row.month))
+      for (const month of months) {
+        const figures = ledger.rows.find((row) => row.month === month)
+        if (!figures) continue
+        if (figures.status === "OVER") {
+          over.push({
+            code: "BUDGET_OVER",
+            message: `${ledger.name} is over budget by ${formatPaise(figures.usedPaise - figures.availablePaise)} this month.`,
+          })
+        } else if (figures.status === "NEAR" && figures.percentTenths !== null) {
+          near.push({ code: "BUDGET_NEAR", message: `${ledger.name} is at ${figures.percentTenths / 10n}% of its budget this month.` })
+        }
+      }
+    }
+    return [...over, ...near]
+  } catch (error) {
+    console.error("[budgets] could not judge the budget warnings; showing none", error)
+    return []
   }
 }
