@@ -77,7 +77,7 @@ const hasControl = (html: string, suffix: string) => new RegExp(`id="[^"]*-${suf
 const buttons = (html: string) => [...html.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g)].map((m) => ({ name: accessibleText(m[2]).trim(), attrs: m[1] }))
 const links = (html: string): [string, string][] =>
   [...html.matchAll(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [m[1], accessibleText(m[2]).trim()])
-const REVISION = "Raises it from November 2026; earlier months keep the old amount."
+const REVISION = "Changes the amount from November 2026; earlier months keep the old amount."
 
 describe("the new budget form", () => {
   it("offers only the live, non-system expense ledgers", () => {
@@ -169,7 +169,7 @@ describe("the edit budget form", () => {
   })
 
   it("puts that sentence in a polite live region, so a change of month is heard", () => {
-    expect(editForm()).toMatch(/<p[^>]*aria-live="polite"[^>]*>[^<]*Raises it from/)
+    expect(editForm()).toMatch(/<p[^>]*aria-live="polite"[^>]*>[^<]*Changes the amount from/)
   })
 
   it("shows the end month and rollover as the budget has them, in Settings", () => {

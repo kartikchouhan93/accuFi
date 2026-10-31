@@ -68,9 +68,9 @@ describe("monthOptions", () => {
 
 describe("describeRevision", () => {
   it("says the earlier months keep the old amount when the month is after the start (a split)", () => {
-    expect(describeRevision("2026-04", "2026-11", null)).toBe("Raises it from November 2026; earlier months keep the old amount.")
-    expect(describeRevision("2026-04", "2026-11", "2027-03")).toBe("Raises it from November 2026; earlier months keep the old amount.")
-    expect(describeRevision("2026-04", "2027-03", "2027-03")).toBe("Raises it from March 2027; earlier months keep the old amount.")
+    expect(describeRevision("2026-04", "2026-11", null)).toBe("Changes the amount from November 2026; earlier months keep the old amount.")
+    expect(describeRevision("2026-04", "2026-11", "2027-03")).toBe("Changes the amount from November 2026; earlier months keep the old amount.")
+    expect(describeRevision("2026-04", "2027-03", "2027-03")).toBe("Changes the amount from March 2027; earlier months keep the old amount.")
   })
 
   it("says it corrects every month when the month is the start or earlier", () => {

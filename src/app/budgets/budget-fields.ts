@@ -43,7 +43,7 @@ export function monthOptions(from: string, to: string): { value: string; label: 
 export function describeRevision(startMonth: string, appliesFrom: string, endMonth: string | null): string {
   if (endMonth !== null && appliesFrom > endMonth) return `This budget ended in ${monthText(endMonth)}. Pick a month it applies to.`
   if (appliesFrom <= startMonth) return "Corrects the amount for every month of this budget."
-  return `Raises it from ${monthText(appliesFrom)}; earlier months keep the old amount.`
+  return `Changes the amount from ${monthText(appliesFrom)}; earlier months keep the old amount.`
 }
 
 /** What a new budget may start in: three years back (to budget history) to a year ahead of the current month. */
