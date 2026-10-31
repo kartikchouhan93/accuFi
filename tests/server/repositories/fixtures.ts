@@ -87,6 +87,24 @@ export function createRegistry() {
     })
   }
 
+  /** A budget on `nodeId`, open-ended from `startMonth` (the first of a month) unless `over` says otherwise. */
+  async function makeBudget(
+    userId: string,
+    nodeId: string,
+    over: { amountPaise?: bigint; startMonth?: string; endMonth?: string | null; rollover?: boolean } = {},
+  ) {
+    return prisma.budget.create({
+      data: {
+        userId,
+        nodeId,
+        amountPaise: over.amountPaise ?? 500_000n,
+        startMonth: toDbDate(calendarDate(over.startMonth ?? "2026-04-01")),
+        endMonth: over.endMonth ? toDbDate(calendarDate(over.endMonth)) : null,
+        rollover: over.rollover ?? false,
+      },
+    })
+  }
+
   /** A user with an income source, a bank account and an expense node, and one live transaction bank -> expense. */
   async function makeWorld() {
     const user = await makeUser()
@@ -114,5 +132,5 @@ export function createRegistry() {
     await prisma.$disconnect()
   }
 
-  return { makeUser, makeNode, makeTransaction, makeRule, makeOccurrence, makeWorld, cleanup }
+  return { makeUser, makeNode, makeTransaction, makeRule, makeOccurrence, makeBudget, makeWorld, cleanup }
 }

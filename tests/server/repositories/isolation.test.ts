@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client"
 import { calendarDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { NotFoundError, UserNotFoundError } from "@/server/repositories/errors"
+import * as budgetRepo from "@/server/repositories/budget-repository"
 import * as lotRepo from "@/server/repositories/lot-repository"
 import * as nodeRepo from "@/server/repositories/node-repository"
 import * as priceRepo from "@/server/repositories/price-repository"
@@ -959,6 +960,107 @@ describe("recurring repository", () => {
   })
 })
 
+describe("budget repository", () => {
+  const snapshotBudgets = (userId: string) => prisma.budget.findMany({ where: { userId }, orderBy: { id: "asc" } })
+
+  // B has an open-ended budget on food and a closed one on the bank node, so every read has something to leak.
+  let bFood: Awaited<ReturnType<typeof registry.makeBudget>>
+  let bClosed: Awaited<ReturnType<typeof registry.makeBudget>>
+  let aFood: Awaited<ReturnType<typeof registry.makeBudget>>
+
+  beforeAll(async () => {
+    bFood = await registry.makeBudget(b.user.id, b.food.id, { amountPaise: 900_000n })
+    bClosed = await registry.makeBudget(b.user.id, b.bank.id, { startMonth: "2026-01-01", endMonth: "2026-03-01", rollover: true })
+    aFood = await registry.makeBudget(a.user.id, a.food.id)
+  })
+
+  const budgetData = (over: Partial<budgetRepo.BudgetData> = {}): budgetRepo.BudgetData => ({
+    nodeId: a.food.id,
+    amountPaise: 100n,
+    startMonth: calendarDate("2027-01-01"),
+    endMonth: null,
+    rollover: false,
+    ...over,
+  })
+
+  isolation("insertBudget", "refuses another user's node and writes nothing", async () => {
+    const aBefore = await snapshotBudgets(a.user.id)
+    const bBefore = await snapshotBudgets(b.user.id)
+    await expectNotFound(budgetRepo.insertBudget(a.user.id, budgetData({ nodeId: b.food.id })))
+    await expectNotFound(inTransaction((uow) => budgetRepo.insertBudget(a.user.id, budgetData({ nodeId: b.bank.id }), uow)))
+    expect(await snapshotBudgets(a.user.id)).toEqual(aBefore)
+    expect(await snapshotBudgets(b.user.id)).toEqual(bBefore)
+  })
+
+  isolation("insertBudget", "writes the caller's userId even if the data names another user", async () => {
+    const forged = { ...budgetData(), userId: b.user.id } as budgetRepo.BudgetData
+    const row = await budgetRepo.insertBudget(a.user.id, forged)
+    expect(row.userId).toBe(a.user.id)
+    expect(await prisma.budget.count({ where: { userId: b.user.id, id: row.id } })).toBe(0)
+    await prisma.budget.delete({ where: { id: row.id } })
+  })
+
+  isolation("findBudgetById", "returns null for another user's budget", async () => {
+    expect(await budgetRepo.findBudgetById(a.user.id, bFood.id)).toBeNull()
+    expect(await inTransaction((uow) => budgetRepo.findBudgetById(a.user.id, bClosed.id, uow))).toBeNull()
+    expect((await budgetRepo.findBudgetById(a.user.id, aFood.id))?.id).toBe(aFood.id)
+    expect((await budgetRepo.findBudgetById(b.user.id, bFood.id))?.id).toBe(bFood.id)
+  })
+
+  isolation("findBudgets", "never includes another user's budgets", async () => {
+    const mine = await budgetRepo.findBudgets(a.user.id)
+    expect(mine.length).toBeGreaterThan(0)
+    expect(mine.every((row) => row.userId === a.user.id)).toBe(true)
+    expect(mine.some((row) => [bFood.id, bClosed.id].includes(row.id))).toBe(false)
+    expect(await inTransaction((uow) => budgetRepo.findBudgets(a.user.id, uow))).toEqual(mine)
+    expect((await budgetRepo.findBudgets(b.user.id)).map((row) => row.id).sort()).toEqual([bFood.id, bClosed.id].sort())
+  })
+
+  isolation("findBudgetsForNode", "returns nothing for another user's node", async () => {
+    expect(await budgetRepo.findBudgetsForNode(a.user.id, b.food.id)).toEqual([])
+    expect(await inTransaction((uow) => budgetRepo.findBudgetsForNode(a.user.id, b.bank.id, uow))).toEqual([])
+    expect((await budgetRepo.findBudgetsForNode(b.user.id, b.food.id)).map((row) => row.id)).toEqual([bFood.id])
+  })
+
+  isolation("findBudgetsForNode", "does not return another user's budget smuggled onto the caller's node", async () => {
+    // The repositories refuse to write this row; nothing in the database does.
+    const smuggled = await registry.makeBudget(b.user.id, a.food.id, { startMonth: "2030-01-01" })
+    try {
+      expect((await budgetRepo.findBudgetsForNode(a.user.id, a.food.id)).some((row) => row.id === smuggled.id)).toBe(false)
+      expect(await budgetRepo.countBudgetsNaming(a.user.id, a.food.id)).toBe(1)
+    } finally {
+      await prisma.budget.delete({ where: { id: smuggled.id } })
+    }
+  })
+
+  isolation("updateBudget", "is not-found for another user's budget and changes nothing", async () => {
+    const before = await snapshotBudgets(b.user.id)
+    await expectNotFound(budgetRepo.updateBudget(a.user.id, bFood.id, { amountPaise: 1n, rollover: true, endMonth: calendarDate("2026-06-01") }))
+    await expectNotFound(inTransaction((uow) => budgetRepo.updateBudget(a.user.id, bClosed.id, { endMonth: null }, uow)))
+    expect(await snapshotBudgets(b.user.id)).toEqual(before)
+  })
+
+  isolation("deleteBudget", "is not-found for another user's budget and deletes nothing", async () => {
+    const before = await snapshotBudgets(b.user.id)
+    await expectNotFound(budgetRepo.deleteBudget(a.user.id, bFood.id))
+    await expectNotFound(inTransaction((uow) => budgetRepo.deleteBudget(a.user.id, bClosed.id, uow)))
+    expect(await snapshotBudgets(b.user.id)).toEqual(before)
+  })
+
+  isolation("lockLedger", "is false for another user's node, and true for the caller's own", async () => {
+    expect(await inTransaction((uow) => budgetRepo.lockLedger(a.user.id, b.food.id, uow))).toBe(false)
+    expect(await inTransaction((uow) => budgetRepo.lockLedger(a.user.id, b.bank.id, uow))).toBe(false)
+    expect(await inTransaction((uow) => budgetRepo.lockLedger(a.user.id, a.food.id, uow))).toBe(true)
+  })
+
+  isolation("countBudgetsNaming", "counts nothing for another user's node", async () => {
+    expect(await budgetRepo.countBudgetsNaming(a.user.id, b.food.id)).toBe(0)
+    expect(await inTransaction((uow) => budgetRepo.countBudgetsNaming(a.user.id, b.bank.id, uow))).toBe(0)
+    expect(await budgetRepo.countBudgetsNaming(b.user.id, b.food.id)).toBe(1)
+    expect(await budgetRepo.countBudgetsNaming(b.user.id, a.food.id)).toBe(0)
+  })
+})
+
 describe("coverage", () => {
   // Every module in src/server/repositories is read from the directory, not from a hand-kept import list.
   const files = readdirSync(new URL("../../../src/server/repositories/", import.meta.url)).filter((f) => f.endsWith(".ts")).map((f) => f.slice(0, -".ts".length))
@@ -982,6 +1084,7 @@ describe("coverage", () => {
     // The modules come from the directory, and their names are asserted: a repository file added later fails this line
     // until its functions get isolation cases below, instead of sitting outside the check unnoticed.
     expect(perModule.map((m) => m.path).sort()).toEqual([
+      "budget-repository.ts",
       "errors.ts",
       "lot-repository.ts",
       "node-repository.ts",
