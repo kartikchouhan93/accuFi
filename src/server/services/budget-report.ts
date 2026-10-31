@@ -62,11 +62,15 @@ function lastDayOf(month: CalendarDate): CalendarDate {
 
 /**
  * `only`, when given, narrows the evaluation to the budgeted ledgers that count one of those nodes (the warnings need
- * nothing else, and an entry nothing budgets then costs no spending query).
+ * nothing else, and an entry nothing budgets then costs no spending query). `knownToday` is the caller's own today, when it
+ * has one, so a write does not work it out twice.
  */
-async function evaluateAll(userId: string, only?: ReadonlySet<string>): Promise<Evaluation> {
-  const [today, budgetRows, nodes] = await Promise.all([todayFor(userId), findBudgets(userId), listAllNodes(userId, ["EXPENSE"])])
+async function evaluateAll(userId: string, only?: ReadonlySet<string>, knownToday?: CalendarDate): Promise<Evaluation> {
+  const [today, budgetRows] = await Promise.all([knownToday ?? todayFor(userId), findBudgets(userId)])
   const currentMonth = monthOf(today)
+  // Most users of a write path have no budget: that costs one read, not the node listing or a spending query.
+  if (budgetRows.length === 0) return { today, currentMonth, months: [], hasBudgets: false, ledgers: [] }
+  const nodes = await listAllNodes(userId, ["EXPENSE"])
 
   const byNode = new Map<string, BudgetSpan[]>()
   for (const row of budgetRows) {
@@ -247,28 +251,23 @@ export async function loadBudgetAttention(userId: string): Promise<{ near: numbe
 }
 
 /**
- * The budget warnings the stored entry `row` carries (design §7), after the write and in the entry's own month: for every
- * budget covering that month whose counted ledgers include the entry's destination, `BUDGET_OVER` when it ends over and
+ * The budget warnings a stored entry carries (design §7), after the write and in the entry's own month: for every budget
+ * covering that month whose counted ledgers include the entry's destination, `BUDGET_OVER` when it ends over and
  * `BUDGET_NEAR` when it ends near (80% and not over), over first. Judged on the state the write left and nothing else, so
  * a second entry while already over warns again and an edit that lowers the spend but still ends over still warns. A
- * refund (the destination is not an expense ledger) and an entry dated after today carry none. The percent is the whole
- * percent, rounded down, so a budget at 99.9% never reads as 100%.
- */
-export function budgetWarningsFor(userId: string, row: Transaction, today: CalendarDate): Promise<Warning[]> {
-  return budgetWarningsForRows(userId, [row], today)
-}
-
-/**
- * `budgetWarningsFor` for rows written together (the legs of a split, one day, one source): one evaluation judges them
- * all, and a budget that several legs land in warns once. Any failure is logged under `[budgets]` and answers `[]`: a
- * budget is never a reason for a write to fail, so this never throws.
+ * refund (the destination is not an expense ledger) and an entry dated after today carry none. The percent shown is the
+ * displayed tenths, truncated to whole percent.
+ *
+ * Takes the rows written together (one for a single entry; the legs of a split, one day, one source): one evaluation
+ * judges them all, and a budget that several legs land in warns once. `today` is the caller's. Any failure is logged under
+ * `[budgets]` and answers `[]`: a budget is never a reason for a write to fail, so this never throws.
  */
 export async function budgetWarningsForRows(userId: string, rows: readonly Transaction[], today: CalendarDate): Promise<Warning[]> {
   try {
     const dated = rows.map((row) => ({ toNodeId: row.toNodeId, month: monthOf(fromDbDate(row.occurredAt)), day: fromDbDate(row.occurredAt) }))
     const judged = dated.filter(({ day }) => compareDates(day, today) <= 0)
     if (judged.length === 0) return []
-    const evaluation = await evaluateAll(userId, new Set(judged.map((row) => row.toNodeId)))
+    const evaluation = await evaluateAll(userId, new Set(judged.map((row) => row.toNodeId)), today)
 
     const over: Warning[] = []
     const near: Warning[] = []

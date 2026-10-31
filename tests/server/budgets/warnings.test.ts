@@ -3,8 +3,10 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 import { calendarDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import * as reportRepository from "@/server/repositories/report-repository"
+import * as clock from "@/server/services/clock"
+import * as nodeService from "@/server/services/node-service"
 import { budgetWarningsForRows } from "@/server/services/budget-report"
-import { editTransaction, recordSplit, recordTransaction } from "@/server/services/transaction-service"
+import { editTransaction, recordSplit, recordTransaction, removeTransaction, restoreTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "../repositories/fixtures"
 
 // The budget warnings a write carries (design §7). They are judged on the state the write leaves behind, in the entry's
@@ -200,6 +202,63 @@ describe("budget warnings on a recorded entry", () => {
   })
 })
 
+describe("a split replayed or restored carries the warnings the original call did", () => {
+  /** Leg 1 ends Food near (90%), leg 2 takes Fun over: the original judges both legs together. */
+  async function budgetedSplit() {
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.food.id, { amountPaise: BUDGET })
+    await registry.makeBudget(w.user.id, w.fun.id, { amountPaise: 10_000n })
+    const request = {
+      fromNodeId: w.bank.id,
+      occurredAt: calendarDate("2026-05-10"),
+      idempotencyKey: randomUUID(),
+      legs: [
+        { toNodeId: w.food.id, amount: 90_000n },
+        { toNodeId: w.fun.id, amount: 20_000n },
+      ],
+    }
+    return { w, request }
+  }
+
+  it("a replay of the same key returns exactly the original's warnings on every leg", async () => {
+    at(TODAY)
+    const { w, request } = await budgetedSplit()
+    const original = await recordSplit(w.user.id, request)
+    const replay = await recordSplit(w.user.id, request)
+    expect(replay.map((view) => view.id)).toEqual(original.map((view) => view.id))
+    expect(budgetWarnings(original[0]).map((x) => x.code)).toEqual(["BUDGET_OVER", "BUDGET_NEAR"]) // both legs, not leg 1 alone
+    for (const [index, view] of replay.entries()) expect(view.warnings, `leg ${index + 1}`).toEqual(original[index].warnings)
+  })
+
+  it("restoring one leg of a deleted split judges every revived leg, as the original did", async () => {
+    at(TODAY)
+    const { w, request } = await budgetedSplit()
+    const [food, fun] = await recordSplit(w.user.id, request)
+    await removeTransaction(w.user.id, food.id)
+    const restored = await restoreTransaction(w.user.id, food.id)
+    expect(restored.id).toBe(food.id)
+    expect(restored.warnings).toEqual(food.warnings)
+    expect(budgetWarnings(restored).map((x) => x.message)).toEqual([
+      "Fun is over budget by ₹100.00 this month.",
+      "Food is at 90% of its budget this month.",
+    ])
+    // The other leg is back too, and restoring from it says the same.
+    await removeTransaction(w.user.id, fun.id)
+    expect((await restoreTransaction(w.user.id, fun.id)).warnings).toEqual(fun.warnings)
+  })
+
+  it("restoring a plain entry is unchanged: it is judged alone", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.food.id, { amountPaise: BUDGET })
+    const entry = await w.record(w.food, 85_000n)
+    await removeTransaction(w.user.id, entry.id)
+    expect(budgetWarnings(await restoreTransaction(w.user.id, entry.id))).toEqual([
+      { code: "BUDGET_NEAR", message: "Food is at 85% of its budget this month." },
+    ])
+  })
+})
+
 describe("the order of warnings", () => {
   it("is OVERDRAWN, OVER_CREDIT_LIMIT, then BUDGET_OVER, then BUDGET_NEAR", async () => {
     at(TODAY)
@@ -216,6 +275,59 @@ describe("the order of warnings", () => {
     })
     const overLimit = await w.record(w.dairy, 1_000n, "2026-05-11", card)
     expect(overLimit.warnings.map((x) => x.code)).toEqual(["OVER_CREDIT_LIMIT", "BUDGET_OVER", "BUDGET_NEAR"])
+  })
+})
+
+describe("what a write pays for its budget warnings", () => {
+  it("a user with no budgets triggers no node listing and no spending query", async () => {
+    at(TODAY)
+    const w = await setup()
+    const nodes = vi.spyOn(nodeService, "listAllNodes")
+    const moves = vi.spyOn(reportRepository, "findMoves")
+    const view = await w.record(w.food, 150_000n)
+    expect(budgetWarnings(view)).toEqual([])
+    expect(nodes).not.toHaveBeenCalled()
+    expect(moves).not.toHaveBeenCalled()
+    // A split pays the same nothing.
+    await recordSplit(w.user.id, {
+      fromNodeId: w.bank.id,
+      occurredAt: calendarDate("2026-05-10"),
+      idempotencyKey: randomUUID(),
+      legs: [
+        { toNodeId: w.food.id, amount: 1_000n },
+        { toNodeId: w.fun.id, amount: 2_000n },
+      ],
+    })
+    expect(nodes).not.toHaveBeenCalled()
+    expect(moves).not.toHaveBeenCalled()
+  })
+
+  it("a user whose budgets are all on other ledgers still pays no spending query", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.fun.id, { amountPaise: BUDGET })
+    const moves = vi.spyOn(reportRepository, "findMoves")
+    expect(budgetWarnings(await w.record(w.food, 150_000n))).toEqual([])
+    expect(moves).not.toHaveBeenCalled()
+  })
+
+  it("works out today once per write: the budget step is handed the caller's today", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.food.id, { amountPaise: BUDGET })
+    const today = vi.spyOn(clock, "todayFor")
+    const view = await w.record(w.food, 85_000n)
+    expect(budgetWarnings(view)).toHaveLength(1)
+    expect(today).toHaveBeenCalledTimes(1)
+  })
+
+  it("the budget warnings still come after the balance warnings when both are judged together", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.dairy.id, { amountPaise: 10_000n })
+    const empty = await registry.makeNode(w.user.id, "ASSET", "Empty wallet")
+    const view = await w.record(w.dairy, 90_000n, "2026-05-10", empty)
+    expect(view.warnings.map((x) => x.code)).toEqual(["OVERDRAWN", "BUDGET_OVER"])
   })
 })
 

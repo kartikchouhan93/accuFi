@@ -221,7 +221,10 @@ async function warningsFor(
   written: readonly Transaction[] = [row],
 ): Promise<Warning[]> {
   const occurredAt = fromDbDate(row.occurredAt)
-  const balances = new Map((await sumBalances(userId, asOfFor(today, occurredAt))).map((b) => [b.nodeId, b.balance]))
+  // The budget judgement reads on its own and never throws, so it runs beside the balance read; the order of the
+  // warnings below is the same either way.
+  const [balanceRows, budget] = await Promise.all([sumBalances(userId, asOfFor(today, occurredAt)), budgetWarningsForRows(userId, written, today)])
+  const balances = new Map(balanceRows.map((b) => [b.nodeId, b.balance]))
   const nodes = [...new Map(touched.map((node) => [node.id, node])).values()]
   const overdrawn: Warning[] = []
   const overLimit: Warning[] = []
@@ -246,22 +249,25 @@ async function warningsFor(
           },
         ]
       : []
-  return [...overdrawn, ...overLimit, ...future, ...(await budgetWarningsForRows(userId, written, today))]
+  return [...overdrawn, ...overLimit, ...future, ...budget]
 }
 
 /**
  * The view of a stored row, with its warnings. `touched` and `today` are passed when the caller already has them
- * (default: the row's source node). A soft-deleted row has no warnings: it moves no money.
+ * (default: the row's source node). `written` is every row the write that made this row wrote, when it was several (the
+ * legs of a split): the budget warnings judge them all, as they did for the original call. A soft-deleted row has no
+ * warnings: it moves no money.
  */
 export async function viewOf(
   userId: string,
   row: Transaction,
   touched?: readonly LedgerNode[],
   today?: CalendarDate,
+  written?: readonly Transaction[],
 ): Promise<TransactionView> {
   if (row.deletedAt !== null) return toTransactionView(row)
   const nodes = touched ?? [await requireNode(userId, row.fromNodeId)]
-  return toTransactionView(row, await warningsFor(userId, row, nodes, today ?? (await todayFor(userId))))
+  return toTransactionView(row, await warningsFor(userId, row, nodes, today ?? (await todayFor(userId)), written))
 }
 
 /**
@@ -434,7 +440,7 @@ export async function removeTransaction(userId: string, id: string): Promise<voi
  */
 export async function restoreTransaction(userId: string, id: string): Promise<TransactionView> {
   const today = await todayFor(userId)
-  const row = await inTransaction(async (uow) => {
+  const { row, revived } = await inTransaction(async (uow) => {
     // The investments the restored rows touch, locked before any row is written (lockLotHoldings): a restored sale's
     // lots are judged below, and a restored purchase's lot counts again.
     const restorable = await findRestorable(userId, id, uow)
@@ -461,9 +467,10 @@ export async function restoreTransaction(userId: string, id: string): Promise<Tr
         assertNoOverdraft([from], await balancesAt(userId, asOfFor(today, fromDbDate(each.occurredAt)), uow))
       }
     }
-    return restored
+    return { row: restored, revived: [restored, ...siblings] }
   })
-  return viewOf(userId, row, undefined, today)
+  // A restored split is judged as the whole group it brings back, as recordSplit judged it.
+  return viewOf(userId, row, undefined, today, revived)
 }
 
 export interface SplitLegInput {
@@ -517,10 +524,12 @@ async function storedSplit(userId: string, key: string, legCount: number): Promi
     rows.length === legCount &&
     rows.every((row, index) => row.idempotencyKey === keys[index] && row.groupId !== null && row.groupId === first.groupId)
   if (!isReplay) throw new RequestKeyConflictError()
+  // One judgement serves every leg, exactly as recordSplit made it: all legs share a day and a source, and the budget
+  // warnings look at the legs together, so a replay answers what the original call answered. A deleted group has none.
+  const live = rows.filter((row) => row.deletedAt === null)
   const today = await todayFor(userId)
-  const views: TransactionView[] = []
-  for (const row of rows) views.push(await viewOf(userId, row, undefined, today))
-  return views
+  const warnings = live.length === 0 ? [] : await warningsFor(userId, live[0], [await requireNode(userId, first.fromNodeId)], today, live)
+  return rows.map((row) => (row.deletedAt === null ? toTransactionView(row, warnings) : toTransactionView(row)))
 }
 
 /**
