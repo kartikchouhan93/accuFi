@@ -10,7 +10,8 @@ import { account, investment, nodeId, post, recurringRule, today } from "./seed"
 // them. `createRule` generates whatever is already due as part of saving, so a rule seeded with a start date in the past
 // leaves its entries in the inbox with no further step (the server runs with the hourly sweep off, so nothing else
 // would). Every date below is relative to the real current day, except the month-end test, which is anchored in January
-// to April 2026 (all in the past), and every expected figure is a literal worked out by hand beside it.
+// to April 2026 (all in the past), and every expected figure is a literal worked out by hand beside it. A test must pass on
+// ANY day of the month, so a ledger is only ever looked at over an explicit range (`ledgerBetween`), never "this month".
 
 const PASSWORD = "correct horse battery"
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -18,6 +19,11 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 /** "20 Oct 2026", as the screens print a day. Written out here rather than imported: the test must not share the code it checks. */
 const printed = (day: string) => `${Number(day.slice(8, 10))} ${MONTHS[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`
 const daysFrom = (day: string, count: number) => addDays(calendarDate(day), count)
+/**
+ * The ledger over an explicit range of days. Never a bare "/transactions": that lists the current month only, and a day
+ * relative to today (yesterday, 20 days ago) is in the month before for the first days of every month.
+ */
+const ledgerBetween = (page: Page, from: string, to: string) => page.goto(`/transactions?from=${from}&to=${to}`)
 
 const inbox = (page: Page) => page.getByRole("region", { name: "Inbox", exact: true })
 const rules = (page: Page) => page.getByRole("region", { name: "Rules", exact: true })
@@ -58,7 +64,7 @@ test("exit criterion: a rule three weeks behind proposes three entries, and only
   await expect(navLink(page)).toHaveAccessibleName(waiting(2))
 
   // The transaction is in the ledger, on the day the entry was due, and the account moved by exactly that amount.
-  await page.goto("/transactions")
+  await ledgerBetween(page, dates[0], day)
   await expect(entries(page).getByRole("listitem").filter({ hasText: "Gym membership" })).toHaveCount(1)
   await expect(entries(page).getByRole("listitem").filter({ hasText: "Gym membership" })).toContainText("₹1,500.00")
   await expect(entries(page).getByRole("listitem").filter({ hasText: "Gym membership" })).toContainText(printed(dates[0]))
@@ -115,7 +121,7 @@ test("edit and post: the amount and the day changed on a card are the ones the t
   await expect(page.getByRole("status")).toContainText("Posted Internet: ₹950.50 from Bank to Utilities.")
   await expect(cards(page)).toHaveCount(0)
 
-  await page.goto("/transactions")
+  await ledgerBetween(page, due, day)
   const row = entries(page).getByRole("listitem").filter({ hasText: "Broadband, with the late fee" })
   await expect(row).toHaveCount(1)
   await expect(row).toContainText("₹950.50")
@@ -333,7 +339,7 @@ test("a quantity SIP cannot be posted blind: Post asks for the quantity, and the
   await expect(page.getByRole("status")).toContainText("Posted Gold every month: ₹5,000.00 from Bank to Gold SIP.")
   await expect(cards(page)).toHaveCount(0)
 
-  await page.goto("/transactions")
+  await ledgerBetween(page, due, day)
   await expect(balanceOf(page, "Bank")).toContainText("₹45,000.00")
 
   // The new-rule form does not offer posting automatically into this investment, and says why.
