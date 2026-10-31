@@ -11,11 +11,14 @@ import { monthLabel, type BudgetsScreen } from "@/lib/budget-view"
 import { BudgetCardItem } from "./budget-card"
 import { useFlash } from "./flash"
 import { MonthPicker } from "./month-picker"
+import { UpcomingSection } from "./upcoming-section"
 
 // The client half of the Budgets screen: the month picker, a card per budget and the one message area they share. What is
 // drawn is what the server sent; after a delete the server component is asked again (router.refresh in the card), so
 // nothing on screen is a client-side guess at what the server now holds. The screen has four states: no budget at all (what
-// a budget is for), budgets that have not started yet, a month that no budget covers, and the cards.
+// a budget is for), budgets that have not started yet, a month that no budget covers, and the cards. A budget that starts
+// after the current month has no card, so the Upcoming list below the cards (or below the not-started message) is where it is
+// edited or deleted.
 
 export function BudgetsWorkspace({ screen }: { screen: BudgetsScreen }) {
   const [notice, setNotice] = useState<ToastNotice | null>(null)
@@ -45,7 +48,7 @@ export function BudgetsWorkspace({ screen }: { screen: BudgetsScreen }) {
         {screen.empty ? (
           <EmptyState />
         ) : screen.months.length === 0 ? (
-          <NotStarted month={screen.month} firstStart={screen.upcomingStart} />
+          <NotStarted month={screen.month} firstStart={screen.upcoming[0]?.startMonth ?? null} />
         ) : (
           <>
             <MonthPicker month={screen.month} months={screen.months} />
@@ -56,12 +59,13 @@ export function BudgetsWorkspace({ screen }: { screen: BudgetsScreen }) {
             ) : (
               <ul aria-label={`Budgets for ${monthLabel(screen.month)}`} className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
                 {screen.cards.map((card, index) => (
-                  <BudgetCardItem key={card.budgetId} card={card} index={index} announce={announce} />
+                  <BudgetCardItem key={card.budgetId} card={card} month={screen.month} index={index} announce={announce} />
                 ))}
               </ul>
             )}
           </>
         )}
+        {screen.upcoming.length > 0 && <UpcomingSection upcoming={screen.upcoming} announce={announce} />}
       </div>
       <NoticeToast notice={notice} onDismiss={() => setNotice(null)} statusRef={statusRef} />
     </main>

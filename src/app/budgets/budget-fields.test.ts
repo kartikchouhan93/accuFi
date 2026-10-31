@@ -137,8 +137,10 @@ describe("landingMonth", () => {
     expect(landingMonth(view({ startMonth: "2026-02-01", endMonth: "2026-05-01" }), TODAY)).toBe("2026-02")
   })
 
-  it("is the budget's start month when it starts later, which the screen clamps to what exists", () => {
-    expect(landingMonth(view({ startMonth: "2027-02-01" }), TODAY)).toBe("2027-02")
+  it("is the current month when the budget starts later: the screen has no month for it, and lists it under Upcoming", () => {
+    expect(landingMonth(view({ startMonth: "2027-02-01" }), TODAY)).toBe("2026-11")
+    expect(landingMonth(view({ startMonth: "2026-12-01" }), TODAY)).toBe("2026-11")
+    expect(landingMonth(view({ startMonth: "2026-12-01", endMonth: "2027-03-01" }), TODAY)).toBe("2026-11")
   })
 })
 

@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { BudgetCard, BudgetHistoryRow, BudgetsScreen } from "@/lib/budget-view"
+import type { BudgetCard, BudgetHistoryRow, BudgetsScreen, UpcomingBudget } from "@/lib/budget-view"
 
 // What the Budgets screen, its nav item and its month parameter say, as markup, from literal views shaped exactly as the
 // server sends them (paise as text, months as "YYYY-MM-01"). Rendering to markup has no app router, so the router is
@@ -27,7 +27,7 @@ const { BudgetCardItem } = await import("@/app/budgets/budget-card")
 const { HistoryTable } = await import("@/app/budgets/history-table")
 const { MonthPicker } = await import("@/app/budgets/month-picker")
 const { BudgetsWorkspace } = await import("@/app/budgets/budgets-workspace")
-const { barWidth, percentText } = await import("@/app/budgets/budget-text")
+const { barWidth, cardDeleteText, percentText, upcomingDeleteText } = await import("@/app/budgets/budget-text")
 const { monthFromParam } = await import("@/app/budgets/month-param")
 const { default: BudgetsPage } = await import("@/app/budgets/page")
 const { AppNav } = await import("@/app/app-nav")
@@ -72,7 +72,19 @@ const screen = (over: Partial<BudgetsScreen> = {}): BudgetsScreen => ({
   months: ["2026-09-01", "2026-10-01", "2026-11-01"],
   cards: [card()],
   empty: false,
-  upcomingStart: null,
+  upcoming: [],
+  ...over,
+})
+
+const upcoming = (over: Partial<UpcomingBudget> = {}): UpcomingBudget => ({
+  budgetId: "u1",
+  nodeId: "n9",
+  name: "Rent",
+  amountPaise: "2500000",
+  startMonth: "2026-12-01",
+  endMonth: null,
+  rollover: false,
+  archived: false,
   ...over,
 })
 
@@ -98,7 +110,8 @@ const buttonNamed = (html: string, name: string | RegExp) =>
 const links = (html: string): [string, string][] =>
   [...html.matchAll(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => [decode(m[1]), accessibleText(m[2]).replace(/\s+/g, " ").trim()])
 
-const renderCard = (over: Partial<BudgetCard> = {}) => renderToStaticMarkup(createElement(BudgetCardItem, { card: card(over), index: 0, announce }))
+const renderCard = (over: Partial<BudgetCard> = {}, month = "2026-11-01") =>
+  renderToStaticMarkup(createElement(BudgetCardItem, { card: card(over), month, index: 0, announce }))
 
 describe("a budget card", () => {
   it("shows the ledger, the cap, what was used and what is left, as the ledger prints amounts", () => {
@@ -214,6 +227,15 @@ describe("a budget card", () => {
     expect(buttonNamed(html, /Past months/)?.attrs).toContain('aria-expanded="false"')
   })
 
+  it("names the month the card is for, not 'this month', in the Used link's screen-reader text", () => {
+    const past = accessibleText(renderCard({}, "2026-10-01"))
+    expect(past).toContain("Groceries spending in Oct 2026, see the entries")
+    expect(past).not.toContain("this month")
+    expect(accessibleText(renderCard())).toContain("Groceries spending in Nov 2026, see the entries")
+    const found = links(renderCard({}, "2026-10-01")).find(([, name]) => name.includes("₹8,460.00"))
+    expect(found?.[1]).toMatch(/spending in Oct 2026/)
+  })
+
   it("puts Delete behind a confirm: nothing destructive is on offer until it is pressed", () => {
     const html = renderCard()
     expect(buttonNamed(html, /^Delete budget/)).toBeUndefined()
@@ -245,6 +267,21 @@ describe("a budget card", () => {
     const html = renderCard({ name: "A very long ledger name that goes on and on and on", usedPaise: "123456789012345678" })
     expect(html).toMatch(/min-w-0/)
     expect(html).toMatch(/break-words|\[overflow-wrap:anywhere\]/)
+  })
+})
+
+describe("what the delete confirm says", () => {
+  it("says the earlier months keep their earlier budget, naming where this one starts, not that its history goes", () => {
+    const text = cardDeleteText({ startMonth: "2026-05-01", endMonth: null })
+    expect(text).toBe("This removes the budget for May 2026 onwards. Months before May 2026 keep their earlier budget. Your transactions are not touched.")
+    expect(text).not.toMatch(/history/i)
+    expect(cardDeleteText({ startMonth: "2026-03-01", endMonth: "2026-04-01" })).toContain("Months before Mar 2026 keep their earlier budget.")
+  })
+
+  it("says an upcoming budget has not started and touches no transactions", () => {
+    expect(upcomingDeleteText({ startMonth: "2026-12-01", endMonth: "2027-02-01" })).toBe(
+      "This removes the budget for Dec 2026 to Feb 2027, which has not started. Your transactions are not touched.",
+    )
   })
 })
 
@@ -331,7 +368,7 @@ describe("the screen", () => {
   })
 
   it("says plainly that budgets exist but none has started, naming the first start, and still offers New budget", () => {
-    const html = render(screen({ empty: false, months: [], cards: [], upcomingStart: "2026-12-01" }))
+    const html = render(screen({ empty: false, months: [], cards: [], upcoming: [upcoming()] }))
     const text = visibleText(html)
     expect(text).toMatch(/Your budgets start next month|Your budgets have not started/i)
     expect(text).toContain("Dec 2026")
@@ -342,9 +379,9 @@ describe("the screen", () => {
   })
 
   it("says 'next month' only when the first start is next month, and the month itself otherwise", () => {
-    const next = visibleText(render(screen({ empty: false, months: [], cards: [], month: "2026-11-01", upcomingStart: "2026-12-01" })))
+    const next = visibleText(render(screen({ empty: false, months: [], cards: [], month: "2026-11-01", upcoming: [upcoming()] })))
     expect(next).toContain("Your budgets start next month")
-    const later = visibleText(render(screen({ empty: false, months: [], cards: [], month: "2026-11-01", upcomingStart: "2027-03-01" })))
+    const later = visibleText(render(screen({ empty: false, months: [], cards: [], month: "2026-11-01", upcoming: [upcoming({ startMonth: "2027-03-01" })] })))
     expect(later).toContain("Your budgets start in Mar 2027")
     expect(later).not.toContain("next month")
   })
@@ -353,6 +390,63 @@ describe("the screen", () => {
     const text = visibleText(render(screen({ empty: false, months: [], cards: [] })))
     expect(text).toMatch(/none has started/i)
     expect(text).not.toContain("undefined")
+  })
+
+  it("lists the upcoming budgets when none has started, each with its ledger, cap and start, and Edit and Delete named for it", () => {
+    const html = render(
+      screen({
+        empty: false,
+        months: [],
+        cards: [],
+        upcoming: [upcoming(), upcoming({ budgetId: "u2", name: "Travel", amountPaise: "100050", startMonth: "2027-02-01", endMonth: "2027-06-01" })],
+      }),
+    )
+    const text = visibleText(html)
+    expect(text).toContain("Upcoming")
+    expect(html).toMatch(/<h2[^>]*>Upcoming<\/h2>/)
+    expect(text).toContain("Rent")
+    expect(text).toContain("₹25,000.00")
+    expect(text).toContain("Starts Dec 2026")
+    expect(text).toContain("Travel")
+    expect(text).toContain("₹1,000.50")
+    expect(text).toMatch(/Starts Feb 2027.*Jun 2027/)
+    expect(links(html)).toContainEqual(["/budgets/u1/edit", "Edit Rent budget"])
+    expect(links(html)).toContainEqual(["/budgets/u2/edit", "Edit Travel budget"])
+    expect(buttonNamed(html, "Delete Rent budget")).toBeDefined()
+    expect(buttonNamed(html, "Delete Travel budget")).toBeDefined()
+    expect(html).not.toContain("<select") // still no month list with nothing in it
+  })
+
+  it("puts Delete on an upcoming budget behind the same confirm as a card: nothing destructive until it is pressed", () => {
+    const html = render(screen({ empty: false, months: [], cards: [], upcoming: [upcoming()] }))
+    expect(buttonNamed(html, /^Delete budget/)).toBeUndefined()
+    expect(visibleText(html)).not.toMatch(/Keep it/)
+    expect(buttonNamed(html, "Delete Rent budget")?.attrs).toContain('aria-expanded="false"')
+  })
+
+  it("shows the Upcoming section below the cards when some budgets have started, and none when there is nothing upcoming", () => {
+    const withUpcoming = render(screen({ upcoming: [upcoming()] }))
+    const cardsAt = withUpcoming.indexOf("Groceries")
+    const upcomingAt = withUpcoming.indexOf(">Upcoming<")
+    expect(cardsAt).toBeGreaterThan(-1)
+    expect(upcomingAt).toBeGreaterThan(cardsAt)
+    expect(links(withUpcoming)).toContainEqual(["/budgets/u1/edit", "Edit Rent budget"])
+    expect(links(withUpcoming)).toContainEqual(["/budgets/b1/edit", "Edit Groceries budget"])
+    expect(visibleText(render(screen()))).not.toContain("Upcoming")
+    expect(visibleText(render(screen({ empty: true, months: [], cards: [] })))).not.toContain("Upcoming")
+  })
+
+  it("shows the Upcoming section under the no-budget-covers message too, so a month with no card is not a dead end", () => {
+    const html = render(screen({ cards: [], month: "2026-10-01", upcoming: [upcoming()] }))
+    expect(visibleText(html)).toMatch(/no budget covers Oct 2026/i)
+    expect(buttonNamed(html, "Delete Rent budget")).toBeDefined()
+  })
+
+  it("marks an upcoming budget on an archived ledger in text, and says when it carries over", () => {
+    const text = visibleText(render(screen({ upcoming: [upcoming({ archived: true, rollover: true })] })))
+    expect(text).toContain("Archived")
+    expect(text).toMatch(/carries over/i)
+    expect(visibleText(render(screen({ upcoming: [upcoming()] })))).not.toMatch(/Archived|carries over/i)
   })
 
   it("says no budget covers the month it is looking at, with the picker still there", () => {

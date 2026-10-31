@@ -1,23 +1,22 @@
 "use client"
 
-import { ChevronDown, LoaderCircle, Pencil, Trash2 } from "lucide-react"
+import { ChevronDown, Pencil } from "lucide-react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
-import { useEffect, useId, useRef, useState, useTransition } from "react"
+import { useId, useState } from "react"
 import { Amount } from "@/app/amount"
-import { attempt, couldNot, figure } from "@/app/feedback"
+import { figure } from "@/app/feedback"
 import type { Announce } from "@/app/transactions/notice"
 import { Collapse } from "@/components/ui/collapse"
 import { GlowingEffect } from "@/components/ui/glowing-effect"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { buttonClass } from "@/components/ui/styles"
 import { Tag } from "@/components/ui/tag"
-import { spanLabel, type BudgetCard } from "@/lib/budget-view"
+import { monthLabel, spanLabel, type BudgetCard } from "@/lib/budget-view"
 import { formatPaiseText } from "@/lib/node-money"
 import { deserialisePaise } from "@/lib/serialise"
 import { cn } from "@/lib/utils"
-import { deleteBudgetAction } from "./actions"
-import { absolutePaise, barWidth, percentText } from "./budget-text"
+import { absolutePaise, barWidth, cardDeleteText, percentText } from "./budget-text"
+import { DeleteButton, DeleteConfirm, useDeleteBudget } from "./delete-budget"
 import { HistoryTable } from "./history-table"
 import { BAR_FILL, StatusChip } from "./status-chip"
 
@@ -30,6 +29,8 @@ import { BAR_FILL, StatusChip } from "./status-chip"
 
 interface Props {
   card: BudgetCard
+  /** The month the screen is on ("YYYY-MM-01"): what the card's figures are for. */
+  month: string
   index: number
   announce: Announce
 }
@@ -37,21 +38,10 @@ interface Props {
 const DEFINITION = "min-w-0"
 const TERM = "text-sm text-fg-soft"
 
-export function BudgetCardItem({ card, index, announce }: Props) {
-  const router = useRouter()
-  const confirmId = useId()
+export function BudgetCardItem({ card, month, index, announce }: Props) {
   const historyId = useId()
-  const inFlight = useRef(false)
-  const keepButton = useRef<HTMLButtonElement>(null)
-  const deleteButton = useRef<HTMLButtonElement>(null)
-  const [confirming, setConfirming] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
-  const [pending, startTransition] = useTransition()
-
-  // The confirm has just opened: the safe choice has the keyboard, so Enter cannot delete by accident.
-  useEffect(() => {
-    if (confirming) keepButton.current?.focus()
-  }, [confirming])
+  const del = useDeleteBudget(card, announce)
 
   const used = deserialisePaise(card.usedPaise)
   const remaining = deserialisePaise(card.remainingPaise)
@@ -61,27 +51,6 @@ export function BudgetCardItem({ card, index, announce }: Props) {
   const width = barWidth(card)
   const carried = card.rollover && deserialisePaise(card.carryPaise) > 0n
   const subLedgers = card.countedNames.length
-
-  // The in-flight guard is a ref, so two quick presses in the same frame cannot both start a delete; the buttons say they
-  // are busy with aria-disabled rather than disabled, because a disabled button drops the keyboard's place.
-  function remove() {
-    if (inFlight.current) return
-    inFlight.current = true
-    startTransition(async () => {
-      try {
-        const result = await attempt(() => deleteBudgetAction({ id: card.budgetId }))
-        if (result === null || !result.ok) {
-          announce({ tone: "warning", lines: [couldNot(`delete the ${card.name} budget`, result)] })
-          if (result !== null && !result.ok && result.error.code === "not_found") router.refresh() // gone already: this card is stale
-          return
-        }
-        announce({ tone: "success", lines: [`Deleted the ${card.name} budget. Your transactions are untouched.`] }, true) // the card is gone, and the keyboard's place with it
-        router.refresh()
-      } finally {
-        inFlight.current = false
-      }
-    })
-  }
 
   return (
     <SpotlightCard as="li" className="surface rise rounded-2xl p-4 sm:p-5" style={{ "--i": index } as React.CSSProperties} radius={300} strength={10}>
@@ -109,7 +78,7 @@ export function BudgetCardItem({ card, index, announce }: Props) {
               className="rounded-md underline decoration-line-strong decoration-1 underline-offset-4 transition-colors hover:decoration-accent-edge"
             >
               <Amount text={refund ? { amount: formatPaiseText(card.usedPaise), qualifier: "net refund", tone: "neutral" } : figure(card.usedPaise)} />
-              <span className="sr-only"> {card.name} spending this month, see the entries</span>
+              <span className="sr-only"> {card.name} spending in {monthLabel(month)}, see the entries</span>
             </Link>
           </dd>
         </div>
@@ -152,20 +121,7 @@ export function BudgetCardItem({ card, index, announce }: Props) {
           <Pencil aria-hidden className="size-4" />
           Edit<span className="sr-only"> {card.name} budget</span>
         </Link>
-        <button
-          type="button"
-          ref={deleteButton}
-          aria-expanded={confirming}
-          aria-controls={confirming ? confirmId : undefined}
-          aria-disabled={pending}
-          onClick={() => {
-            if (!pending) setConfirming((current) => !current)
-          }}
-          className={buttonClass({ variant: "ghost", size: "sm", className: "aria-disabled:opacity-55" })}
-        >
-          <Trash2 aria-hidden className="size-4" />
-          Delete<span className="sr-only"> {card.name} budget</span>
-        </button>
+        <DeleteButton control={del} name={card.name} />
         {card.history.length > 1 && (
           <button
             type="button"
@@ -180,38 +136,9 @@ export function BudgetCardItem({ card, index, announce }: Props) {
         )}
       </div>
 
-      <Collapse open={confirming} id={confirmId}>
-        <div role="group" aria-label={`Delete the ${card.name} budget?`} className="mt-4 rounded-2xl border border-negative/60 bg-negative-wash p-4">
-          <p className="text-sm font-medium text-negative">Delete the {card.name} budget?</p>
-          <p className="mt-1 text-sm text-fg">
-            This removes the budget for {spanLabel(card.startMonth, card.endMonth)} and its history. Your transactions are not touched.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              aria-disabled={pending}
-              onClick={remove}
-              className={buttonClass({ variant: "danger", size: "sm", className: "aria-disabled:opacity-55" })}
-            >
-              {pending && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
-              Delete budget<span className="sr-only"> {card.name}</span>
-            </button>
-            <button
-              type="button"
-              ref={keepButton}
-              aria-disabled={pending}
-              onClick={() => {
-                if (pending) return
-                setConfirming(false)
-                deleteButton.current?.focus()
-              }}
-              className={buttonClass({ variant: "secondary", size: "sm", className: "aria-disabled:opacity-55" })}
-            >
-              Keep it<span className="sr-only"> {card.name} budget</span>
-            </button>
-          </div>
-        </div>
-      </Collapse>
+      <DeleteConfirm control={del} name={card.name}>
+        {cardDeleteText(card)}
+      </DeleteConfirm>
 
       {card.history.length > 1 && (
         <Collapse open={showHistory} id={historyId}>

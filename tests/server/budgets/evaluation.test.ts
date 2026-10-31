@@ -354,30 +354,95 @@ describe("the screen as a whole", () => {
     await other.spend(other.food.id, "2026-05-02", 1_000n)
 
     const screen = await loadBudgetsScreen(w.user.id)
-    expect(screen).toEqual({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: true, upcomingStart: null })
+    expect(screen).toEqual({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: true, upcoming: [] })
     expect(await loadBudgetAttention(w.user.id)).toEqual({ near: 0, over: 0 })
   })
 
-  it("a budget with no entries still has a card, and a budget starting next month has none yet", async () => {
+  it("a budget with no entries still has a card, and a budget starting next month has none yet but is listed as upcoming", async () => {
     at(TODAY)
     const w = await setup()
     const rent = await registry.makeNode(w.user.id, "EXPENSE", "Rent")
     await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-05-01" })
-    await registry.makeBudget(w.user.id, rent.id, { startMonth: "2026-06-01" })
+    const next = await registry.makeBudget(w.user.id, rent.id, { startMonth: "2026-06-01", endMonth: "2026-09-01", amountPaise: 123_456n, rollover: true })
     const screen = await loadBudgetsScreen(w.user.id)
     expect(screen.empty).toBe(false)
+    expect(screen.months).toEqual(["2026-05-01"]) // one has started: the months are unchanged by the one still to come
     expect(screen.cards.map((c) => [c.name, c.usedPaise, c.status])).toEqual([["Food", "0", "ON_TRACK"]])
-    expect(screen.upcomingStart).toBeNull() // one has started: there are months to show
+    expect(screen.upcoming).toEqual([
+      {
+        budgetId: next.id,
+        nodeId: rent.id,
+        name: "Rent",
+        amountPaise: "123456",
+        startMonth: "2026-06-01",
+        endMonth: "2026-09-01",
+        rollover: true,
+        archived: false,
+      },
+    ])
   })
 
-  it("names the earliest start when every budget starts after the current month: not empty, no months, no cards", async () => {
+  it("names every upcoming budget when none has started: not empty, no months, no cards", async () => {
     at(TODAY)
     const w = await setup()
     const rent = await registry.makeNode(w.user.id, "EXPENSE", "Rent")
-    await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-08-01" })
-    await registry.makeBudget(w.user.id, rent.id, { startMonth: "2026-06-01" })
+    const food = await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-08-01" })
+    const late = await registry.makeBudget(w.user.id, rent.id, { startMonth: "2026-06-01" })
     const screen = await loadBudgetsScreen(w.user.id)
-    expect(screen).toEqual({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: false, upcomingStart: "2026-06-01" })
+    expect(screen).toMatchObject({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: false })
+    expect(screen.upcoming.map((u) => [u.budgetId, u.name, u.startMonth])).toEqual([
+      [late.id, "Rent", "2026-06-01"],
+      [food.id, "Food", "2026-08-01"],
+    ])
+  })
+
+  it("lists upcoming budgets by start month, then name, and never one that has started, ended or begins this month", async () => {
+    at(TODAY)
+    const w = await setup()
+    const make = async (name: string, startMonth: string, endMonth: string | null = null, over: { archivedAt?: Date } = {}) => {
+      const node = await registry.makeNode(w.user.id, "EXPENSE", name, over)
+      return registry.makeBudget(w.user.id, node.id, { startMonth, endMonth })
+    }
+    await make("Started", "2026-03-01")
+    await make("Ended", "2026-01-01", "2026-03-01")
+    await make("This month", "2026-05-01")
+    const beta = await make("Beta", "2026-07-01")
+    const alpha = await make("Alpha", "2026-07-01")
+    const soon = await make("Soon", "2026-06-01")
+    const archived = await make("Archived later", "2026-12-01", null, { archivedAt: new Date() })
+    const screen = await loadBudgetsScreen(w.user.id)
+    expect(screen.upcoming.map((u) => u.budgetId)).toEqual([soon.id, alpha.id, beta.id, archived.id])
+    expect(screen.upcoming.map((u) => u.archived)).toEqual([false, false, false, true])
+    expect(screen.cards.map((c) => c.name).sort()).toEqual(["Started", "This month"])
+  })
+
+  it("a later span of a ledger that has a current one is upcoming too, and the current card is unchanged", async () => {
+    at(TODAY)
+    const w = await setup()
+    await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-04-01", endMonth: "2026-06-01", amountPaise: 100_000n })
+    const later = await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-07-01", amountPaise: 150_000n })
+    const screen = await loadBudgetsScreen(w.user.id)
+    expect(screen.cards.map((c) => [c.amountPaise, c.endMonth])).toEqual([["100000", "2026-06-01"]])
+    expect(screen.upcoming.map((u) => [u.budgetId, u.amountPaise])).toEqual([[later.id, "150000"]])
+  })
+
+  it("never lists another user's upcoming budget", async () => {
+    at(TODAY)
+    const w = await setup()
+    const other = await setup()
+    await registry.makeBudget(other.user.id, other.food.id, { startMonth: "2026-08-01" })
+    await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-04-01" })
+    expect((await loadBudgetsScreen(w.user.id)).upcoming).toEqual([])
+    expect((await loadBudgetsScreen(other.user.id)).upcoming).toHaveLength(1)
+  })
+
+  it("the month decides what is upcoming, in the user's own timezone", async () => {
+    at("2026-10-31T12:00:00Z") // already November in Kiritimati, still October in Pago Pago
+    const east = await setup("Pacific/Kiritimati")
+    const west = await setup("Pacific/Pago_Pago")
+    for (const w of [east, west]) await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-11-01" })
+    expect((await loadBudgetsScreen(east.user.id)).upcoming).toEqual([])
+    expect((await loadBudgetsScreen(west.user.id)).upcoming.map((u) => u.startMonth)).toEqual(["2026-11-01"])
   })
 
   it("has no bigint anywhere: JSON.stringify works", async () => {

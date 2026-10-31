@@ -104,14 +104,15 @@ export function valuesOfBudget(budget: BudgetSettingsView, today: CalendarDate):
 }
 
 /**
- * The month the Budgets screen should open on after a save: the current month when the budget covers it, otherwise the
- * budget's own first month (the screen keeps a month it cannot show inside what exists). "YYYY-MM".
+ * The month the Budgets screen should open on after a save: the current month when the budget covers it or has not started
+ * (the screen has no month before the first budget's start, and lists a budget that starts later under Upcoming), otherwise
+ * the budget's own first month, since one that ended is only reachable there. "YYYY-MM".
  */
 export function landingMonth(budget: Pick<BudgetSettingsView, "startMonth" | "endMonth">, today: CalendarDate): string {
   const current = monthValue(today)
   const start = monthValue(budget.startMonth)
-  const covers = start <= current && (budget.endMonth === null || monthValue(budget.endMonth) >= current)
-  return covers ? current : start
+  const ended = budget.endMonth !== null && monthValue(budget.endMonth) < current
+  return ended ? start : current
 }
 
 export interface Outcome {

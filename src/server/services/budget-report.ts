@@ -16,7 +16,7 @@ import {
 } from "@/domain/calendar-date"
 import { formatPaise, type Paise } from "@/domain/money"
 import { flowOf } from "@/domain/reports"
-import { monthLabel, toBudgetSettingsView, type BudgetCard, type BudgetHistoryRow, type BudgetSettingsView, type BudgetsScreen } from "@/lib/budget-view"
+import { monthLabel, toBudgetSettingsView, type BudgetCard, type BudgetHistoryRow, type BudgetSettingsView, type BudgetsScreen, type UpcomingBudget } from "@/lib/budget-view"
 import { transactionsHref } from "@/lib/report-drill"
 import { toPickerNode, type PickerNode } from "@/lib/transaction-list-view"
 import { serialisePaise } from "@/lib/serialise"
@@ -209,6 +209,29 @@ function cardsFor(evaluation: Evaluation, month: CalendarDate): BudgetCard[] {
     .sort(byStrain)
 }
 
+/** Every span that starts after the current month, earliest start first, then by ledger name (then id, for a fixed order). */
+function upcomingFor(evaluation: Evaluation): UpcomingBudget[] {
+  return evaluation.ledgers
+    .flatMap((ledger) =>
+      ledger.spans
+        .filter((span) => compareDates(span.startMonth, evaluation.currentMonth) > 0)
+        .map((span) => ({
+          budgetId: span.id,
+          nodeId: ledger.nodeId,
+          name: ledger.name,
+          amountPaise: serialisePaise(span.amountPaise),
+          startMonth: span.startMonth,
+          endMonth: span.endMonth,
+          rollover: span.rollover,
+          archived: ledger.archived,
+        })),
+    )
+    .sort(
+      (a, b) =>
+        compareDates(a.startMonth, b.startMonth) || a.name.localeCompare(b.name, "en") || a.budgetId.localeCompare(b.budgetId),
+    )
+}
+
 /**
  * The budgets screen for `month` (any day of it; the current month by default). A month before the first budget or
  * after the current month is clamped into the selectable range, not refused. Budgets with no spending still have cards.
@@ -225,18 +248,13 @@ export async function loadBudgetsScreen(userId: string, month?: CalendarDate): P
     selected = currentMonth
   }
 
-  // Budgets that all start after the current month: nothing to show yet, but not "no budgets" either.
-  const starts = evaluation.ledgers.flatMap((ledger) => ledger.spans.map((span) => span.startMonth))
-  const upcomingStart =
-    months.length === 0 && evaluation.hasBudgets && starts.length > 0 ? starts.reduce((a, b) => (compareDates(a, b) <= 0 ? a : b)) : null
-
   return {
     today,
     month: selected,
     months,
     cards: cardsFor(evaluation, selected),
     empty: !evaluation.hasBudgets,
-    upcomingStart,
+    upcoming: upcomingFor(evaluation),
   }
 }
 

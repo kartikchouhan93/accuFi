@@ -90,6 +90,22 @@ export interface BudgetCard {
   history: BudgetHistoryRow[]
 }
 
+/** A budget that starts after the current month: nothing to measure yet, but it exists and can be edited or deleted. */
+export interface UpcomingBudget {
+  budgetId: string
+  nodeId: string
+  /** The ledger's name. */
+  name: string
+  /** Paise, as a decimal string. */
+  amountPaise: string
+  /** The first day of the first month it applies to: after the current month. */
+  startMonth: string
+  /** The first day of the last month it applies to; null while it has no end. */
+  endMonth: string | null
+  rollover: boolean
+  archived: boolean
+}
+
 export interface BudgetsScreen {
   /** The user's today, "YYYY-MM-DD". */
   today: string
@@ -102,8 +118,10 @@ export interface BudgetsScreen {
   /** The user has no budget at all. */
   empty: boolean
   /**
-   * The earliest start month ("YYYY-MM-01") of the user's budgets, only when budgets exist but none has started yet (they
-   * all begin after the current month, so there is no card and no month to pick); null otherwise.
+   * Every budget whose start month is after the current month, earliest start first, then by ledger name: they have no card
+   * yet, and this is how they are found to be edited or deleted. Empty when there are none. When no budget has started
+   * (`months` is empty and `empty` is false) this is every budget the user has, and its first entry's start is "the first
+   * start" the screen names.
    */
-  upcomingStart: string | null
+  upcoming: UpcomingBudget[]
 }

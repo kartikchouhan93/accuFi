@@ -1,3 +1,4 @@
+import { monthLabel, spanLabel } from "@/lib/budget-view"
 import { deserialisePaise } from "@/lib/serialise"
 
 // The few pieces of text and size the Budgets screen derives from a card's figures. All of it reads paise text through
@@ -29,4 +30,17 @@ export function barWidth({ usedPaise, availablePaise }: { usedPaise: string; ava
 /** The magnitude of a paise amount, as paise text. */
 export function absolutePaise(paise: string): string {
   return paise.startsWith("-") ? paise.slice(1) : paise
+}
+
+/**
+ * What the confirm to delete a card says. A delete removes this budget's span only: when the budget was split by a change of
+ * amount, the months before this span's start keep the earlier one.
+ */
+export function cardDeleteText({ startMonth, endMonth }: { startMonth: string; endMonth: string | null }): string {
+  return `This removes the budget for ${spanLabel(startMonth, endMonth)}. Months before ${monthLabel(startMonth)} keep their earlier budget. Your transactions are not touched.`
+}
+
+/** What the confirm to delete an upcoming budget says. */
+export function upcomingDeleteText({ startMonth, endMonth }: { startMonth: string; endMonth: string | null }): string {
+  return `This removes the budget for ${spanLabel(startMonth, endMonth)}, which has not started. Your transactions are not touched.`
 }
