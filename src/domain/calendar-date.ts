@@ -101,6 +101,26 @@ export function isoWeekday(date: CalendarDate): number {
   return toDbDate(date).getUTCDay() || 7
 }
 
+/** The first day of the month `date` falls in. A budget month is named by this day (YYYY-MM-01). */
+export function monthOf(date: CalendarDate): CalendarDate {
+  return `${date.slice(0, 7)}-01` as CalendarDate
+}
+
+/**
+ * The first-of-month `n` months after `month` (negative for earlier). Date.UTC carries and borrows across year ends,
+ * and only UTC components are used, so neither the process timezone nor daylight saving can move the result.
+ */
+export function addMonths(month: CalendarDate, n: number): CalendarDate {
+  const [, year, monthNumber] = DATE_PATTERN.exec(month)!.map(Number)
+  return fromDbDate(new Date(Date.UTC(year, monthNumber - 1 + n, 1)))
+}
+
+/** The number of days in the month `month` falls in. Day 0 of the next month is this month's last day. */
+export function daysInMonth(month: CalendarDate): number {
+  const [, year, monthNumber] = DATE_PATTERN.exec(month)!.map(Number)
+  return new Date(Date.UTC(year, monthNumber, 0)).getUTCDate()
+}
+
 function assertMonth(month: number): void {
   if (!Number.isInteger(month) || month < 1 || month > 12) {
     throw new CalendarDateError(`Month must be an integer from 1 to 12, got ${month}`)

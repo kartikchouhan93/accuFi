@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   CalendarDateError,
   addDays,
+  addMonths,
   calendarDate,
   compareDates,
   daysBetween,
   financialYearRange,
   fromDbDate,
+  daysInMonth,
   isoWeekday,
+  monthOf,
   monthRange,
   sameDayNextMonth,
   toDbDate,
@@ -259,5 +262,44 @@ describe("sameDayNextMonth", () => {
 
   it("lets a leap day through into a month that has it", () => {
     expect(sameDayNextMonth(calendarDate("2028-02-29"))).toBe("2028-03-29")
+  })
+})
+
+describe("monthOf", () => {
+  it("is the first day of the month the date falls in", () => {
+    expect(monthOf(calendarDate("2026-11-17"))).toBe("2026-11-01")
+    expect(monthOf(calendarDate("2026-11-01"))).toBe("2026-11-01")
+    expect(monthOf(calendarDate("2028-02-29"))).toBe("2028-02-01")
+  })
+})
+
+describe("addMonths", () => {
+  it("moves a first-of-month forward, carrying December into the next year", () => {
+    expect(addMonths(calendarDate("2026-01-01"), 1)).toBe("2026-02-01")
+    expect(addMonths(calendarDate("2026-11-01"), 3)).toBe("2027-02-01")
+    expect(addMonths(calendarDate("2026-12-01"), 1)).toBe("2027-01-01")
+  })
+
+  it("moves backward for a negative count, borrowing from the previous year", () => {
+    expect(addMonths(calendarDate("2026-03-01"), -3)).toBe("2025-12-01")
+    expect(addMonths(calendarDate("2026-01-01"), -1)).toBe("2025-12-01")
+  })
+
+  it("is the identity for zero and spans whole years", () => {
+    expect(addMonths(calendarDate("2026-07-01"), 0)).toBe("2026-07-01")
+    expect(addMonths(calendarDate("2026-07-01"), 24)).toBe("2028-07-01")
+  })
+})
+
+describe("daysInMonth", () => {
+  it("knows leap years", () => {
+    expect(daysInMonth(calendarDate("2028-02-01"))).toBe(29)
+    expect(daysInMonth(calendarDate("2027-02-01"))).toBe(28)
+    expect(daysInMonth(calendarDate("2100-02-01"))).toBe(28)
+  })
+
+  it("gives 30 and 31 for the other months", () => {
+    expect(daysInMonth(calendarDate("2026-04-01"))).toBe(30)
+    expect(daysInMonth(calendarDate("2026-12-01"))).toBe(31)
   })
 })
