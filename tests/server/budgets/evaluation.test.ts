@@ -354,7 +354,7 @@ describe("the screen as a whole", () => {
     await other.spend(other.food.id, "2026-05-02", 1_000n)
 
     const screen = await loadBudgetsScreen(w.user.id)
-    expect(screen).toEqual({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: true })
+    expect(screen).toEqual({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: true, upcomingStart: null })
     expect(await loadBudgetAttention(w.user.id)).toEqual({ near: 0, over: 0 })
   })
 
@@ -367,6 +367,17 @@ describe("the screen as a whole", () => {
     const screen = await loadBudgetsScreen(w.user.id)
     expect(screen.empty).toBe(false)
     expect(screen.cards.map((c) => [c.name, c.usedPaise, c.status])).toEqual([["Food", "0", "ON_TRACK"]])
+    expect(screen.upcomingStart).toBeNull() // one has started: there are months to show
+  })
+
+  it("names the earliest start when every budget starts after the current month: not empty, no months, no cards", async () => {
+    at(TODAY)
+    const w = await setup()
+    const rent = await registry.makeNode(w.user.id, "EXPENSE", "Rent")
+    await registry.makeBudget(w.user.id, w.food.id, { startMonth: "2026-08-01" })
+    await registry.makeBudget(w.user.id, rent.id, { startMonth: "2026-06-01" })
+    const screen = await loadBudgetsScreen(w.user.id)
+    expect(screen).toEqual({ today: "2026-05-19", month: "2026-05-01", months: [], cards: [], empty: false, upcomingStart: "2026-06-01" })
   })
 
   it("has no bigint anywhere: JSON.stringify works", async () => {

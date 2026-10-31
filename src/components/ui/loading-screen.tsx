@@ -106,6 +106,23 @@ export function RecurringSkeleton() {
   )
 }
 
+export function BudgetsSkeleton() {
+  return (
+    <Shell label="your budgets">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-10 w-44" />
+        <Skeleton className="h-11 w-40" />
+      </div>
+      <Skeleton className="mt-8 h-11 w-72 rounded-xl" />
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        {Array.from({ length: 4 }, (_, i) => (
+          <Skeleton key={i} className="h-60 rounded-2xl" />
+        ))}
+      </div>
+    </Shell>
+  )
+}
+
 export function PricesSkeleton() {
   return (
     <Shell label="the price screen">

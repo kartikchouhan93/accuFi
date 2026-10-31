@@ -221,12 +221,18 @@ export async function loadBudgetsScreen(userId: string, month?: CalendarDate): P
     selected = currentMonth
   }
 
+  // Budgets that all start after the current month: nothing to show yet, but not "no budgets" either.
+  const starts = evaluation.ledgers.flatMap((ledger) => ledger.spans.map((span) => span.startMonth))
+  const upcomingStart =
+    months.length === 0 && evaluation.hasBudgets && starts.length > 0 ? starts.reduce((a, b) => (compareDates(a, b) <= 0 ? a : b)) : null
+
   return {
     today,
     month: selected,
     months,
     cards: cardsFor(evaluation, selected),
     empty: !evaluation.hasBudgets,
+    upcomingStart,
   }
 }
 

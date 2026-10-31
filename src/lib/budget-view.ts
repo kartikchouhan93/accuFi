@@ -101,4 +101,9 @@ export interface BudgetsScreen {
   cards: BudgetCard[]
   /** The user has no budget at all. */
   empty: boolean
+  /**
+   * The earliest start month ("YYYY-MM-01") of the user's budgets, only when budgets exist but none has started yet (they
+   * all begin after the current month, so there is no card and no month to pick); null otherwise.
+   */
+  upcomingStart: string | null
 }
