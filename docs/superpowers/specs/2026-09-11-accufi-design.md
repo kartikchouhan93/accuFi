@@ -321,6 +321,8 @@ Generation runs on a scheduled job and also opportunistically on user login, so 
 
 ### 8.5 M5 — Budgets
 
+**Status:** built on `feat/m5-budgets`, 2026-11-01: budgets at `/budgets` (a card per budget for the chosen month, with used, remaining, a projection and a history of past months), the new and edit form with revision from a chosen month, rollover, the non-blocking warning when recording, the dashboard line, and the refusal to delete a ledger a budget uses. Design: `docs/superpowers/specs/2026-11-01-accufi-m5-budgets-design.md`; decisions: `docs/superpowers/decisions/2026-11-01-m5-rulings.md`.
+
 A `Budget` sets a monthly cap on an `EXPENSE` node: amount, start month, optional end month, rollover flag (default off).
 
 Spend against a budget is the sum of transactions targeting that node within the period, minus refunds out of it. The UI shows consumed, remaining, and a projection based on elapsed days. Exceeding a budget warns; it never blocks.

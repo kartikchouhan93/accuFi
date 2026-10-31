@@ -1,6 +1,6 @@
 # AccuFi M5 — Budgets: design
 
-**Status:** Draft, awaiting approval. **Date:** 2026-11-01. **Builds on:** `2026-09-11-accufi-design.md` §8.5 (budgets), §6.4, EC-9, EC-48 to EC-52, and on the M3 report arithmetic (`flowOf`, `rankFlows`, `findMoves`, `transactionsHref`). M0–M4 are merged and pushed.
+**Status:** Approved, built on branch `feat/m5-budgets`; amended in execution (the warning is judged on the state after the write only, not on a crossing, and the revision sentence is neutral rather than "Raises it"; both recorded in `docs/superpowers/decisions/2026-11-01-m5-rulings.md`). **Date:** 2026-11-01. **Builds on:** `2026-09-11-accufi-design.md` §8.5 (budgets), §6.4, EC-9, EC-48 to EC-52, and on the M3 report arithmetic (`flowOf`, `rankFlows`, `findMoves`, `transactionsHref`). M0–M4 are merged and pushed.
 
 The user asked for the design to be drafted straight from the spec, without a question round. Everything the spec leaves open is decided here and listed in **Calls I made** at the end, each with what it costs if wrong.
 

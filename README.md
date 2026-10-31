@@ -45,6 +45,18 @@ A recurring rule describes something that repeats: rent, a SIP, a subscription, 
 
 Entries are proposed by a catch-up that runs at every sign-in and on an hourly in-process timer, so an instance that was switched off for a week proposes everything it missed once it is running again, though at most 100 entries per rule per run, so a long daily gap fills over several hourly runs. The timer needs no cron job; `RECURRING_SWEEP` and `RECURRING_SWEEP_INTERVAL_MS` are described under [Deployment](#deployment).
 
+## Budgets
+
+A budget is a monthly cap on an expense ledger: Groceries, ₹12,000 a month, from a month you choose and, if you like, until a last month. Budgets live at `/budgets`, which shows one month at a time with a card for each budget: what is used, what is left or how far over, a bar for the share used, and where the month ends at this pace (once a week of the month has passed and something has been spent). A budget on a parent ledger counts the ledgers inside it, a ledger inside it may have a budget of its own, and a refund into a budgeted ledger takes that much off the month it happened in. Every "used" figure is a link to exactly the entries it is made of, and is the same figure the Transactions screen totals for them.
+
+**A budget warns and never blocks.** Recording an expense that leaves a budget at 80% or more of its amount says so in the notice that confirms it ("Groceries is at 85% of its budget this month."), and one that takes it over says by how much. The entry is recorded either way, and the dashboard shows "1 budget needs attention" while a budget is near or over this month. Nothing is refused, held back or sent anywhere.
+
+**Nothing is frozen.** A month's figures are not stored: they are worked out from your transactions each time you look. An expense dated in a month that has closed changes that month's status the moment it is recorded, and deleting it changes it back. A new amount applies from the month you pick (this month by default), so earlier months keep the amount that applied to them; picking the budget's first month corrects the whole budget instead.
+
+Rollover is off by default; switched on, whatever a month leaves unspent is added to the next month's available amount (an overspent month carries nothing forward, never a debt).
+
+A ledger that a budget uses cannot be deleted until the budget is (or it can be archived, which keeps the budget); deleting a budget never touches a transaction.
+
 ## Runtime spike outcome (spec §9.1)
 
 Question: does Next.js 16 + Prisma 6 work on the Bun runtime, in Docker, against Postgres 16?
