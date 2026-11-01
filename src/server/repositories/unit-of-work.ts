@@ -18,16 +18,28 @@ export interface UnitOfWork {
 // The client lives here, keyed by the token, not on it: there is nothing to reach through a cast at runtime either.
 const clients = new WeakMap<object, Prisma.TransactionClient>()
 
+/** Prisma's interactive-transaction options, narrowed to the ones a caller has a reason to override (both in ms). */
+export interface TransactionOptions {
+  /** How long a single call may run before Prisma aborts it (default 5000ms). */
+  timeout?: number
+  /** How long to wait for a connection from the pool before giving up (default 2000ms). */
+  maxWait?: number
+}
+
 /**
  * Run `work` in one database transaction: everything written through repositories with the token it receives commits
- * together, or not at all if `work` throws.
+ * together, or not at all if `work` throws. `options` overrides Prisma's default `timeout`/`maxWait` for callers that
+ * know up front they need more headroom (e.g. a bulk operation with a bounded, predictable row count).
  */
-export function inTransaction<T>(work: (uow: UnitOfWork) => Promise<T>): Promise<T> {
-  return prisma.$transaction((tx) => {
-    const uow = Object.freeze({}) as UnitOfWork
-    clients.set(uow, tx)
-    return work(uow)
-  })
+export function inTransaction<T>(work: (uow: UnitOfWork) => Promise<T>, options?: TransactionOptions): Promise<T> {
+  return prisma.$transaction(
+    (tx) => {
+      const uow = Object.freeze({}) as UnitOfWork
+      clients.set(uow, tx)
+      return work(uow)
+    },
+    options,
+  )
 }
 
 /** For repositories only: the client behind a token. Services pass the token on and never call this. */

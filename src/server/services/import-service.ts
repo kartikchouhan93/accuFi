@@ -81,6 +81,15 @@ export { REVIEW_PAGE_SIZE, type ReviewFilter, type ReviewRowView, type ReviewScr
 export const IMPORT_MAX_BYTES = 5 * 1024 * 1024
 export const IMPORT_MAX_ROWS = 20_000
 
+// `commitBatch`'s single interactive transaction runs a handful of queries per READY row (an occurrence lookup for a
+// linked row, the insert, markRowsCommitted's update, up to three for markPosted, upsertRule) even after node lookups
+// are cached per distinct id rather than per row. Prisma's default interactive-transaction timeout (5000ms) is sized
+// for an ordinary request, not a commit that may touch IMPORT_MAX_ROWS rows, and would surface as an unmapped P2028 to
+// the user well before a large, otherwise-legal statement finished committing. 10ms of budget per row at the ceiling
+// is generous for same-connection queries with no network round trip, while still bounding how long a stuck commit
+// can hold the row lock.
+const COMMIT_TRANSACTION_TIMEOUT_MS = IMPORT_MAX_ROWS * 10
+
 const FILE_ERROR_MESSAGE: Record<"EMPTY" | "TOO_LARGE" | "NOT_TEXT" | "TOO_MANY_ROWS", string> = {
   EMPTY: "The file is empty.",
   TOO_LARGE: `The file is larger than ${IMPORT_MAX_BYTES / (1024 * 1024)} MB.`,
@@ -890,6 +899,17 @@ async function buildCommitSummary(userId: string, batchId: string, committedAt: 
   }
 }
 
+/** `requireNode`, but reusing a lookup already made earlier in the same `commitBatch` call: a statement commonly has
+ * many rows against the same counterpart (one vendor, paid repeatedly), and this is what keeps that counterpart's
+ * node from being fetched once per row rather than once per batch. */
+async function cachedRequireNode(userId: string, nodeId: string, uow: UnitOfWork, cache: Map<string, LedgerNode>): Promise<LedgerNode> {
+  const cached = cache.get(nodeId)
+  if (cached) return cached
+  const node = await requireNode(userId, nodeId, uow)
+  cache.set(nodeId, node)
+  return node
+}
+
 /** What a READY row needs, worked out and legality-checked before anything is written. */
 interface PreparedRow {
   row: ImportRow
@@ -913,6 +933,7 @@ async function prepareReadyRow(
   account: LedgerNode,
   accountInfo: { id: string; kind: "ASSET" | "LIABILITY" },
   uow: UnitOfWork,
+  nodeCache: Map<string, LedgerNode>,
 ): Promise<{ prepared: PreparedRow } | { violation: { line: number; reason: string } }> {
   const direction = row.direction! // a READY row always has a direction: it came from a successfully parsed entry
   let counterpartNodeId = row.counterpartNodeId
@@ -921,11 +942,24 @@ async function prepareReadyRow(
     if (!occurrence || occurrence.status !== "PENDING") {
       return { violation: { line: row.line, reason: "The linked recurring occurrence is no longer pending." } }
     }
-    counterpartNodeId = occurrenceCandidateOf(occurrence, account.id).otherNodeId
+    // The rule may have been edited (fromNodeId/toNodeId) since this row was staged or reviewed, while the
+    // occurrence it drives stayed PENDING and linked. Re-derive the candidate from the rule as it is *now*, and
+    // refuse rather than re-link if the rule no longer actually touches this batch's account, or if its direction
+    // relative to the account no longer matches what the row was staged as: either case means the counterpart this
+    // candidate names is not the one the row's own direction/legality were ever checked against.
+    const { rule } = occurrence
+    if (rule.fromNodeId !== account.id && rule.toNodeId !== account.id) {
+      return { violation: { line: row.line, reason: "The linked recurring rule no longer involves this account." } }
+    }
+    const candidate = occurrenceCandidateOf(occurrence, account.id)
+    if (candidate.direction !== direction) {
+      return { violation: { line: row.line, reason: "The linked recurring rule's direction no longer matches this row." } }
+    }
+    counterpartNodeId = candidate.otherNodeId
   }
   if (!counterpartNodeId) return { violation: { line: row.line, reason: "This row has no counterpart." } }
 
-  const counterpart = await requireNode(userId, counterpartNodeId, uow)
+  const counterpart = await cachedRequireNode(userId, counterpartNodeId, uow, nodeCache)
   const legal = isLegalCounterpart(accountInfo, direction, {
     id: counterpart.id,
     kind: counterpart.kind,
@@ -992,12 +1026,16 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
     const accountInfo = { id: account.id, kind: account.kind as "ASSET" | "LIABILITY" }
     const readyRows = await findRows(userId, batchId, { status: ["READY"], offset: 0, limit: IMPORT_MAX_ROWS }, uow)
 
+    // One node lookup per distinct id for the whole commit, not one per row: a statement with many rows against the
+    // same counterpart (one vendor, paid repeatedly) would otherwise re-fetch that counterpart's node every time.
+    const nodeCache = new Map<string, LedgerNode>([[account.id, account]])
+
     // Every row is checked, and every violation collected, before anything is written: a commit either writes every
     // READY row or none of them.
     const violations: { line: number; reason: string }[] = []
     const prepared: PreparedRow[] = []
     for (const row of readyRows) {
-      const result = await prepareReadyRow(userId, row, account, accountInfo, uow)
+      const result = await prepareReadyRow(userId, row, account, accountInfo, uow, nodeCache)
       if ("violation" in result) violations.push(result.violation)
       else prepared.push(result.prepared)
     }
@@ -1015,9 +1053,14 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
       if (compareDates(day, lastRowDate) > 0) lastRowDate = day
     }
     const asOf = asOfFor(today, lastRowDate)
+    // Every touched id was already resolved (and cached) by prepareReadyRow above, except the account itself: no
+    // further lookups are needed here.
     const touchedNodes: LedgerNode[] = [account]
     for (const id of touchedIds) {
-      if (id !== account.id) touchedNodes.push(await requireNode(userId, id, uow))
+      if (id === account.id) continue
+      const node = nodeCache.get(id)
+      if (!node) throw new Error(`invariant: node ${id} was not resolved while preparing rows`)
+      touchedNodes.push(node)
     }
     const guarded = touchedNodes.some(isGuarded)
     const before = guarded ? await balancesAt(userId, asOf, uow) : undefined
@@ -1065,7 +1108,7 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
     if (!updated) throw new NotFoundError("import")
 
     return buildCommitSummary(userId, batchId, committedAt, uow)
-  })
+  }, { timeout: COMMIT_TRANSACTION_TIMEOUT_MS })
 }
 
 /**

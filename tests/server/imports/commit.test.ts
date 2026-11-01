@@ -3,7 +3,7 @@ import { calendarDate, fromDbDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { updateNode } from "@/server/repositories/node-repository"
-import { findPending } from "@/server/repositories/recurring-repository"
+import { findPending, updateRule } from "@/server/repositories/recurring-repository"
 import * as transactionRepo from "@/server/repositories/transaction-repository"
 import { sumBalances } from "@/server/repositories/transaction-repository"
 import {
@@ -327,6 +327,64 @@ describe("commitBatch", () => {
     expect(inbox.map((o) => o.id)).not.toContain(occurrence.id)
   })
 
+  it("review focus (critical): a rule edited to no longer touch the account since staging refuses the whole commit, naming the line, and writes nothing", async () => {
+    const w = await setup()
+    const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
+    const wallet = await registry.makeNode(w.user.id, "ASSET", "Wallet")
+    const rule = await registry.makeRule(w.user.id, w.bank.id, gym.id, { amountPaise: 2_000n, name: "Gym" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-15")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const ok = await readyRow(w.user.id, batch.id, 1, w.food.id)
+    const linked = await readyRow(w.user.id, batch.id, 2, w.food.id, {
+      occurrenceId: occurrence.id,
+      amountPaise: 2_050n,
+      occurredOn: toDbDate(calendarDate("2026-04-16")),
+      descriptionKey: "gym payment",
+    })
+
+    // The rule is edited after staging to no longer involve the batch's account at all (Wallet -> Gym instead of
+    // Bank -> Gym), while the occurrence it drives stays PENDING and the row stays linked to it.
+    await updateRule(w.user.id, rule.id, 0, { fromNodeId: wallet.id, toNodeId: gym.id })
+
+    const error = await commitBatch(w.user.id, batch.id).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ImportRowsIllegalError)
+    expect((error as ImportRowsIllegalError).rows).toEqual([{ line: 2, reason: expect.any(String) }])
+
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: ok.id } })).status).toBe("READY")
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: linked.id } })).status).toBe("READY")
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: batch.id } })).toBe(0)
+    expect((await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).status).toBe("PENDING")
+    expect(await balanceOf(w.user.id, wallet.id)).toBe(0n)
+  })
+
+  it("review focus (critical): a rule edited so its direction relative to the account flips since staging refuses the whole commit, naming the line", async () => {
+    const w = await setup()
+    const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
+    // A rule that pays the bank FROM gym (e.g. a refund) rather than paying gym from the bank: the rule still
+    // touches the account, but on the opposite side, so its direction relative to the account has flipped.
+    const rule = await registry.makeRule(w.user.id, w.bank.id, gym.id, { amountPaise: 2_000n, name: "Gym" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-15")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const linked = await readyRow(w.user.id, batch.id, 1, w.food.id, {
+      direction: "OUT",
+      occurrenceId: occurrence.id,
+      amountPaise: 2_050n,
+      occurredOn: toDbDate(calendarDate("2026-04-16")),
+      descriptionKey: "gym payment",
+    })
+
+    await updateRule(w.user.id, rule.id, 0, { fromNodeId: gym.id, toNodeId: w.bank.id })
+
+    const error = await commitBatch(w.user.id, batch.id).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ImportRowsIllegalError)
+    expect((error as ImportRowsIllegalError).rows).toEqual([{ line: 1, reason: expect.any(String) }])
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: linked.id } })).status).toBe("READY")
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: batch.id } })).toBe(0)
+    expect((await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).status).toBe("PENDING")
+  })
+
   it("teaches a rule for each committed row's description key, and a changed choice replaces the node", async () => {
     const w = await setup()
     const batch = await registry.makeBatch(w.user.id, w.bank.id)
@@ -364,4 +422,46 @@ describe("commitBatch", () => {
     await expect(commitBatch(w.user.id, foreign.id)).rejects.toBeInstanceOf(NotFoundError)
     expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: foreign.id } })).status).toBe("STAGED")
   })
+
+  it("commits a batch of about 2,000 READY rows (the commit transaction's timeout override, and caching node lookups by id, both matter at this scale)", async () => {
+    const w = await setup()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const ROW_COUNT = 2_000
+    // Every row shares the same counterpart and description key: the point is to exercise the now-cached
+    // requireNode lookup (one fetch for 2,000 rows naming the same counterpart, not 2,000) and to prove the
+    // commit's whole single transaction - at IMPORT_MAX_ROWS's query shape - finishes inside its timeout override
+    // rather than hitting Prisma's 5-second interactive-transaction default.
+    await prisma.importRow.createMany({
+      data: Array.from({ length: ROW_COUNT }, (_, i) => ({
+        userId: w.user.id,
+        batchId: batch.id,
+        line: i + 1,
+        raw: ["x"],
+        status: "READY" as const,
+        direction: "OUT" as const,
+        amountPaise: 100n,
+        occurredOn: toDbDate(calendarDate("2026-04-10")),
+        description: `Row ${i}`,
+        descriptionKey: "scale-test",
+        counterpartNodeId: w.food.id,
+      })),
+    })
+
+    const bankBefore = await balanceOf(w.user.id, w.bank.id)
+    const summary = await commitBatch(w.user.id, batch.id)
+
+    expect(summary.imported).toBe(ROW_COUNT)
+    expect(summary.errored).toBe(0)
+    expect(summary.skipped).toBe(0)
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: batch.id } })).toBe(ROW_COUNT)
+    expect(await prisma.importRow.count({ where: { batchId: batch.id, status: "COMMITTED" } })).toBe(ROW_COUNT)
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("COMMITTED")
+    expect(await balanceOf(w.user.id, w.bank.id)).toBe(bankBefore - BigInt(ROW_COUNT) * 100n)
+
+    const rule = await prisma.counterpartRule.findUniqueOrThrow({
+      where: { userId_direction_descriptionKey: { userId: w.user.id, direction: "OUT", descriptionKey: "scale-test" } },
+    })
+    expect(rule.nodeId).toBe(w.food.id)
+    expect(rule.hits).toBe(ROW_COUNT)
+  }, 60_000)
 })
