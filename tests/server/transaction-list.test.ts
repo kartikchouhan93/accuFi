@@ -5,6 +5,7 @@ import { appendEntries } from "@/app/transactions/entries"
 import type { ListEntry } from "@/lib/transaction-list-view"
 import { prisma } from "@/server/db"
 import { sellInvestment } from "@/server/services/investment-service"
+import { commitBatch } from "@/server/services/import-service"
 import { loadTransactionPage, loadTransactionScreen } from "@/server/services/transaction-list"
 import { recordTransaction } from "@/server/services/transaction-service"
 import { createRegistry } from "./repositories/fixtures"
@@ -305,6 +306,31 @@ describe("loadTransactionScreen", () => {
     const screen = await loadTransactionScreen(user.id, { from: "", to: "", q: "not mine" })
     expect(screen.page.entries).toEqual([])
     expect(screen.nodes.some((node) => node.id === other.bank.id)).toBe(false)
+  })
+
+  // A real bug (Task 11): the current-month default ran even when `?batch=` was given, so a committed import's own
+  // transactions were invisible on its own "see these transactions" link whenever their dates fell outside the
+  // current month (nothing unusual: a batch can be committed any time after the statement period it covers). Stages
+  // and commits a batch dated well in the past (like "long ago" above, never in "today"'s month) and asks for it by
+  // `batch` alone, with no `from`/`to`: the batch filter must stand on its own, the same as `from`/`to` already do.
+  it("shows a committed batch's own transactions when filtered by `batch` alone, even when their dates fall outside the current month", async () => {
+    const { user, bank, food } = await world()
+    const batch = await registry.makeBatch(user.id, bank.id)
+    await registry.makeImportRow(user.id, batch.id, 1, {
+      status: "READY",
+      direction: "OUT",
+      amountPaise: 1_000n,
+      occurredOn: day("2020-01-15"),
+      description: "Old entry",
+      descriptionKey: "old entry",
+      counterpartNodeId: food.id,
+    })
+    await commitBatch(user.id, batch.id)
+
+    const screen = await loadTransactionScreen(user.id, { batch: batch.id })
+    expect(screen.page.entries.map((e) => (e.kind === "single" ? e.transaction.note : null))).toEqual(["Old entry"])
+    expect(screen.filter.from).toBe("") // the current-month default did not run
+    expect(screen.filter.to).toBe("")
   })
 })
 

@@ -30,7 +30,7 @@ vi.mock("next/navigation", async (importOriginal) => ({
   redirect,
 }))
 
-const { ReviewRow } = await import("@/app/import/[id]/review/review-row")
+const { ReviewRow, buildImportChange } = await import("@/app/import/[id]/review/review-row")
 const { ReviewFilters } = await import("@/app/import/[id]/review/review-filters")
 const { CommitBar, backToMappingConfirmText, discardConfirmText } = await import("@/app/import/[id]/review/commit-bar")
 const { ReviewWorkspace } = await import("@/app/import/[id]/review/review-workspace")
@@ -220,6 +220,30 @@ describe("ReviewRow", () => {
     expect(html(a, [a, b])).toContain("Use this ledger for every row that reads the same")
     // No sibling reads the same: the button is not offered even with a counterpart chosen.
     expect(html(a, [a])).not.toContain("Use this ledger for every row that reads the same")
+  })
+
+  // Staging computes `duplicateOfTransactionId` and `occurrenceId` independently (import-service.ts), so a row can be
+  // BOTH duplicate-flagged AND matched to a pending recurring occurrence at once. `doImport`'s plain Import button and
+  // the duplicate row's "Import anyway" both build their change through this one shared function: if a user picks
+  // their own counterpart (different from the occurrence's own ledger) and imports anyway, the occurrence match must
+  // be unlinked, or `prepareReadyRow` would silently re-derive the counterpart from the occurrence's rule at commit
+  // time instead of honouring the explicit choice — posting to the wrong ledger with no warning.
+  it("importing a row that is both duplicate-flagged and occurrence-matched, with an explicit counterpart, unlinks the occurrence rather than leaving it to override the choice at commit", () => {
+    const dualFlagged = row({
+      duplicate: { transactionId: "t1", occurredAt: "2026-04-02", amountPaise: "50000", note: "Lunch", otherLedgerName: "Food" },
+      occurrence: { id: "occ1", ruleName: "Gym", dueOn: "2026-04-05", otherNodeId: "food1" },
+    })
+    const change = buildImportChange(dualFlagged, "card1") // the user's own choice, different from the occurrence's own ledger (food1)
+    expect(change).toEqual({ decision: "IMPORT", occurrence: "UNLINK", counterpartNodeId: "card1" })
+  })
+
+  it("importing a plain (non-duplicate) occurrence-matched row with no explicit counterpart still unlinks the occurrence, carrying no counterpart for the server to override", () => {
+    const occurrenceOnly = row({ occurrence: { id: "occ1", ruleName: "Gym", dueOn: "2026-04-05", otherNodeId: "food1" } })
+    expect(buildImportChange(occurrenceOnly, "")).toEqual({ decision: "IMPORT", occurrence: "UNLINK" })
+  })
+
+  it("importing a row with no occurrence match leaves `occurrence` out of the change entirely", () => {
+    expect(buildImportChange(row(), "food1")).toEqual({ decision: "IMPORT", counterpartNodeId: "food1" })
   })
 })
 

@@ -50,6 +50,22 @@ function transactionsHref(duplicate: NonNullable<ReviewRowView["duplicate"]>): s
   return `/transactions?${params.toString()}`
 }
 
+/**
+ * What `decision: "IMPORT"` sends for a row, whether the user got here via the plain Import button or a
+ * duplicate-flagged row's "Import anyway": either way an explicit counterpart choice at review time must win over a
+ * stale occurrence match, so a row still carrying one is always unlinked first. Left unhandled, a row that is BOTH
+ * duplicate-flagged AND matched to a pending recurring occurrence (staging computes the two independently, so both
+ * can be true at once) would keep `occurrenceId` set, and `prepareReadyRow` re-derives the counterpart from the
+ * occurrence's own rule at commit time regardless of what is stored here — silently discarding the user's explicit
+ * choice and posting to the wrong ledger. Exported, and shared by both buttons, so the two can never again diverge on
+ * this the way "Import anyway" once did. */
+export function buildImportChange(row: Pick<ReviewRowView, "occurrence">, selected: string): RowChange {
+  const change: RowChange = { decision: "IMPORT" }
+  if (row.occurrence) change.occurrence = "UNLINK"
+  if (selected !== "") change.counterpartNodeId = selected
+  return change
+}
+
 function useRowAction(announce: Announce) {
   const [pending, startTransition] = useTransition()
   const inFlight = useRef(false)
@@ -110,10 +126,7 @@ export function ReviewRow({
     siblings.some((other) => other.id !== row.id && other.status === "PENDING" && other.descriptionKey === row.descriptionKey && other.direction === row.direction)
 
   function doImport() {
-    const change: RowChange = { decision: "IMPORT" }
-    if (row.occurrence) change.occurrence = "UNLINK" // the plain Import button always acts on the chosen ledger, never the link
-    if (selected !== "") change.counterpartNodeId = selected
-    run(change, row.id, row.line, "import", `Line ${row.line} is ready to import.`)
+    run(buildImportChange(row, selected), row.id, row.line, "import", `Line ${row.line} is ready to import.`)
   }
 
   function doSkip() {
@@ -121,9 +134,7 @@ export function ReviewRow({
   }
 
   function doImportAnyway() {
-    const change: RowChange = { decision: "IMPORT" }
-    if (selected !== "") change.counterpartNodeId = selected
-    run(change, row.id, row.line, "import", `Line ${row.line} is ready to import, duplicate or not.`)
+    run(buildImportChange(row, selected), row.id, row.line, "import", `Line ${row.line} is ready to import, duplicate or not.`)
   }
 
   function doSkipAsDuplicate() {
