@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { CounterpartRule, ImportBatchStatus, LedgerNode } from "@prisma/client"
+import type { CounterpartRule, ImportBatchStatus, ImportRow, ImportRowStatus, LedgerNode } from "@prisma/client"
 import { addDays, compareDates, fromDbDate, toDbDate, type CalendarDate } from "@/domain/calendar-date"
 import { decodeBytes, looksLikeText, parseCsv, type CsvRow } from "@/domain/import-csv"
 import { defaultSignConvention, parseImportRow, type ImportDirection, type ImportMapping, type ParsedRow } from "@/domain/import-map"
@@ -13,30 +13,45 @@ import {
   type OccurrenceCandidate,
 } from "@/domain/import-match"
 import { importMappingSchema } from "@/lib/schemas/import"
-import { toBatchView, type BatchView } from "@/lib/import-view"
+import {
+  REVIEW_PAGE_SIZE,
+  toBatchView,
+  toReviewRowView,
+  type BatchView,
+  type ReviewFilter,
+  type ReviewRowView,
+  type ReviewScreen,
+} from "@/lib/import-view"
 import { serialisePaise } from "@/lib/serialise"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
+  countRows,
   deleteRows,
   findBatchById,
   findCounterpartRules,
   findEarlierUpload,
   findProfileById,
   findProfiles,
+  findRowById,
+  findRows,
   insertBatch,
   insertRows,
   lockBatch,
   readBatchBytes,
   transitionBatch,
+  updateRow as updateImportRow,
+  updateRowsWhereSame,
   upsertProfile,
   type RowData,
 } from "@/server/repositories/import-repository"
-import { findPendingForAccount, type OccurrenceWithRule } from "@/server/repositories/recurring-repository"
-import { findAccountTransactions } from "@/server/repositories/transaction-repository"
+import { findOccurrenceById, findPendingForAccount, type OccurrenceWithRule } from "@/server/repositories/recurring-repository"
+import { findAccountTransactions, findTransactionById } from "@/server/repositories/transaction-repository"
 import { inTransaction } from "@/server/repositories/unit-of-work"
 import { lotModeOf } from "@/server/services/lot-rules"
 import { listAllNodes } from "@/server/services/node-service"
 import { requireNode } from "@/server/services/transaction-service"
+
+export { REVIEW_PAGE_SIZE, type ReviewFilter, type ReviewRowView, type ReviewScreen }
 
 // Stages 1 to 3 of the import (design §6): upload a file, preview it against a mapping, stage it into rows. The
 // review and decide screens (stage 4) and commit/reverse (stage 5) are later tasks; everything they need comes
@@ -490,4 +505,279 @@ export async function backToMapping(userId: string, batchId: string): Promise<vo
     const result = await transitionBatch(userId, batchId, { from: ["STAGED"], to: "UPLOADED" }, uow)
     if (!result) throw new NotFoundError("import")
   })
+}
+
+// The review screen and its row operations (design §6 stage 4). A row the user has not decided sits PENDING; a
+// decision moves it to READY (it will be committed, Task 8) or SKIPPED (it will not); UNDO always puts it back to
+// PENDING. Every write to a row goes through the repository's conditional `updateRow`, which refuses an ERRORED or
+// COMMITTED row and any batch that is not STAGED in the one statement that writes it, so the three never need telling
+// apart here: a null result is always NotFoundError("import"). A counterpart is checked against `isLegalCounterpart`
+// here, against today's ledgers, every time one is set or re-used: a ledger legal when it was suggested or chosen can
+// stop being legal later (archived, or turned into a lot holder), and the next write must notice.
+
+const FILTER_STATUS: Partial<Record<ReviewFilter, ImportRowStatus[]>> = {
+  pending: ["PENDING"],
+  ready: ["READY"],
+  skipped: ["SKIPPED"],
+  errors: ["ERRORED"],
+}
+
+function totalForFilter(filter: ReviewFilter, counts: Awaited<ReturnType<typeof countRows>>): number {
+  if (filter === "duplicates") return counts.duplicates
+  const statuses = FILTER_STATUS[filter]
+  if (statuses) return statuses.reduce((sum, status) => sum + counts.byStatus[status], 0)
+  return Object.values(counts.byStatus).reduce((sum, n) => sum + n, 0) // "all"
+}
+
+/** Throws InvalidImportError (field "counterpartNodeId") unless `counterpartNodeId` is this user's and a legal counterpart. */
+async function assertLegalCounterpart(
+  userId: string,
+  account: { id: string; kind: "ASSET" | "LIABILITY" },
+  direction: ImportDirection,
+  counterpartNodeId: string,
+): Promise<void> {
+  const node = await requireNode(userId, counterpartNodeId)
+  const legal = isLegalCounterpart(account, direction, {
+    id: node.id,
+    kind: node.kind,
+    systemRole: node.systemRole,
+    archived: node.archivedAt !== null,
+    heldByLots: lotModeOf(node) !== null,
+  })
+  if (!legal) {
+    throw new InvalidImportError([{ field: "counterpartNodeId", message: "This ledger cannot be the counterpart of this row." }])
+  }
+}
+
+/** The live transaction a row's `duplicateOfTransactionId` names, as the review screen shows it; null once it no longer resolves. */
+async function duplicateViewOf(userId: string, transactionId: string, accountNodeId: string): Promise<ReviewRowView["duplicate"]> {
+  const txn = await findTransactionById(userId, transactionId)
+  if (!txn) return null
+  const otherNodeId = txn.fromNodeId === accountNodeId ? txn.toNodeId : txn.fromNodeId
+  const other = await requireNode(userId, otherNodeId)
+  return {
+    transactionId: txn.id,
+    occurredAt: fromDbDate(txn.occurredAt),
+    amountPaise: serialisePaise(txn.amountPaise),
+    note: txn.note,
+    otherLedgerName: other.name,
+  }
+}
+
+/** The pending occurrence a row's `occurrenceId` names, as the review screen shows it; null once it no longer resolves. */
+async function occurrenceViewOf(userId: string, occurrenceId: string, accountNodeId: string): Promise<ReviewRowView["occurrence"]> {
+  const occurrence = await findOccurrenceById(userId, occurrenceId)
+  if (!occurrence) return null
+  const candidate = occurrenceCandidateOf(occurrence, accountNodeId)
+  return { id: occurrence.id, ruleName: candidate.ruleName, dueOn: candidate.dueOn, otherNodeId: candidate.otherNodeId }
+}
+
+async function reviewRowViewOf(userId: string, row: ImportRow, accountNodeId: string): Promise<ReviewRowView> {
+  const [duplicate, occurrence] = await Promise.all([
+    row.duplicateOfTransactionId ? duplicateViewOf(userId, row.duplicateOfTransactionId, accountNodeId) : null,
+    row.occurrenceId ? occurrenceViewOf(userId, row.occurrenceId, accountNodeId) : null,
+  ])
+  return toReviewRowView(row, duplicate, occurrence)
+}
+
+/**
+ * The review screen (design §6 stage 4) for a STAGED batch: one page of its rows under `query.filter`, the batch's
+ * counts by status plus duplicates and linked rows (always of the whole batch, not the filter), the ledgers a
+ * counterpart may be chosen from (live, not a system node, not held by lots, not the account), and whether the batch
+ * may be committed. `query.page` is 1-based and clamped to `[1, pageCount]`. Throws InvalidImportError if the batch is
+ * not STAGED, NotFoundError("import") for a batch that is not the user's.
+ */
+export async function loadReview(
+  userId: string,
+  batchId: string,
+  query: { filter: ReviewFilter; page: number },
+): Promise<ReviewScreen> {
+  const batch = await findBatchById(userId, batchId)
+  if (!batch) throw new NotFoundError("import")
+  if (batch.status !== "STAGED") {
+    throw new InvalidImportError([{ field: "id", message: "This import is not staged." }])
+  }
+  const node = await requireNode(userId, batch.nodeId)
+  const account = { id: node.id, name: node.name, kind: node.kind as "ASSET" | "LIABILITY" }
+
+  const [counts, nodes] = await Promise.all([countRows(userId, batchId), listAllNodes(userId)])
+  const total = totalForFilter(query.filter, counts)
+  const pageCount = Math.max(1, Math.ceil(total / REVIEW_PAGE_SIZE))
+  const requestedPage = Number.isFinite(query.page) ? Math.trunc(query.page) : 1
+  const page = Math.min(Math.max(requestedPage, 1), pageCount)
+
+  const statuses = FILTER_STATUS[query.filter]
+  const rows = await findRows(userId, batchId, {
+    offset: (page - 1) * REVIEW_PAGE_SIZE,
+    limit: REVIEW_PAGE_SIZE,
+    ...(statuses ? { status: statuses } : {}),
+    ...(query.filter === "duplicates" ? { duplicatesOnly: true } : {}),
+  })
+
+  const ledgers = nodes
+    .filter((n) => n.archivedAt === null && n.systemRole === null && n.id !== account.id && lotModeOf(n) === null)
+    .map((n) => ({ id: n.id, name: n.name, kind: n.kind, archived: n.archivedAt !== null }))
+
+  return {
+    batch: toBatchView(batch, node.name),
+    account,
+    filter: query.filter,
+    page,
+    pageCount,
+    counts: {
+      pending: counts.byStatus.PENDING,
+      ready: counts.byStatus.READY,
+      skipped: counts.byStatus.SKIPPED,
+      errored: counts.byStatus.ERRORED,
+      duplicates: counts.duplicates,
+      linked: counts.linked,
+    },
+    rows: await Promise.all(rows.map((row) => reviewRowViewOf(userId, row, account.id))),
+    ledgers,
+    canCommit: batch.status === "STAGED" && counts.byStatus.PENDING === 0 && counts.byStatus.READY > 0,
+  }
+}
+
+export type RowChange = {
+  counterpartNodeId?: string | null
+  decision?: "IMPORT" | "SKIP" | "UNDO"
+  occurrence?: "LINK" | "UNLINK"
+}
+
+/**
+ * Change one row's decision (design §6 stage 4). `counterpartNodeId` (set or `null` to clear) is checked against
+ * `isLegalCounterpart` before it is written. `occurrence: "LINK"` needs the row to already hold an `occurrenceId`
+ * (from staging): it takes the rule's other ledger as the counterpart, under the same legality check; "UNLINK" only
+ * clears the link, leaving any counterpart as it is. `decision: "IMPORT"` needs a counterpart: the one given in this
+ * same call, else the row's own, else (if neither and the row holds a linked occurrence) the occurrence's other
+ * ledger; without one of those it is InvalidImportError on field "counterpartNodeId". "SKIP" and "UNDO" need no
+ * counterpart. A row that is ERRORED or COMMITTED, or whose batch is not STAGED, is refused as NotFoundError("import"),
+ * the same as a row that is not this user's; this is checked before anything else, since an ERRORED row has no
+ * direction for `isLegalCounterpart` to check against.
+ */
+/** The row's linked occurrence's other ledger, legality-checked, or null if the row has none or it no longer resolves. */
+async function linkedOccurrenceCounterpart(
+  userId: string,
+  row: ImportRow,
+  account: { id: string; kind: "ASSET" | "LIABILITY" },
+): Promise<string | null> {
+  if (!row.occurrenceId) return null
+  const occurrence = await findOccurrenceById(userId, row.occurrenceId)
+  if (!occurrence) return null
+  const candidate = occurrenceCandidateOf(occurrence, account.id)
+  await assertLegalCounterpart(userId, account, candidate.direction, candidate.otherNodeId)
+  return candidate.otherNodeId
+}
+
+export async function updateRow(userId: string, rowId: string, change: RowChange): Promise<ReviewRowView> {
+  const row = await findRowById(userId, rowId)
+  if (!row) throw new NotFoundError("import")
+  const batch = await findBatchById(userId, row.batchId)
+  if (!batch) throw new NotFoundError("import")
+  if (row.status === "ERRORED" || row.status === "COMMITTED" || batch.status !== "STAGED") {
+    throw new NotFoundError("import")
+  }
+  const node = await requireNode(userId, batch.nodeId)
+  const account = { id: node.id, kind: node.kind as "ASSET" | "LIABILITY" }
+
+  const changes: Partial<{ status: ImportRowStatus; counterpartNodeId: string | null; occurrenceId: string | null }> = {}
+
+  if (change.occurrence === "UNLINK") {
+    changes.occurrenceId = null
+  } else if (change.occurrence === "LINK") {
+    if (!row.occurrenceId) {
+      throw new InvalidImportError([{ field: "occurrence", message: "This row has no linked recurring occurrence." }])
+    }
+    const counterpartNodeId = await linkedOccurrenceCounterpart(userId, row, account)
+    if (!counterpartNodeId) throw new NotFoundError("occurrence")
+    changes.counterpartNodeId = counterpartNodeId
+  }
+
+  if (change.counterpartNodeId !== undefined) {
+    if (change.counterpartNodeId === null) {
+      changes.counterpartNodeId = null
+    } else {
+      // row.direction is non-null here: an ERRORED row (the only kind with a null direction) was already refused above.
+      await assertLegalCounterpart(userId, account, row.direction!, change.counterpartNodeId)
+      changes.counterpartNodeId = change.counterpartNodeId
+    }
+  }
+
+  if (change.decision === "SKIP") {
+    changes.status = "SKIPPED"
+  } else if (change.decision === "UNDO") {
+    changes.status = "PENDING"
+  } else if (change.decision === "IMPORT") {
+    const hasExplicitCounterpart = changes.counterpartNodeId !== undefined
+    let effective = hasExplicitCounterpart ? changes.counterpartNodeId : row.counterpartNodeId
+    // No counterpart chosen in this call, and none stored yet: fall back to the row's own linked occurrence, if any
+    // (already legality-checked above when `change.occurrence` was itself "LINK", so this only runs otherwise).
+    if (!effective && !hasExplicitCounterpart) effective = await linkedOccurrenceCounterpart(userId, row, account)
+    if (!effective) {
+      throw new InvalidImportError([{ field: "counterpartNodeId", message: "Choose a counterpart before importing this row." }])
+    }
+    // A counterpart just set above (explicitly, from a linked occurrence just checked, or the fallback just above) is
+    // already checked; only the row's own stored value, carried over unchanged, needs checking now, since it may have
+    // stopped being legal since it was set.
+    if (!hasExplicitCounterpart && effective === row.counterpartNodeId) {
+      await assertLegalCounterpart(userId, account, row.direction!, effective)
+    }
+    changes.counterpartNodeId = effective
+    changes.status = "READY"
+  }
+
+  const updated = await updateImportRow(userId, rowId, changes)
+  if (!updated) throw new NotFoundError("import")
+  return reviewRowViewOf(userId, updated, account.id)
+}
+
+/**
+ * Copy `rowId`'s counterpart onto every PENDING row of its batch with the same direction and the same, non-empty
+ * description key (the bulk "apply to similar" action): same account and direction, so the counterpart's legality is
+ * one check, not one per row. Does nothing, and returns 0, if the row itself has no counterpart, no description key, or
+ * the counterpart is no longer legal. Returns how many rows changed (the row itself counts, since it also matches).
+ * Throws NotFoundError("import") for a row that is not this user's.
+ */
+export async function applyCounterpartToSimilar(userId: string, rowId: string): Promise<number> {
+  const row = await findRowById(userId, rowId)
+  if (!row) throw new NotFoundError("import")
+  if (!row.counterpartNodeId || !row.direction || !row.descriptionKey) return 0
+  const batch = await findBatchById(userId, row.batchId)
+  if (!batch) throw new NotFoundError("import")
+  const node = await requireNode(userId, batch.nodeId)
+  const account = { id: node.id, kind: node.kind as "ASSET" | "LIABILITY" }
+  const counterpart = await requireNode(userId, row.counterpartNodeId)
+  const legal = isLegalCounterpart(account, row.direction, {
+    id: counterpart.id,
+    kind: counterpart.kind,
+    systemRole: counterpart.systemRole,
+    archived: counterpart.archivedAt !== null,
+    heldByLots: lotModeOf(counterpart) !== null,
+  })
+  if (!legal) return 0
+  return updateRowsWhereSame(
+    userId,
+    batch.id,
+    { direction: row.direction, descriptionKey: row.descriptionKey, status: "PENDING" },
+    { counterpartNodeId: row.counterpartNodeId },
+  )
+}
+
+/**
+ * Ready every PENDING row of the batch that already has a counterpart (a learned-rule prefill, or one chosen earlier)
+ * and carries no duplicate flag: the bulk "confirm suggestions" action. A duplicate-flagged row is left PENDING even
+ * with a counterpart; it needs the explicit "import anyway" decision (`updateRow` with `decision: "IMPORT"`). Returns
+ * how many rows changed. Throws NotFoundError("import") for a batch that is not the user's.
+ */
+export async function confirmSuggestions(userId: string, batchId: string): Promise<number> {
+  const batch = await findBatchById(userId, batchId)
+  if (!batch) throw new NotFoundError("import")
+  const candidates = await findRows(userId, batchId, { status: ["PENDING"], offset: 0, limit: IMPORT_MAX_ROWS })
+  let count = 0
+  for (const row of candidates) {
+    if (row.counterpartNodeId === null || row.duplicateOfTransactionId !== null) continue
+    const updated = await updateImportRow(userId, row.id, { status: "READY" })
+    if (updated) count++
+  }
+  return count
 }
