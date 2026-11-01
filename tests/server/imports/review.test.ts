@@ -289,6 +289,26 @@ describe("updateRow", () => {
     expect(imported.counterpartNodeId).toBe(w.food.id)
   })
 
+  it("UNLINK combined with IMPORT in the same call does not derive a counterpart from the occurrence being removed", async () => {
+    const w = await setup()
+    const rule = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { amountPaise: 1_000n, name: "Rent" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-10")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    // Linked occurrence, but no stored counterpart yet: once unlinked there is nothing left to import with.
+    const created = await row(w.user.id, batch.id, 1, { occurrenceId: occurrence.id })
+
+    await expect(updateRow(w.user.id, created.id, { occurrence: "UNLINK", decision: "IMPORT" })).rejects.toMatchObject({
+      name: "InvalidImportError",
+      violations: [{ field: "counterpartNodeId" }],
+    })
+
+    // Refused atomically: nothing was written, so the occurrence link and PENDING status survive the rejected call.
+    const unchanged = await updateRow(w.user.id, created.id, {})
+    expect(unchanged.status).toBe("PENDING")
+    expect(unchanged.counterpartNodeId).toBeNull()
+    expect(unchanged.occurrence).toMatchObject({ id: occurrence.id })
+  })
+
   it("occurrence LINK refuses a row with no linked occurrence", async () => {
     const w = await setup()
     const batch = await registry.makeBatch(w.user.id, w.bank.id)

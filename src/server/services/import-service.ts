@@ -649,8 +649,11 @@ export type RowChange = {
  * `isLegalCounterpart` before it is written. `occurrence: "LINK"` needs the row to already hold an `occurrenceId`
  * (from staging): it takes the rule's other ledger as the counterpart, under the same legality check; "UNLINK" only
  * clears the link, leaving any counterpart as it is. `decision: "IMPORT"` needs a counterpart: the one given in this
- * same call, else the row's own, else (if neither and the row holds a linked occurrence) the occurrence's other
- * ledger; without one of those it is InvalidImportError on field "counterpartNodeId". "SKIP" and "UNDO" need no
+ * same call, else the row's own, else (if neither, the row holds a linked occurrence, and this same call is not also
+ * unlinking it) the occurrence's other ledger; without one of those it is InvalidImportError on field
+ * "counterpartNodeId" — in particular, combining `occurrence: "UNLINK"` with `decision: "IMPORT"` on a row with no
+ * stored counterpart is refused this way, never silently re-deriving a counterpart from the link just removed.
+ * "SKIP" and "UNDO" need no
  * counterpart. A row that is ERRORED or COMMITTED, or whose batch is not STAGED, is refused as NotFoundError("import"),
  * the same as a row that is not this user's; this is checked before anything else, since an ERRORED row has no
  * direction for `isLegalCounterpart` to check against.
@@ -711,8 +714,13 @@ export async function updateRow(userId: string, rowId: string, change: RowChange
     const hasExplicitCounterpart = changes.counterpartNodeId !== undefined
     let effective = hasExplicitCounterpart ? changes.counterpartNodeId : row.counterpartNodeId
     // No counterpart chosen in this call, and none stored yet: fall back to the row's own linked occurrence, if any
-    // (already legality-checked above when `change.occurrence` was itself "LINK", so this only runs otherwise).
-    if (!effective && !hasExplicitCounterpart) effective = await linkedOccurrenceCounterpart(userId, row, account)
+    // (already legality-checked above when `change.occurrence` was itself "LINK", so this only runs otherwise). Never
+    // fall back when this same call is clearing the occurrence link (`occurrence: "UNLINK"`, `changes.occurrenceId ===
+    // null`): the row's `occurrenceId` at this point still points at the link being removed, so deriving a
+    // counterpart from it here would silently resurrect the very link this call is meant to clear.
+    if (!effective && !hasExplicitCounterpart && changes.occurrenceId !== null) {
+      effective = await linkedOccurrenceCounterpart(userId, row, account)
+    }
     if (!effective) {
       throw new InvalidImportError([{ field: "counterpartNodeId", message: "Choose a counterpart before importing this row." }])
     }
