@@ -306,6 +306,22 @@ export function findPending(userId: string): Promise<OccurrenceWithRule[]> {
   })
 }
 
+/**
+ * Pending occurrences of live rules that have the account at either end, oldest due first: what a statement row for the
+ * account could be the payment of. `uow`, when given, reads inside the caller's transaction.
+ */
+export function findPendingForAccount(userId: string, nodeId: string, uow?: UnitOfWork): Promise<OccurrenceWithRule[]> {
+  return dbOf(uow).recurringOccurrence.findMany({
+    where: {
+      userId,
+      status: "PENDING",
+      rule: { is: { userId, deletedAt: null, OR: [{ fromNodeId: nodeId }, { toNodeId: nodeId }] } },
+    },
+    include: { rule: true },
+    orderBy: [{ dueOn: "asc" }, { id: "asc" }],
+  })
+}
+
 export function countPending(userId: string): Promise<number> {
   return prisma.recurringOccurrence.count({ where: { userId, status: "PENDING", rule: { is: { userId, deletedAt: null } } } })
 }
@@ -365,6 +381,20 @@ export async function markPending(userId: string, id: string, uow?: UnitOfWork):
     data: { status: "PENDING", resolvedAt: null, postFailure: null },
   })
   return count === 0 ? null : db.recurringOccurrence.findFirst({ where: { id, userId } })
+}
+
+/**
+ * POSTED -> PENDING for every occurrence the user's own transactions posted: the link and `resolvedAt` are cleared, as for
+ * an occurrence that never posted. Used when a batch is reversed and its transactions are deleted. Returns how many were
+ * reopened; an occurrence in another state, or posted by another transaction, is left alone.
+ */
+export async function reopenPostedByTransactions(userId: string, transactionIds: string[], uow: UnitOfWork): Promise<number> {
+  if (transactionIds.length === 0) return 0
+  const { count } = await clientOf(uow).recurringOccurrence.updateMany({
+    where: { userId, status: "POSTED", transactionId: { in: transactionIds } },
+    data: { status: "PENDING", transactionId: null, resolvedAt: null, postFailure: null },
+  })
+  return count
 }
 
 /** Why an auto-post did not happen (or null to clear it). Only a PENDING occurrence has one; others are left alone. */

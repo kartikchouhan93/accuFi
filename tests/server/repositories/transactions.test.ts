@@ -4,11 +4,13 @@ import { calendarDate, fromDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { DuplicateIdempotencyKeyError, InvalidCursorError, NotFoundError } from "@/server/repositories/errors"
 import {
+  findAccountTransactions,
   findGroupMembers,
   findTransactionById,
   findTransactions,
   insertTransactions,
   MAX_PAGE_SIZE,
+  softDeleteByBatch,
   softDeleteTransaction,
   sumBalances,
   sumNetIntoNodes,
@@ -508,5 +510,100 @@ describe("sumNetIntoNodes", () => {
     expect(await sumNetIntoNodes(user.id, { nodeIds: [] })).toBe(0n)
     const stranger = await registry.makeUser()
     expect(await sumNetIntoNodes(stranger.id, { nodeIds: [food.id, clothes.id] })).toBe(0n)
+  })
+})
+
+describe("insertTransactions with import ids", () => {
+  it("stores the batch and row an import transaction came from, and none for a hand-made one", async () => {
+    const { user, bank, food } = await setup()
+    const batch = await registry.makeBatch(user.id, bank.id)
+    const row = await registry.makeImportRow(user.id, batch.id, 1, { status: "READY", counterpartNodeId: food.id })
+    const [imported, byHand] = await insertTransactions(user.id, [
+      { fromNodeId: bank.id, toNodeId: food.id, amountPaise: 10n, occurredAt: d("2026-04-01"), idempotencyKey: `import:${row.id}`, importBatchId: batch.id, importRowId: row.id },
+      { fromNodeId: bank.id, toNodeId: food.id, amountPaise: 20n, occurredAt: d("2026-04-01") },
+    ])
+    expect(imported).toMatchObject({ importBatchId: batch.id, importRowId: row.id })
+    expect(byHand).toMatchObject({ importBatchId: null, importRowId: null })
+    expect(await prisma.transaction.findUniqueOrThrow({ where: { id: imported.id } })).toMatchObject({ importBatchId: batch.id, importRowId: row.id })
+  })
+
+  it("refuses a batch or row that is not the user's and writes nothing", async () => {
+    const { user, bank, food } = await setup()
+    const other = await setup()
+    const otherBatch = await registry.makeBatch(other.user.id, other.bank.id)
+    const otherRow = await registry.makeImportRow(other.user.id, otherBatch.id, 1)
+    const own = await registry.makeBatch(user.id, bank.id)
+    const draft = { fromNodeId: bank.id, toNodeId: food.id, amountPaise: 10n, occurredAt: d("2026-04-01") }
+    await expect(insertTransactions(user.id, [{ ...draft, importBatchId: otherBatch.id }])).rejects.toBeInstanceOf(NotFoundError)
+    await expect(insertTransactions(user.id, [{ ...draft, importBatchId: own.id, importRowId: otherRow.id }])).rejects.toBeInstanceOf(NotFoundError)
+    expect(await prisma.transaction.count({ where: { userId: user.id } })).toBe(0)
+  })
+})
+
+describe("findAccountTransactions", () => {
+  it("returns live transactions touching the node at either end, dated within the inclusive range, oldest first", async () => {
+    const { user, salary, bank, food } = await setup()
+    const inBefore = await registry.makeTransaction(user.id, salary.id, bank.id, { occurredAt: "2026-03-31" })
+    const first = await registry.makeTransaction(user.id, salary.id, bank.id, { occurredAt: "2026-04-01" })
+    const last = await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: "2026-04-30" })
+    const middle = await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: "2026-04-15" })
+    const after = await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: "2026-05-01" })
+    const deleted = await registry.makeTransaction(user.id, bank.id, food.id, { occurredAt: "2026-04-10", deletedAt: new Date() })
+    const elsewhere = await registry.makeTransaction(user.id, salary.id, food.id, { occurredAt: "2026-04-10" })
+
+    const found = await findAccountTransactions(user.id, bank.id, d("2026-04-01"), d("2026-04-30"))
+    expect(found.map((t) => t.id)).toEqual([first.id, middle.id, last.id])
+    const ids = found.map((t) => t.id)
+    for (const out of [inBefore, after, deleted, elsewhere]) expect(ids).not.toContain(out.id)
+    expect(await inTransaction((uow) => findAccountTransactions(user.id, bank.id, d("2026-04-01"), d("2026-04-30"), uow))).toEqual(found)
+    expect(await findAccountTransactions(user.id, food.id, d("2026-04-15"), d("2026-04-15"))).toEqual([middle])
+  })
+})
+
+describe("softDeleteByBatch", () => {
+  it("soft-deletes and versions exactly the live transactions of the batch and returns their ids", async () => {
+    const { user, bank, food } = await setup()
+    const batch = await registry.makeBatch(user.id, bank.id)
+    const otherBatch = await registry.makeBatch(user.id, bank.id)
+    const draft = { fromNodeId: bank.id, toNodeId: food.id, amountPaise: 10n, occurredAt: d("2026-04-01") }
+    const [one, two, gone, theirs] = await insertTransactions(user.id, [
+      { ...draft, importBatchId: batch.id },
+      { ...draft, importBatchId: batch.id },
+      { ...draft, importBatchId: batch.id },
+      { ...draft, importBatchId: otherBatch.id },
+    ])
+    const byHand = await registry.makeTransaction(user.id, bank.id, food.id)
+    await softDeleteTransaction(user.id, gone.id)
+    const goneBefore = await prisma.transaction.findUniqueOrThrow({ where: { id: gone.id } })
+    const handBefore = await prisma.transaction.findUniqueOrThrow({ where: { id: byHand.id } })
+    const theirsBefore = await prisma.transaction.findUniqueOrThrow({ where: { id: theirs.id } })
+
+    const ids = await inTransaction((uow) => softDeleteByBatch(user.id, batch.id, uow))
+    expect([...ids].sort()).toEqual([one.id, two.id].sort())
+    for (const id of [one.id, two.id]) {
+      const row = await prisma.transaction.findUniqueOrThrow({ where: { id } })
+      expect(row.deletedAt).not.toBeNull()
+      expect(row.version).toBe(1)
+    }
+    // the already-deleted one keeps its own deletion and version; a hand-made one and another batch's are untouched
+    expect(await prisma.transaction.findUniqueOrThrow({ where: { id: gone.id } })).toEqual(goneBefore)
+    expect(await prisma.transaction.findUniqueOrThrow({ where: { id: byHand.id } })).toEqual(handBefore)
+    expect(await prisma.transaction.findUniqueOrThrow({ where: { id: theirs.id } })).toEqual(theirsBefore)
+    // repeating changes nothing
+    expect(await inTransaction((uow) => softDeleteByBatch(user.id, batch.id, uow))).toEqual([])
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: one.id } })).version).toBe(1)
+  })
+
+  it("rolls back with the caller's transaction", async () => {
+    const { user, bank, food } = await setup()
+    const batch = await registry.makeBatch(user.id, bank.id)
+    const [tx] = await insertTransactions(user.id, [{ fromNodeId: bank.id, toNodeId: food.id, amountPaise: 10n, occurredAt: d("2026-04-01"), importBatchId: batch.id }])
+    await expect(
+      inTransaction(async (uow) => {
+        expect(await softDeleteByBatch(user.id, batch.id, uow)).toEqual([tx.id])
+        throw new Error("abort")
+      }),
+    ).rejects.toThrow("abort")
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })).deletedAt).toBeNull()
   })
 })

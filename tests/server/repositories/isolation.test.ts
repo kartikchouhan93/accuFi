@@ -5,6 +5,7 @@ import { calendarDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 import { NotFoundError, UserNotFoundError } from "@/server/repositories/errors"
 import * as budgetRepo from "@/server/repositories/budget-repository"
+import * as importRepo from "@/server/repositories/import-repository"
 import * as lotRepo from "@/server/repositories/lot-repository"
 import * as nodeRepo from "@/server/repositories/node-repository"
 import * as priceRepo from "@/server/repositories/price-repository"
@@ -1061,6 +1062,316 @@ describe("budget repository", () => {
   })
 })
 
+describe("import repository", () => {
+  const snapshotBatches = (userId: string) => prisma.importBatch.findMany({ where: { userId }, orderBy: { id: "asc" } })
+  const snapshotRows = (userId: string) => prisma.importRow.findMany({ where: { userId }, orderBy: { id: "asc" } })
+  const snapshotProfiles = (userId: string) => prisma.importProfile.findMany({ where: { userId }, orderBy: { id: "asc" } })
+  const snapshotRules = (userId: string) => prisma.counterpartRule.findMany({ where: { userId }, orderBy: { id: "asc" } })
+
+  // B has a staged batch with a pending and a ready row, a saved mapping and a learned rule, and a transaction that came
+  // from the batch with an occurrence posted by it; so every read has something to leak and every write something to harm.
+  let bBatch: Awaited<ReturnType<typeof registry.makeBatch>>
+  let bPendingRow: Awaited<ReturnType<typeof registry.makeImportRow>>
+  let bReadyRow: Awaited<ReturnType<typeof registry.makeImportRow>>
+  let bImportedTx: Awaited<ReturnType<typeof registry.makeTransaction>>
+  let bProfile: Awaited<ReturnType<typeof prisma.importProfile.create>>
+  let aBatch: Awaited<ReturnType<typeof registry.makeBatch>>
+  let aRow: Awaited<ReturnType<typeof registry.makeImportRow>>
+
+  beforeAll(async () => {
+    bBatch = await registry.makeBatch(b.user.id, b.bank.id, { fileHash: "b".repeat(64) })
+    bPendingRow = await registry.makeImportRow(b.user.id, bBatch.id, 1, { direction: "OUT", descriptionKey: "coffee" })
+    bReadyRow = await registry.makeImportRow(b.user.id, bBatch.id, 2, { status: "READY", counterpartNodeId: b.food.id, direction: "OUT", descriptionKey: "tea" })
+    bProfile = await prisma.importProfile.create({ data: { userId: b.user.id, name: "bank", nodeId: b.bank.id, settings: { dateColumn: 0 } } })
+    await prisma.counterpartRule.create({ data: { userId: b.user.id, direction: "OUT", descriptionKey: "coffee", nodeId: b.food.id } })
+    bImportedTx = await registry.makeTransaction(b.user.id, b.bank.id, b.food.id, { occurredAt: "2026-04-10" })
+    await prisma.transaction.update({ where: { id: bImportedTx.id }, data: { importBatchId: bBatch.id } })
+    const bRule = await registry.makeRule(b.user.id, b.bank.id, b.food.id)
+    await registry.makeOccurrence(b.user.id, bRule.id, "2026-04-10", { status: "POSTED", transactionId: bImportedTx.id, resolvedAt: new Date() })
+    aBatch = await registry.makeBatch(a.user.id, a.bank.id, { fileHash: "a".repeat(64) })
+    aRow = await registry.makeImportRow(a.user.id, aBatch.id, 1, { direction: "OUT", descriptionKey: "coffee" })
+  })
+
+  const batchData = (over: Partial<Parameters<typeof importRepo.insertBatch>[1]> = {}): Parameters<typeof importRepo.insertBatch>[1] => ({
+    nodeId: a.bank.id,
+    fileName: "x.csv",
+    fileSize: 3,
+    fileHash: "c".repeat(64),
+    fileBytes: new Uint8Array([1, 2, 3]),
+    ...over,
+  })
+
+  const stagedRow = (line: number, over: Partial<importRepo.RowData> = {}): importRepo.RowData => ({
+    line,
+    raw: ["x"],
+    status: "PENDING",
+    errorReason: null,
+    occurredOn: null,
+    amountPaise: null,
+    direction: null,
+    description: null,
+    descriptionKey: null,
+    counterpartNodeId: null,
+    duplicateOfTransactionId: null,
+    occurrenceId: null,
+    ...over,
+  })
+
+  isolation("insertBatch", "refuses another user's account or profile and writes nothing", async () => {
+    const aBefore = await snapshotBatches(a.user.id)
+    const bBefore = await snapshotBatches(b.user.id)
+    await expectNotFound(importRepo.insertBatch(a.user.id, batchData({ nodeId: b.bank.id })))
+    await expectNotFound(inTransaction((uow) => importRepo.insertBatch(a.user.id, batchData({ nodeId: b.bank.id }), uow)))
+    await expectNotFound(importRepo.insertBatch(a.user.id, batchData({ profileId: bProfile.id })))
+    expect(await snapshotBatches(a.user.id)).toEqual(aBefore)
+    expect(await snapshotBatches(b.user.id)).toEqual(bBefore)
+  })
+
+  isolation("insertBatch", "writes the caller's userId even if the data names another user", async () => {
+    const forged = { ...batchData(), userId: b.user.id } as Parameters<typeof importRepo.insertBatch>[1]
+    const row = await importRepo.insertBatch(a.user.id, forged)
+    expect(row.userId).toBe(a.user.id)
+    expect(await prisma.importBatch.count({ where: { userId: b.user.id, id: row.id } })).toBe(0)
+    await prisma.importBatch.delete({ where: { id: row.id } })
+  })
+
+  isolation("findBatchById", "returns null for another user's batch", async () => {
+    expect(await importRepo.findBatchById(a.user.id, bBatch.id)).toBeNull()
+    expect(await inTransaction((uow) => importRepo.findBatchById(a.user.id, bBatch.id, uow))).toBeNull()
+    expect((await importRepo.findBatchById(a.user.id, aBatch.id))?.id).toBe(aBatch.id)
+    expect((await importRepo.findBatchById(b.user.id, bBatch.id))?.id).toBe(bBatch.id)
+  })
+
+  isolation("findBatches", "never includes another user's batches", async () => {
+    const mine = await importRepo.findBatches(a.user.id)
+    expect(mine.map((row) => row.id)).toEqual([aBatch.id])
+    expect((await importRepo.findBatches(b.user.id)).map((row) => row.id)).toEqual([bBatch.id])
+  })
+
+  isolation("readBatchBytes", "returns null for another user's batch, and the file for the owner", async () => {
+    expect(await importRepo.readBatchBytes(a.user.id, bBatch.id)).toBeNull()
+    expect(await inTransaction((uow) => importRepo.readBatchBytes(a.user.id, bBatch.id, uow))).toBeNull()
+    expect(await importRepo.readBatchBytes(b.user.id, bBatch.id)).toEqual(new Uint8Array([97, 44, 98, 10]))
+  })
+
+  isolation("findEarlierUpload", "never finds another user's batch with the same file", async () => {
+    expect(await importRepo.findEarlierUpload(a.user.id, bBatch.fileHash)).toBeNull()
+    expect((await importRepo.findEarlierUpload(b.user.id, bBatch.fileHash))?.id).toBe(bBatch.id)
+    expect((await importRepo.findEarlierUpload(a.user.id, aBatch.fileHash))?.id).toBe(aBatch.id)
+  })
+
+  isolation("lockBatch", "is null for another user's batch, and the batch for the owner", async () => {
+    expect(await inTransaction((uow) => importRepo.lockBatch(a.user.id, bBatch.id, uow))).toBeNull()
+    expect((await inTransaction((uow) => importRepo.lockBatch(b.user.id, bBatch.id, uow)))?.id).toBe(bBatch.id)
+  })
+
+  isolation("transitionBatch", "returns null for another user's batch and changes nothing", async () => {
+    const before = await snapshotBatches(b.user.id)
+    expect(await importRepo.transitionBatch(a.user.id, bBatch.id, { from: ["STAGED"], to: "DISCARDED", dropBytes: true, rowCount: 9 })).toBeNull()
+    expect(await inTransaction((uow) => importRepo.transitionBatch(a.user.id, bBatch.id, { from: ["STAGED"], to: "COMMITTED" }, uow))).toBeNull()
+    expect(await snapshotBatches(b.user.id)).toEqual(before)
+  })
+
+  isolation("insertRows", "refuses another user's batch and another user's counterpart, writing nothing", async () => {
+    const aBefore = await snapshotRows(a.user.id)
+    const bBefore = await snapshotRows(b.user.id)
+    await expectNotFound(inTransaction((uow) => importRepo.insertRows(a.user.id, bBatch.id, [stagedRow(10)], uow)))
+    await expectNotFound(
+      inTransaction((uow) => importRepo.insertRows(a.user.id, aBatch.id, [stagedRow(11, { status: "READY", counterpartNodeId: b.food.id })], uow)),
+    )
+    expect(await snapshotRows(a.user.id)).toEqual(aBefore)
+    expect(await snapshotRows(b.user.id)).toEqual(bBefore)
+  })
+
+  isolation("insertRows", "writes the caller's userId even if a row names another user", async () => {
+    const forged = { ...stagedRow(12), userId: b.user.id } as importRepo.RowData
+    await inTransaction((uow) => importRepo.insertRows(a.user.id, aBatch.id, [forged], uow))
+    expect(await prisma.importRow.count({ where: { userId: b.user.id, batchId: aBatch.id } })).toBe(0)
+    expect(await prisma.importRow.count({ where: { userId: a.user.id, batchId: aBatch.id, line: 12 } })).toBe(1)
+    await prisma.importRow.deleteMany({ where: { batchId: aBatch.id, line: 12 } })
+  })
+
+  isolation("deleteRows", "deletes nothing of another user's batch", async () => {
+    const before = await snapshotRows(b.user.id)
+    expect(await inTransaction((uow) => importRepo.deleteRows(a.user.id, bBatch.id, uow))).toBe(0)
+    expect(await snapshotRows(b.user.id)).toEqual(before)
+  })
+
+  isolation("findRows", "returns nothing of another user's batch, and the owner's rows for the owner", async () => {
+    const query = { offset: 0, limit: 50 }
+    expect(await importRepo.findRows(a.user.id, bBatch.id, query)).toEqual([])
+    expect(await inTransaction((uow) => importRepo.findRows(a.user.id, bBatch.id, { ...query, status: ["READY"] }, uow))).toEqual([])
+    expect((await importRepo.findRows(b.user.id, bBatch.id, query)).map((r) => r.id)).toEqual([bPendingRow.id, bReadyRow.id])
+    expect((await importRepo.findRows(a.user.id, aBatch.id, query)).map((r) => r.id)).toEqual([aRow.id])
+  })
+
+  isolation("findRows", "does not return another user's row smuggled into the caller's batch", async () => {
+    // The repositories refuse to write this row; nothing in the database does.
+    const smuggled = await registry.makeImportRow(b.user.id, aBatch.id, 99)
+    try {
+      const rows = await importRepo.findRows(a.user.id, aBatch.id, { offset: 0, limit: 50 })
+      expect(rows.some((r) => r.id === smuggled.id)).toBe(false)
+      expect((await importRepo.findRowsForBatch(a.user.id, aBatch.id)).some((r) => r.id === smuggled.id)).toBe(false)
+      expect((await importRepo.countRows(a.user.id, aBatch.id)).byStatus.PENDING).toBe(1)
+      expect(await importRepo.findRowById(a.user.id, smuggled.id)).toBeNull()
+    } finally {
+      await prisma.importRow.delete({ where: { id: smuggled.id } })
+    }
+  })
+
+  isolation("findRowById", "returns null for another user's row", async () => {
+    expect(await importRepo.findRowById(a.user.id, bPendingRow.id)).toBeNull()
+    expect(await inTransaction((uow) => importRepo.findRowById(a.user.id, bReadyRow.id, uow))).toBeNull()
+    expect((await importRepo.findRowById(b.user.id, bPendingRow.id))?.id).toBe(bPendingRow.id)
+  })
+
+  isolation("findRowsForBatch", "returns nothing of another user's batch", async () => {
+    expect(await importRepo.findRowsForBatch(a.user.id, bBatch.id)).toEqual([])
+    expect(await inTransaction((uow) => importRepo.findRowsForBatch(a.user.id, bBatch.id, uow))).toEqual([])
+    expect(await importRepo.findRowsForBatch(b.user.id, bBatch.id)).toHaveLength(2)
+  })
+
+  isolation("countRows", "counts nothing of another user's batch", async () => {
+    expect(await importRepo.countRows(a.user.id, bBatch.id)).toEqual({
+      byStatus: { PENDING: 0, READY: 0, SKIPPED: 0, ERRORED: 0, COMMITTED: 0 },
+      duplicates: 0,
+      linked: 0,
+    })
+    expect((await importRepo.countRows(b.user.id, bBatch.id)).byStatus).toMatchObject({ PENDING: 1, READY: 1 })
+  })
+
+  isolation("updateRow", "returns null for another user's row and changes nothing", async () => {
+    const before = await snapshotRows(b.user.id)
+    expect(await importRepo.updateRow(a.user.id, bPendingRow.id, { status: "SKIPPED", occurrenceId: "pwned" })).toBeNull()
+    expect(await inTransaction((uow) => importRepo.updateRow(a.user.id, bReadyRow.id, { counterpartNodeId: null, status: "PENDING" }, uow))).toBeNull()
+    expect(await snapshotRows(b.user.id)).toEqual(before)
+  })
+
+  isolation("updateRow", "refuses another user's ledger as the counterpart of the caller's own row", async () => {
+    const before = await snapshotRows(a.user.id)
+    await expectNotFound(importRepo.updateRow(a.user.id, aRow.id, { counterpartNodeId: b.food.id }))
+    expect(await snapshotRows(a.user.id)).toEqual(before)
+  })
+
+  isolation("updateRowsWhereSame", "touches nothing of another user's batch", async () => {
+    const before = await snapshotRows(b.user.id)
+    const match = { direction: "OUT", descriptionKey: "coffee", status: "PENDING" } as const
+    expect(await importRepo.updateRowsWhereSame(a.user.id, bBatch.id, match, { status: "SKIPPED" })).toBe(0)
+    await expectNotFound(importRepo.updateRowsWhereSame(a.user.id, aBatch.id, match, { counterpartNodeId: b.food.id }))
+    expect(await snapshotRows(b.user.id)).toEqual(before)
+  })
+
+  isolation("markRowsCommitted", "refuses another user's rows and another user's transactions, changing nothing", async () => {
+    const bBefore = await snapshotRows(b.user.id)
+    const aBefore = await snapshotRows(a.user.id)
+    const ownTx = await registry.makeTransaction(a.user.id, a.bank.id, a.food.id)
+    const ownReady = await registry.makeImportRow(a.user.id, aBatch.id, 50, { status: "READY", counterpartNodeId: a.food.id })
+    await expectNotFound(inTransaction((uow) => importRepo.markRowsCommitted(a.user.id, [{ rowId: bReadyRow.id, transactionId: ownTx.id }], uow)))
+    await expectNotFound(inTransaction((uow) => importRepo.markRowsCommitted(a.user.id, [{ rowId: ownReady.id, transactionId: b.tx.id }], uow)))
+    expect(await snapshotRows(b.user.id)).toEqual(bBefore)
+    expect((await snapshotRows(a.user.id)).filter((r) => r.id !== ownReady.id)).toEqual(aBefore)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: ownReady.id } })).status).toBe("READY")
+    await prisma.importRow.delete({ where: { id: ownReady.id } })
+  })
+
+  isolation("upsertProfile", "refuses another user's ledger, and a name another user has is the caller's own profile", async () => {
+    const bBefore = await snapshotProfiles(b.user.id)
+    await expectNotFound(importRepo.upsertProfile(a.user.id, { name: "x", nodeId: b.bank.id, settings: {} }))
+    const mine = await importRepo.upsertProfile(a.user.id, { name: bProfile.name, nodeId: null, settings: { dateColumn: 7 } })
+    expect(mine.userId).toBe(a.user.id)
+    expect(mine.id).not.toBe(bProfile.id)
+    expect(await snapshotProfiles(b.user.id)).toEqual(bBefore)
+    await prisma.importProfile.delete({ where: { id: mine.id } })
+  })
+
+  isolation("findProfiles", "never includes another user's profiles", async () => {
+    expect((await importRepo.findProfiles(a.user.id)).some((p) => p.id === bProfile.id)).toBe(false)
+    expect((await importRepo.findProfiles(b.user.id)).map((p) => p.id)).toEqual([bProfile.id])
+  })
+
+  isolation("findProfileById", "returns null for another user's profile", async () => {
+    expect(await importRepo.findProfileById(a.user.id, bProfile.id)).toBeNull()
+    expect((await importRepo.findProfileById(b.user.id, bProfile.id))?.id).toBe(bProfile.id)
+  })
+
+  isolation("findCounterpartRules", "never includes another user's rules", async () => {
+    expect((await importRepo.findCounterpartRules(a.user.id)).every((r) => r.userId === a.user.id)).toBe(true)
+    expect(await inTransaction((uow) => importRepo.findCounterpartRules(a.user.id, uow))).toEqual(await importRepo.findCounterpartRules(a.user.id))
+    expect(await importRepo.findCounterpartRules(b.user.id)).toHaveLength(1)
+  })
+
+  isolation("upsertRule", "refuses another user's ledger, and the same key for the caller never changes the other user's rule", async () => {
+    const bBefore = await snapshotRules(b.user.id)
+    await expectNotFound(inTransaction((uow) => importRepo.upsertRule(a.user.id, { direction: "OUT", descriptionKey: "coffee", nodeId: b.food.id }, uow)))
+    await inTransaction((uow) => importRepo.upsertRule(a.user.id, { direction: "OUT", descriptionKey: "coffee", nodeId: a.food.id }, uow))
+    expect(await snapshotRules(b.user.id)).toEqual(bBefore)
+    expect(await prisma.counterpartRule.findFirstOrThrow({ where: { userId: a.user.id, descriptionKey: "coffee" } })).toMatchObject({ nodeId: a.food.id, hits: 1 })
+    await prisma.counterpartRule.deleteMany({ where: { userId: a.user.id } })
+  })
+
+  isolation("countImportsNaming", "counts nothing for another user's ledger", async () => {
+    expect(await importRepo.countImportsNaming(a.user.id, b.bank.id)).toBe(0)
+    expect(await inTransaction((uow) => importRepo.countImportsNaming(a.user.id, b.food.id, uow))).toBe(0)
+    expect(await importRepo.countImportsNaming(b.user.id, b.bank.id)).toBe(1)
+    expect(await importRepo.countImportsNaming(b.user.id, b.food.id)).toBe(1)
+  })
+
+  isolation("deleteImportConfigFor", "deletes nothing of another user's profiles and rules", async () => {
+    const profilesBefore = await snapshotProfiles(b.user.id)
+    const rulesBefore = await snapshotRules(b.user.id)
+    await inTransaction((uow) => importRepo.deleteImportConfigFor(a.user.id, b.bank.id, uow))
+    await inTransaction((uow) => importRepo.deleteImportConfigFor(a.user.id, b.food.id, uow))
+    expect(await snapshotProfiles(b.user.id)).toEqual(profilesBefore)
+    expect(await snapshotRules(b.user.id)).toEqual(rulesBefore)
+  })
+
+  isolation("insertTransactions", "refuses another user's import batch or row on a draft and writes nothing", async () => {
+    const before = await snapshotTransactions(a.user.id)
+    const draft = draftTo(a.bank.id, a.food.id)
+    await expectNotFound(txRepo.insertTransactions(a.user.id, [{ ...draft, importBatchId: bBatch.id }]))
+    await expectNotFound(txRepo.insertTransactions(a.user.id, [{ ...draft, importBatchId: aBatch.id, importRowId: bPendingRow.id }]))
+    await expectNotFound(inTransaction((uow) => txRepo.insertTransactions(a.user.id, [{ ...draft, importRowId: bReadyRow.id }], undefined, uow)))
+    expect(await snapshotTransactions(a.user.id)).toEqual(before)
+  })
+
+  isolation("findAccountTransactions", "returns nothing for another user's account, even smuggled onto one", async () => {
+    const from = calendarDate("2026-01-01")
+    const to = calendarDate("2026-12-31")
+    expect(await txRepo.findAccountTransactions(a.user.id, b.bank.id, from, to)).toEqual([])
+    expect(await inTransaction((uow) => txRepo.findAccountTransactions(a.user.id, b.food.id, from, to, uow))).toEqual([])
+    expect((await txRepo.findAccountTransactions(b.user.id, b.bank.id, from, to)).map((t) => t.id)).toContain(bImportedTx.id)
+    // B's transaction pointing at A's account (Prisma permits it) is not A's to read
+    const smuggled = await registry.makeTransaction(b.user.id, a.bank.id, b.food.id, { occurredAt: "2026-04-10" })
+    try {
+      expect((await txRepo.findAccountTransactions(a.user.id, a.bank.id, from, to)).some((t) => t.id === smuggled.id)).toBe(false)
+    } finally {
+      await prisma.transaction.delete({ where: { id: smuggled.id } })
+    }
+  })
+
+  isolation("softDeleteByBatch", "deletes nothing of another user's batch and returns no ids", async () => {
+    const before = await snapshotTransactions(b.user.id)
+    expect(await inTransaction((uow) => txRepo.softDeleteByBatch(a.user.id, bBatch.id, uow))).toEqual([])
+    expect(await snapshotTransactions(b.user.id)).toEqual(before)
+    expect(before.find((t) => t.id === bImportedTx.id)?.deletedAt).toBeNull()
+  })
+
+  isolation("findPendingForAccount", "returns nothing for another user's account", async () => {
+    const rule = await registry.makeRule(b.user.id, b.bank.id, b.food.id, { name: "Pending rule" })
+    const occurrence = await registry.makeOccurrence(b.user.id, rule.id, "2026-05-10")
+    expect(await recurringRepo.findPendingForAccount(a.user.id, b.bank.id)).toEqual([])
+    expect(await inTransaction((uow) => recurringRepo.findPendingForAccount(a.user.id, b.food.id, uow))).toEqual([])
+    expect((await recurringRepo.findPendingForAccount(b.user.id, b.bank.id)).map((o) => o.id)).toContain(occurrence.id)
+  })
+
+  isolation("reopenPostedByTransactions", "reopens nothing posted by another user's transactions", async () => {
+    const before = await prisma.recurringOccurrence.findMany({ where: { userId: b.user.id }, orderBy: { id: "asc" } })
+    expect(before.some((o) => o.status === "POSTED" && o.transactionId === bImportedTx.id)).toBe(true)
+    expect(await inTransaction((uow) => recurringRepo.reopenPostedByTransactions(a.user.id, [bImportedTx.id], uow))).toBe(0)
+    expect(await prisma.recurringOccurrence.findMany({ where: { userId: b.user.id }, orderBy: { id: "asc" } })).toEqual(before)
+  })
+})
+
 describe("coverage", () => {
   // Every module in src/server/repositories is read from the directory, not from a hand-kept import list.
   const files = readdirSync(new URL("../../../src/server/repositories/", import.meta.url)).filter((f) => f.endsWith(".ts")).map((f) => f.slice(0, -".ts".length))
@@ -1086,6 +1397,7 @@ describe("coverage", () => {
     expect(perModule.map((m) => m.path).sort()).toEqual([
       "budget-repository.ts",
       "errors.ts",
+      "import-repository.ts",
       "lot-repository.ts",
       "node-repository.ts",
       "price-repository.ts",

@@ -47,6 +47,9 @@ export interface InsertDraft {
   note?: string | null
   tags?: string[]
   idempotencyKey?: string | null
+  /** The import batch and row this transaction came from; both must be the user's. A hand-made one has neither. */
+  importBatchId?: string | null
+  importRowId?: string | null
 }
 
 export interface UpdateDraft {
@@ -208,6 +211,18 @@ async function assertGroupOwned(userId: string, groupId: string, db: Db): Promis
   if (owned !== 1) throw new NotFoundError("group")
 }
 
+// A draft's import batch and row are foreign keys the schema only checks for existence, not for whose they are.
+async function assertImportLinksOwned(userId: string, drafts: InsertDraft[], db: Db): Promise<void> {
+  const batchIds = [...new Set(drafts.flatMap((d) => (d.importBatchId ? [d.importBatchId] : [])))]
+  const rowIds = [...new Set(drafts.flatMap((d) => (d.importRowId ? [d.importRowId] : [])))]
+  if (batchIds.length > 0 && (await db.importBatch.count({ where: { userId, id: { in: batchIds } } })) !== batchIds.length) {
+    throw new NotFoundError("import")
+  }
+  if (rowIds.length > 0 && (await db.importRow.count({ where: { userId, id: { in: rowIds } } })) !== rowIds.length) {
+    throw new NotFoundError("import")
+  }
+}
+
 /**
  * Insert all drafts or none. Throws NotFoundError, and writes nothing, if any referenced node (or the group) is not
  * this user's; DuplicateIdempotencyKeyError, carrying the stored row, if a draft repeats a key this user already used.
@@ -228,6 +243,7 @@ export async function insertTransactions(
     const write = async (db: Prisma.TransactionClient) => {
       await assertNodesOwned(userId, drafts.flatMap((d) => [d.fromNodeId, d.toNodeId]), db)
       if (groupId !== undefined) await assertGroupOwned(userId, groupId, db)
+      await assertImportLinksOwned(userId, drafts, db)
       const created: Transaction[] = []
       for (const draft of drafts) {
         created.push(
@@ -242,6 +258,8 @@ export async function insertTransactions(
               tags: draft.tags ?? [],
               idempotencyKey: draft.idempotencyKey ?? null,
               groupId: groupId ?? null,
+              importBatchId: draft.importBatchId ?? null,
+              importRowId: draft.importRowId ?? null,
             },
           }),
         )
@@ -307,6 +325,42 @@ export async function softDeleteTransaction(userId: string, id: string, uow?: Un
     data: { deletedAt: new Date(), version: { increment: 1 } },
   })
   if (count === 0) throw new NotFoundError("transaction")
+}
+
+/**
+ * Soft-delete, and bump the version of, every live transaction an import batch created, in one statement, and return
+ * their ids (oldest id first). Scoped by user, so another user's batch id matches nothing; a transaction made by hand, one
+ * of another batch and one already deleted are left alone, so repeating it returns an empty list. `RETURNING` is the
+ * source of the ids, so they are exactly the rows this call changed even if the caller does not hold a lock.
+ */
+export async function softDeleteByBatch(userId: string, batchId: string, uow: UnitOfWork): Promise<string[]> {
+  const rows = await clientOf(uow).$queryRaw<{ id: string }[]>`
+    UPDATE "Transaction" SET "deletedAt" = now(), "version" = "version" + 1
+     WHERE "userId" = ${userId} AND "importBatchId" = ${batchId} AND "deletedAt" IS NULL
+    RETURNING "id"`
+  return rows.map((row) => row.id).sort()
+}
+
+/**
+ * The user's live transactions that touch the account at either end and are dated from `from` to `to`, both inclusive,
+ * oldest first: what a statement for the account could duplicate. `uow`, when given, reads inside the caller's transaction.
+ */
+export function findAccountTransactions(
+  userId: string,
+  nodeId: string,
+  from: CalendarDate,
+  to: CalendarDate,
+  uow?: UnitOfWork,
+): Promise<Transaction[]> {
+  return (uow ? clientOf(uow) : prisma).transaction.findMany({
+    where: {
+      userId,
+      deletedAt: null,
+      occurredAt: { gte: toDbDate(from), lte: toDbDate(to) },
+      OR: [{ fromNodeId: nodeId }, { toNodeId: nodeId }],
+    },
+    orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+  })
 }
 
 /**

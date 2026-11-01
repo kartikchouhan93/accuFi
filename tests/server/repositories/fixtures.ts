@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto"
-import type { LedgerKind, OccurrenceStatus, Prisma } from "@prisma/client"
+import { createHash, randomUUID } from "node:crypto"
+import type { ImportBatchStatus, LedgerKind, OccurrenceStatus, Prisma } from "@prisma/client"
 import { calendarDate, toDbDate } from "@/domain/calendar-date"
 import { prisma } from "@/server/db"
 
@@ -105,6 +105,41 @@ export function createRegistry() {
     })
   }
 
+  /** A batch for `nodeId`, STAGED with bytes unless `over` says otherwise; each call gets a distinct valid file hash. */
+  async function makeBatch(
+    userId: string,
+    nodeId: string,
+    over: Partial<Omit<Prisma.ImportBatchUncheckedCreateInput, "userId" | "nodeId" | "status" | "fileBytes">> & {
+      status?: ImportBatchStatus
+      fileBytes?: Uint8Array | null
+    } = {},
+  ) {
+    const bytes = over.fileBytes === undefined ? new Uint8Array([97, 44, 98, 10]) : over.fileBytes
+    return prisma.importBatch.create({
+      data: {
+        fileName: "statement.csv",
+        fileSize: 4,
+        fileHash: createHash("sha256").update(randomUUID()).digest("hex"),
+        rowCount: 0,
+        ...over,
+        fileBytes: bytes === null ? undefined : new Uint8Array(bytes),
+        userId,
+        nodeId,
+        status: over.status ?? "STAGED",
+      },
+    })
+  }
+
+  /** A PENDING row on `line` of the batch. `over` sets any other column (a READY row needs a `counterpartNodeId`). */
+  async function makeImportRow(
+    userId: string,
+    batchId: string,
+    line: number,
+    over: Omit<Prisma.ImportRowUncheckedCreateInput, "userId" | "batchId" | "line" | "raw"> & { raw?: string[] } = {},
+  ) {
+    return prisma.importRow.create({ data: { raw: ["x"], ...over, userId, batchId, line } })
+  }
+
   /** A user with an income source, a bank account and an expense node, and one live transaction bank -> expense. */
   async function makeWorld() {
     const user = await makeUser()
@@ -140,5 +175,5 @@ export function createRegistry() {
     await prisma.$disconnect()
   }
 
-  return { makeUser, makeNode, makeTransaction, makeRule, makeOccurrence, makeBudget, makeWorld, cleanup }
+  return { makeUser, makeNode, makeTransaction, makeRule, makeOccurrence, makeBudget, makeBatch, makeImportRow, makeWorld, cleanup }
 }

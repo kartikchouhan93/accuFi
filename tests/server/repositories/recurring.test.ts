@@ -518,3 +518,71 @@ describe("findRuleByKey", () => {
     expect(await repo.findRuleByKey(other.user.id, idempotencyKey)).toBeNull()
   })
 })
+
+describe("findPendingForAccount", () => {
+  it("returns pending occurrences of live rules with the account at either end, with their rule, oldest first", async () => {
+    const w = await registry.makeWorld()
+    const rent = await registry.makeNode(w.user.id, "EXPENSE", "Rent")
+    const out = await repo.insertRule(w.user.id, withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }))
+    const into = await repo.insertRule(w.user.id, withDue({ name: "Pay", fromNodeId: w.income.id, toNodeId: w.bank.id }))
+    const elsewhere = await repo.insertRule(w.user.id, withDue({ name: "Other", fromNodeId: w.income.id, toNodeId: rent.id }))
+    const deleted = await repo.insertRule(w.user.id, withDue({ name: "Gone", fromNodeId: w.bank.id, toNodeId: rent.id }))
+    const later = (await inTransaction((uow) => repo.insertOccurrences(w.user.id, out.id, [d("2026-05-05")], uow)))[0]
+    const earlier = (await inTransaction((uow) => repo.insertOccurrences(w.user.id, into.id, [d("2026-04-05")], uow)))[0]
+    const dismissed = (await inTransaction((uow) => repo.insertOccurrences(w.user.id, out.id, [d("2026-06-05")], uow)))[0]
+    await repo.markDismissed(w.user.id, dismissed.id)
+    await inTransaction((uow) => repo.insertOccurrences(w.user.id, elsewhere.id, [d("2026-04-05")], uow))
+    await inTransaction((uow) => repo.insertOccurrences(w.user.id, deleted.id, [d("2026-04-05")], uow))
+    await inTransaction((uow) => repo.softDeleteRule(w.user.id, deleted.id, uow))
+    // softDeleteRule removes the pending ones; put one back to prove the live-rule filter itself
+    await prisma.recurringOccurrence.create({ data: { userId: w.user.id, ruleId: deleted.id, dueOn: new Date("2026-07-05T00:00:00Z") } })
+
+    const found = await repo.findPendingForAccount(w.user.id, w.bank.id)
+    expect(found.map((o) => o.id)).toEqual([earlier.id, later.id])
+    expect(found[0].rule).toEqual(into)
+    expect(await inTransaction((uow) => repo.findPendingForAccount(w.user.id, w.bank.id, uow))).toEqual(found)
+    expect(await repo.findPendingForAccount(w.user.id, rent.id)).toHaveLength(1)
+  })
+})
+
+describe("reopenPostedByTransactions", () => {
+  it("returns only occurrences posted by those transactions to PENDING, clearing the link and the resolved time", async () => {
+    const w = await registry.makeWorld()
+    const rule = await repo.insertRule(w.user.id, withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }))
+    const [o1, o2, o3] = await inTransaction((uow) => repo.insertOccurrences(w.user.id, rule.id, [d("2026-04-05"), d("2026-05-05"), d("2026-06-05")], uow))
+    const t1 = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id)
+    const t2 = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id)
+    await repo.markPosted(w.user.id, o1.id, t1.id)
+    await repo.markPosted(w.user.id, o2.id, t2.id)
+    const stillPosted = await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: o2.id } })
+    const pendingBefore = await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: o3.id } })
+
+    expect(await inTransaction((uow) => repo.reopenPostedByTransactions(w.user.id, [t1.id, "no-such-tx"], uow))).toBe(1)
+    expect(await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: o1.id } })).toMatchObject({
+      status: "PENDING",
+      transactionId: null,
+      resolvedAt: null,
+      postFailure: null,
+    })
+    expect(await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: o2.id } })).toEqual(stillPosted)
+    expect(await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: o3.id } })).toEqual(pendingBefore)
+    // a dismissed occurrence is not POSTED and is left as it is; an empty list does nothing
+    expect(await inTransaction((uow) => repo.reopenPostedByTransactions(w.user.id, [t1.id], uow))).toBe(0)
+    expect(await inTransaction((uow) => repo.reopenPostedByTransactions(w.user.id, [], uow))).toBe(0)
+  })
+
+  it("markPosted inside a unit of work commits and rolls back with it", async () => {
+    const w = await registry.makeWorld()
+    const rule = await repo.insertRule(w.user.id, withDue({ fromNodeId: w.bank.id, toNodeId: w.food.id }))
+    const [occurrence] = await inTransaction((uow) => repo.insertOccurrences(w.user.id, rule.id, [d("2026-04-05")], uow))
+    const tx = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id)
+    await expect(
+      inTransaction(async (uow) => {
+        expect(await repo.markPosted(w.user.id, occurrence.id, tx.id, uow)).not.toBeNull()
+        throw new Error("abort")
+      }),
+    ).rejects.toThrow("abort")
+    expect((await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).status).toBe("PENDING")
+    expect(await inTransaction((uow) => repo.markPosted(w.user.id, occurrence.id, tx.id, uow))).not.toBeNull()
+  })
+})
