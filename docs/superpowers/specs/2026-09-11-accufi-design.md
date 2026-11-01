@@ -331,6 +331,8 @@ Budgets may be set on a parent ledger, in which case children roll up into it.
 
 ### 8.6 M6 — CSV import
 
+**Status:** built on `feat/m6-csv-import`, 2026-11-01: upload and mapping at `/import/new` and `/import/[id]/map` with a live preview and saved profiles, staging, the review screen at `/import/[id]/review` (duplicate and recurring-occurrence flags, counterpart suggestion, bulk "apply to similar"), atomic commit and whole-batch reversal at `/import/[id]/batch`, the import list at `/import`, and the refusal to delete a ledger an import names. Design: `docs/superpowers/specs/2026-11-02-accufi-m6-csv-import-design.md`; decisions: `docs/superpowers/decisions/2026-11-02-m6-rulings.md`.
+
 Five stages, nothing committed until the last:
 
 1. **Upload.** File hashed; an identical prior upload warns before proceeding.

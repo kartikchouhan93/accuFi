@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto"
-import { calendarDate, todayIn } from "@/domain/calendar-date"
+import { addDays, calendarDate, todayIn } from "@/domain/calendar-date"
+import type { ImportMapping } from "@/domain/import-map"
 import type { RecurrenceFrequency } from "@/domain/recurrence"
 import { parseRupees } from "@/domain/money"
 import { parseQuantity } from "@/domain/quantity"
 import { prisma } from "@/server/db"
 import { createLedgerNode, type CreateNodeInput } from "@/server/services/node-service"
 import { createBudget } from "@/server/services/budget-service"
+import { commitBatch, createBatch, loadReview, stageBatch, updateRow } from "@/server/services/import-service"
 import { recordPrice } from "@/server/services/price-service"
 import { createRule } from "@/server/services/recurring-service"
 import { recordTransaction } from "@/server/services/transaction-service"
@@ -159,4 +161,71 @@ export async function budget(
     endMonth: opts.endMonth === undefined ? undefined : calendarDate(opts.endMonth),
     rollover: opts.rollover ?? false,
   })
+}
+
+export interface ImportSeedRow {
+  description: string
+  rupees: string
+  direction: "OUT" | "IN"
+  /** Days from `today`; defaults to 0. */
+  dayOffset?: number
+}
+
+/**
+ * An import batch straight through the services, with no browser and no real file format choices: the only e2e specs
+ * that use this (isolation, and the recurring-link setup) need a batch and its rows to exist in a given state with
+ * real ids to act on, not a proof that the upload form or the mapping screen work (import.spec.ts's own exit-criterion
+ * scenario drives those for real). The file itself is a plain single-signed-amount CSV in YYYY-MM-DD, `rows` negative
+ * for OUT and positive for IN, so the mapping needed to read it back is always the same regardless of account kind.
+ * Staged by default; every row gets `counterpart` and is readied (`decision: "IMPORT"`) unless `decide` is false, and
+ * the batch is committed if `commit` is true (which implies staging and deciding). Pass `stage: false` for a batch left
+ * at UPLOADED, with no rows yet.
+ */
+export async function importBatch(
+  userId: string,
+  opts: {
+    account: string
+    counterpart: string
+    rows: ImportSeedRow[]
+    fileName?: string
+    stage?: boolean
+    decide?: boolean
+    commit?: boolean
+  },
+) {
+  const accountId = await nodeId(userId, opts.account)
+  const day = await today(userId)
+  const lines = opts.rows.map((r) => {
+    const date = addDays(calendarDate(day), r.dayOffset ?? 0)
+    const signed = r.direction === "OUT" ? `-${r.rupees}` : r.rupees
+    return `${date},${r.description},${signed}`
+  })
+  const text = ["date,description,amount", ...lines].join("\n")
+  const batch = await createBatch(userId, { nodeId: accountId, fileName: opts.fileName ?? "statement.csv", bytes: new TextEncoder().encode(text) })
+
+  const shouldStage = (opts.stage ?? true) || opts.commit
+  if (!shouldStage) return { batchId: batch.id, rowIds: [] as string[] }
+
+  const mapping: ImportMapping = {
+    delimiter: ",",
+    encoding: "utf-8",
+    skipRows: 1,
+    dateFormat: "YYYY-MM-DD",
+    decimalSeparator: ".",
+    signConvention: "POSITIVE_IN",
+    columns: { date: 0, description: 1, amount: 2 },
+  }
+  await stageBatch(userId, batch.id, mapping, { confirmedRepeat: false })
+  const review = await loadReview(userId, batch.id, { filter: "all", page: 1 })
+  const rowIds = review.rows.map((r) => r.id)
+
+  const shouldDecide = (opts.decide ?? true) || opts.commit
+  if (shouldDecide) {
+    const counterpartId = await nodeId(userId, opts.counterpart)
+    for (const rowId of rowIds) await updateRow(userId, rowId, { counterpartNodeId: counterpartId, decision: "IMPORT" })
+  }
+
+  if (opts.commit) await commitBatch(userId, batch.id)
+
+  return { batchId: batch.id, rowIds }
 }

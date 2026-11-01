@@ -57,6 +57,20 @@ Rollover is off by default; switched on, whatever a month leaves unspent is adde
 
 A ledger that a budget uses cannot be deleted until the budget is (or it can be archived, which keeps the budget); deleting a budget never touches a transaction.
 
+## Importing a statement
+
+An import reads a CSV statement from a bank or card account, lets you say what each column means, shows a live preview of what it would record, and turns the rows you confirm into transactions on one account of your own. Imports live at `/import`; "New import" starts one with a file, and reuses a saved mapping if you already have one for this bank.
+
+**Nothing is recorded until you commit.** Uploading a file only stores it; choosing a mapping only previews it; staging only reads it into rows, each pending a decision, that you can import or skip one at a time (or in bulk, for rows that read the same). Committing is the one step that turns the rows you chose to import into real transactions and moves the account's balance; nothing before it writes anything.
+
+**The date format is always chosen, never guessed.** `03/04/2026` is the 3rd of April on one bank's export and the 4th of March on another's. The mapping screen asks which format the file uses, with a live preview that changes the moment you change it, rather than inferring one from the data and risking a transaction recorded on the wrong day with no warning.
+
+**A likely repeat is flagged, never dropped.** A row that matches an existing transaction on the account (the same amount and direction, within a few days) is shown beside the transaction it probably repeats, so you decide — import it anyway or skip it as a duplicate — instead of it silently doubling your balance or silently vanishing. Uploading the exact same file a second time is caught before it is even staged, with a warning and a confirmation to go past it.
+
+**Reversing a committed import** undoes it in full: every transaction it created is deleted and the account's balance returns to exactly what it was before, and any recurring entry the import had posted goes back to waiting in the inbox. A reversed import stays on the list, showing what it did, in case you need to look again.
+
+The statement's own bytes are kept only for as long as the batch might still need remapping or deciding: once it is committed, discarded, or (having already been committed) reversed, its file is deleted from the database — only the transactions it made, or the fact that it made none, remain.
+
 ## Runtime spike outcome (spec §9.1)
 
 Question: does Next.js 16 + Prisma 6 work on the Bun runtime, in Docker, against Postgres 16?

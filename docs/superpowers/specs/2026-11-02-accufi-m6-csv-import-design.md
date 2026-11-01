@@ -1,6 +1,6 @@
 # AccuFi M6 — CSV import: design
 
-**Status:** Draft, awaiting approval. **Date:** 2026-11-02. **Builds on:** `2026-09-11-accufi-design.md` §8.6 (CSV import), §6.4, §5 (flow rules), EC-17, EC-46, EC-53 to EC-60. M0–M5 are merged.
+**Status:** Approved, built on `feat/m6-csv-import`, 2026-11-01: upload, mapping with a live preview, staging, review (duplicates flagged, errors shown, counterpart suggestion and bulk "apply to similar", recurring-occurrence linking), atomic commit and whole-batch reversal, all proven end to end against a real browser and database (`tests/e2e/import.spec.ts`, `tests/e2e/isolation.spec.ts`). Decisions taken in execution: `docs/superpowers/decisions/2026-11-02-m6-rulings.md`. **Date:** 2026-11-02. **Builds on:** `2026-09-11-accufi-design.md` §8.6 (CSV import), §6.4, §5 (flow rules), EC-17, EC-46, EC-53 to EC-60. M0–M5 are merged.
 
 The user asked for the design to be drafted straight from the spec, without a question round. Everything the spec leaves open is decided here and listed in **Calls I made** at the end, each with what it costs if wrong.
 

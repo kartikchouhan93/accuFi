@@ -9,7 +9,7 @@ import { sellInvestment } from "@/server/services/investment-service"
 import { editTransaction } from "@/server/services/transaction-service"
 import { expect, section, test } from "./fixtures"
 import { balanceOf, editForm, entries, form, optionsOf, record, watchActions } from "./screens"
-import { account, addExpense, budget, buy, card, incomeSource, investment, nodeId, post, price, recurringRule, today } from "./seed"
+import { account, addExpense, budget, buy, card, importBatch, incomeSource, investment, nodeId, post, price, recurringRule, today } from "./seed"
 
 // Cross-user isolation, proven through a browser. The repository layer is tested exhaustively for it; this is the same
 // claim made where a user could actually break it: two people, two sessions, one server. Each test gets user A and user B
@@ -1233,4 +1233,189 @@ test.describe("a request B's browser sends, aimed at A's budget", () => {
     await expect(budgetCards(b.page)).toHaveCount(1)
     await expect(budgetCards(b.page)).toContainText("₹300.00")
   })
+})
+
+// CSV import (M6). A batch and its rows are one user's, reached by an id in a URL (the review and batch pages, and the
+// generic `/import/[id]` redirector) or by an id a Server Action carries (stage, decide a row, commit, reverse), or by
+// an account id the upload route carries. So B is shown none of A's statement on the import list, the review or batch
+// pages, in B's own Transactions, or in any page's HTML; B's upload naming A's account is refused the same way every
+// other foreign id is; and B's stage, decide, commit and reverse, aimed at A's ids, are refused as not found, exactly
+// as for an id that is nobody's, with A's rows untouched. `importBatch` (tests/e2e/seed.ts) seeds a batch straight
+// through the services: the upload form and the mapping screen are already proven for real by import.spec.ts's own
+// exit criterion, so this only needs batches and rows to exist, in a given state, with real ids to attack.
+
+const A_FILE = "Zephyr_Statement.csv"
+const A_IMPORT_DESC = "Zephyr Grocery Run"
+
+/** A's committed import: one row, ₹8,765.43 out of Zephyr Vault Savings to Zephyr Hobby. */
+async function seedAImport(userId: string) {
+  await seedA(userId)
+  return importBatch(userId, { account: VAULT, counterpart: HOBBY, fileName: A_FILE, rows: [{ description: A_IMPORT_DESC, rupees: "8,765.43", direction: "OUT" }], commit: true })
+}
+
+/** B's own committed import: one row of its own, so B's screens are real ones with something to show. */
+async function seedBImport(userId: string) {
+  await seedB(userId)
+  return importBatch(userId, { account: "Plain Wallet", counterpart: "Transport", rows: [{ description: "Plain grocery run", rupees: "50", direction: "OUT" }], commit: true })
+}
+
+/** What identifies A's import: the batch and row ids, the file name, the description, and the amount as printed and as paise. */
+async function importSecretsOfA(userId: string): Promise<string[]> {
+  const batches = await prisma.importBatch.findMany({ where: { userId } })
+  const rows = await prisma.importRow.findMany({ where: { userId } })
+  return [...(await secretsOfA(userId)), A_FILE, A_IMPORT_DESC, ...batches.map((b) => b.id), ...rows.map((r) => r.id), "8,765.43", "876543"]
+}
+
+/** Every import row of a user as stored, in a fixed order, so "nothing changed" is a comparison of two reads. */
+async function importRowsOf(userId: string) {
+  return {
+    batches: await prisma.importBatch.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+    rows: await prisma.importRow.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+  }
+}
+
+const importList = (page: Page) => page.getByRole("list", { name: "Your imports" }).getByRole("listitem")
+const stagedRows = (page: Page) => page.getByRole("list", { name: "Staged rows" }).getByRole("listitem")
+const rowWith = (page: Page, text: string) => stagedRows(page).filter({ hasText: text })
+
+/** Choose the mapping an `importBatch`-written file needs (a plain "date,description,amount" header, YYYY-MM-DD) and submit. */
+async function chooseImportMapping(page: Page) {
+  await page.getByLabel("Date format").selectOption("YYYY-MM-DD")
+  await page.getByLabel("Date column").selectOption({ label: "date" })
+  await page.getByLabel("Description column").selectOption({ label: "description" })
+  await page.getByLabel("Amount column").selectOption({ label: "amount" })
+  await page.getByRole("button", { name: "Update preview" }).click()
+}
+
+test("shows B none of A's import on the list, the batch page, or in B's own Transactions, and A's own screens show it", async ({ pair: { a, b } }) => {
+  const aBatch = await seedAImport(a.userId)
+  const bBatch = await seedBImport(b.userId)
+  const secrets = await importSecretsOfA(a.userId)
+
+  // A's own screen shows it, so a search that finds nothing on B's is not looking for the wrong thing.
+  await a.page.goto("/import")
+  await expect(importList(a.page)).toHaveCount(1)
+  await expect(importList(a.page)).toContainText(A_FILE)
+  expect((await leaksOn(a.page, secrets)).length).toBeGreaterThan(0)
+
+  await b.page.goto("/import")
+  await expect(importList(b.page)).toHaveCount(1)
+  await expect(importList(b.page)).not.toContainText(A_FILE)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+
+  await b.page.goto(`/import/${bBatch.batchId}/batch`)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+
+  // B's own Transactions carry nothing of A's import, and a foreign batch id in the `batch` filter shows no notice and
+  // names nothing: B's own three rows (the wallet's opening balance, the bus pass, and its own imported row) are all
+  // there is.
+  await b.page.goto("/transactions?from=&to=")
+  await expect(entries(b.page).getByRole("listitem")).toHaveCount(3)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  await b.page.goto(`/transactions?from=&to=&batch=${aBatch.batchId}`)
+  await expect(b.page.getByText(A_FILE)).toHaveCount(0)
+  expect(await leaksOn(b.page, secrets, [aBatch.batchId])).toEqual([])
+})
+
+test("answers B's visit to A's review, batch or redirect page as not found, exactly as for an id that is nobody's", async ({ pair: { a, b } }) => {
+  const aBatch = await seedAImport(a.userId)
+  await seedBImport(b.userId)
+  const secrets = await importSecretsOfA(a.userId)
+  const GHOST = "cm0000000000000000000ghost"
+
+  /** What B gets at `path`: the not-found page, with nothing of A's in it (apart from the id, `typed`, B put in the URL itself). */
+  const visit = async (path: string, typed: string) => {
+    await b.page.goto(path)
+    await expect(b.page.getByText("This page could not be found.")).toBeVisible()
+    expect(await leaksOn(b.page, secrets, [typed])).toEqual([])
+    return b.page.locator("body").innerText()
+  }
+  for (const suffix of ["", "/review", "/batch"]) {
+    const ghost = await visit(`/import/${GHOST}${suffix}`, GHOST)
+    expect(await visit(`/import/${aBatch.batchId}${suffix}`, aBatch.batchId), suffix || "redirect").toBe(ghost)
+  }
+
+  // A, at the batch page, is let in: it is the owner that makes the difference.
+  await a.page.goto(`/import/${aBatch.batchId}/batch`)
+  await expect(a.page.getByRole("heading", { level: 1 })).toContainText(A_FILE)
+})
+
+test("B's upload naming A's account is refused, and B's stage, decide, commit and reverse aimed at A's import are refused as not found, leaving A's rows untouched", async ({
+  pair: { a, b },
+}) => {
+  test.setTimeout(60_000)
+  const aCommitted = await seedAImport(a.userId)
+  const aStaged = await importBatch(a.userId, { account: VAULT, counterpart: HOBBY, rows: [{ description: "Zephyr pending row", rupees: "1,111.11", direction: "OUT" }] })
+  await seedBImport(b.userId)
+  const secrets = [...(await importSecretsOfA(a.userId)), "Zephyr pending row", "1,111.11", "111111", ...aStaged.rowIds]
+  const before = await importRowsOf(a.userId)
+
+  // The upload route: a plain POST with B's own cookies, naming A's account id.
+  const uploadResponse = await b.page.request.post("/api/import/upload", {
+    multipart: {
+      nodeId: await nodeId(a.userId, VAULT),
+      file: { name: "x.csv", mimeType: "text/csv", buffer: Buffer.from("date,description,amount\n2026-01-01,x,10") },
+    },
+  })
+  expect(uploadResponse.status()).toBe(404)
+  expect(await uploadResponse.json()).toEqual({ ok: false, error: { code: "not_found", message: "That ledger was not found" } })
+
+  const GHOST = "cm0000000000000000000ghost"
+  /** B does something ordinary on its own screen, but the request the page sends has B's id swapped for `target`. */
+  async function aimed(own: string, target: string, act: () => Promise<void>) {
+    let swapped = 0
+    const replies = await watchActions(b.page, (body) => {
+      if (!body.includes(own)) return body
+      swapped += 1
+      return body.replaceAll(own, target)
+    })
+    await act()
+    await expect.poll(() => replies.length, "the answer that came back").toBe(1)
+    expect(swapped, "the request that was sent did carry B's own id, so it was really aimed").toBe(1)
+    await b.page.unroute("**/*")
+    const [reply] = replies
+    expect(reply.status).toBe(200)
+    expect(reply.body).toContain('"code":"not_found"')
+    expect(reply.body).not.toContain('"ok":true')
+    return reply.body
+  }
+
+  // stage: B's own fresh, unstaged upload, with A's committed batch id substituted.
+  const bUpload = await importBatch(b.userId, { account: "Plain Wallet", counterpart: "Transport", rows: [{ description: "Plain stage row", rupees: "20", direction: "OUT" }], stage: false })
+  await b.page.goto(`/import/${bUpload.batchId}/map`)
+  await chooseImportMapping(b.page)
+  const clickStage = () => b.page.getByRole("button", { name: "Stage rows" }).click()
+  const stageToA = await aimed(bUpload.batchId, aCommitted.batchId, clickStage)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  expect(stageToA).toEqual(await aimed(bUpload.batchId, GHOST, clickStage))
+
+  // decide (updateRowAction): B's own staged, undecided row, with A's staged row id substituted.
+  const bPending = await importBatch(b.userId, { account: "Plain Wallet", counterpart: "Transport", rows: [{ description: "Plain decide row", rupees: "30", direction: "OUT" }], decide: false })
+  await b.page.goto(`/import/${bPending.batchId}/review`)
+  const bCard = rowWith(b.page, "Plain decide row")
+  await bCard.getByLabel("Counterpart ledger").selectOption(await nodeId(b.userId, "Transport"))
+  const clickImport = () => bCard.getByRole("button", { name: "Import", exact: false }).click()
+  const decideToA = await aimed(bPending.rowIds[0], aStaged.rowIds[0], clickImport)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  expect(decideToA).toEqual(await aimed(bPending.rowIds[0], GHOST, clickImport))
+
+  // commit: B's own staged, ready batch, with A's committed batch id substituted.
+  const bReady = await importBatch(b.userId, { account: "Plain Wallet", counterpart: "Transport", rows: [{ description: "Plain commit row", rupees: "40", direction: "OUT" }] })
+  await b.page.goto(`/import/${bReady.batchId}/review`)
+  const clickCommit = () => b.page.getByRole("button", { name: "Commit", exact: true }).click()
+  const commitToA = await aimed(bReady.batchId, aCommitted.batchId, clickCommit)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  expect(commitToA).toEqual(await aimed(bReady.batchId, GHOST, clickCommit))
+
+  // reverse: B's own committed batch, with A's committed batch id substituted.
+  const bCommitted = await importBatch(b.userId, { account: "Plain Wallet", counterpart: "Transport", rows: [{ description: "Plain reverse row", rupees: "50", direction: "OUT" }], commit: true })
+  await b.page.goto(`/import/${bCommitted.batchId}/batch`)
+  await b.page.getByRole("button", { name: "Reverse this import" }).click()
+  const clickReverse = () => b.page.getByRole("button", { name: "Reverse import" }).click()
+  const reverseToA = await aimed(bCommitted.batchId, aCommitted.batchId, clickReverse)
+  expect(await leaksOn(b.page, secrets)).toEqual([])
+  expect(reverseToA).toEqual(await aimed(bCommitted.batchId, GHOST, clickReverse))
+
+  // A's batches and rows are exactly as they were: nothing of B's requests ever reached them.
+  expect(await importRowsOf(a.userId)).toEqual(before)
 })
