@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { prisma } from "@/server/db"
-import { IMPORT_MAX_BYTES } from "@/server/services/import-service"
+import { IMPORT_MAX_BYTES, saveProfile } from "@/server/services/import-service"
 import { createRegistry } from "../repositories/fixtures"
 
 // POST /api/import/upload (src/app/api/import/upload/route.ts), against the real database. The session is replaced
@@ -60,6 +60,30 @@ describe("POST /api/import/upload", () => {
     expect(stored.fileName).toBe("statement.csv")
     expect(stored.status).toBe("UPLOADED")
     expect(revalidatePath).toHaveBeenCalledWith("/import")
+  })
+
+  it("stores the given profileId on the new batch", async () => {
+    const w = await signedInWorld()
+    const mapping: Parameters<typeof saveProfile>[1]["mapping"] = {
+      delimiter: ",",
+      encoding: "utf-8",
+      skipRows: 1,
+      dateFormat: "DD/MM/YYYY",
+      decimalSeparator: ".",
+      signConvention: "POSITIVE_OUT",
+      columns: { date: 0, description: 1, amount: 2 },
+    }
+    const profile = await saveProfile(w.user.id, { name: "My bank", nodeId: w.bank.id, mapping })
+    const request = formDataRequest({
+      nodeId: w.bank.id,
+      file: new Blob([bytesOf("Date,Description,Amount\n01/04/2026,Coffee,120.00")]),
+      profileId: profile.id,
+    })
+    const response = await POST(request)
+    expect(response.status).toBe(200)
+    const body = (await json(response)) as { data: { batchId: string } }
+    const stored = await prisma.importBatch.findUniqueOrThrow({ where: { id: body.data.batchId } })
+    expect(stored.profileId).toBe(profile.id)
   })
 
   it("uploads an identical earlier file again without refusing it (the repeat warning is the map screen's job)", async () => {
