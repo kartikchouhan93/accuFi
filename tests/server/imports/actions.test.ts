@@ -418,6 +418,22 @@ describe("commitBatchAction", () => {
     expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
   })
 
+  it("joins the first five illegal lines with '; ' and names how many more when a batch has more than five", async () => {
+    const w = await signedInWorld()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id, { status: "STAGED" })
+    const reason = "This ledger can no longer be the counterpart of this row."
+    for (let line = 1; line <= 6; line++) {
+      const shop = await registry.makeNode(w.user.id, "EXPENSE", `Shop ${line}`)
+      await readyRow(w.user.id, batch.id, line, shop.id)
+      await updateNode(w.user.id, shop.id, { archivedAt: new Date() })
+    }
+    const result = await actions.commitBatchAction({ id: batch.id })
+    const expectedMessage = [1, 2, 3, 4, 5].map((line) => `Line ${line}: ${reason}`).join("; ") + "; and 1 more"
+    expect(result).toEqual({ ok: false, error: { code: "invalid", message: expectedMessage } })
+    assertPlainData(result)
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
+  })
+
   it("answers a batch that cannot be committed with the exact invalid message", async () => {
     const w = await signedInWorld()
     const batch = await registry.makeBatch(w.user.id, w.bank.id, { status: "UPLOADED" })
