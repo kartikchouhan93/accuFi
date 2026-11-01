@@ -34,7 +34,15 @@ afterAll(async () => {
   await prisma.lotConsumption.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.investmentLot.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.priceSnapshot.deleteMany({ where: { userId: { in: createdUserIds } } })
+  // The import tables, then the rest: ImportRow.transactionId and Transaction.importRowId reference each other (both
+  // RESTRICT), so one side is nulled before the transactions go. A COMMITTED row must have a transaction (CHECK), so the
+  // status moves off COMMITTED in the same statement.
+  await prisma.importRow.updateMany({ where: { userId: { in: createdUserIds } }, data: { transactionId: null, status: "SKIPPED" } })
   await prisma.transaction.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.importRow.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.importBatch.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.importProfile.deleteMany({ where: { userId: { in: createdUserIds } } })
+  await prisma.counterpartRule.deleteMany({ where: { userId: { in: createdUserIds } } })
   await prisma.transactionGroup.deleteMany({ where: { userId: { in: createdUserIds } } })
   // Children before parents: a node may reference a parent node.
   await prisma.ledgerNode.deleteMany({ where: { userId: { in: createdUserIds }, parentId: { not: null } } })
@@ -697,5 +705,351 @@ describe("budgets", () => {
       SELECT column_default FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'Budget' AND column_name = 'createdAt'`
     expect(col?.column_default).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
+  })
+})
+
+describe("csv import tables", () => {
+  async function expectCheckViolation(promise: Promise<unknown>) {
+    const error = await promise.then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error, "expected the insert to be rejected").toBeDefined()
+    expect(String(error)).toMatch(/check constraint/i)
+  }
+
+  const HASH = "a".repeat(64)
+
+  /** A user with a bank account (the batch's account) and a food ledger (a counterpart). */
+  async function makeImportWorld() {
+    const { user, from: bank, to: food } = await makeUserWithNodes()
+    const batchData = (over: Partial<Prisma.ImportBatchUncheckedCreateInput> = {}) => ({
+      userId: user.id,
+      nodeId: bank.id,
+      fileName: "statement.csv",
+      fileSize: 1000,
+      fileHash: HASH,
+      rowCount: 0,
+      ...over,
+    })
+    const makeBatch = (over: Partial<Prisma.ImportBatchUncheckedCreateInput> = {}) =>
+      prisma.importBatch.create({ data: batchData(over) })
+    const rowData = (batchId: string, over: Partial<Prisma.ImportRowUncheckedCreateInput> = {}) => ({
+      userId: user.id,
+      batchId,
+      line: 2,
+      raw: ["01/04/2026", "Lunch", "500.00"],
+      ...over,
+    })
+    const makeTransaction = () =>
+      prisma.transaction.create({
+        data: {
+          userId: user.id,
+          fromNodeId: bank.id,
+          toNodeId: food.id,
+          amountPaise: 50_000n,
+          occurredAt: toDbDate(calendarDate("2026-04-01")),
+        },
+      })
+    return { user, bank, food, batchData, makeBatch, rowData, makeTransaction }
+  }
+
+  it("stores a batch with its defaults and an array of raw cells and a date on a row, read back exactly", async () => {
+    const { makeBatch, rowData, food } = await makeImportWorld()
+    const batch = await makeBatch({ fileBytes: Buffer.from("a,b\n1,2\n") })
+    expect(batch.status).toBe("UPLOADED")
+    expect(batch.mapping).toBeNull()
+    expect(Buffer.from(batch.fileBytes ?? []).toString()).toBe("a,b\n1,2\n")
+    expect(batch.committedAt).toBeNull()
+    const row = await prisma.importRow.create({
+      data: rowData(batch.id, {
+        occurredOn: toDbDate(calendarDate("2026-04-01")),
+        amountPaise: 9_007_199_254_740_993n,
+        direction: "OUT",
+        counterpartNodeId: food.id,
+      }),
+    })
+    expect(row.status).toBe("PENDING")
+    expect(row.raw).toEqual(["01/04/2026", "Lunch", "500.00"])
+    expect(row.occurredOn && fromDbDate(row.occurredOn)).toBe("2026-04-01")
+    expect(row.amountPaise).toBe(9_007_199_254_740_993n)
+    expect(batch.fileBytes).not.toBeUndefined()
+    const bare = await makeBatch()
+    expect(bare.fileBytes).toBeNull()
+  })
+
+  it("rejects a file hash that is not 64 lowercase hex characters, and accepts one that is", async () => {
+    const { makeBatch } = await makeImportWorld()
+    await expectCheckViolation(makeBatch({ fileHash: "a".repeat(63) }))
+    await expectCheckViolation(makeBatch({ fileHash: "a".repeat(65) }))
+    await expectCheckViolation(makeBatch({ fileHash: "g".repeat(64) }))
+    await expectCheckViolation(makeBatch({ fileHash: "A".repeat(64) }))
+    await makeBatch({ fileHash: "0123456789abcdef".repeat(4) })
+  })
+
+  it("rejects a file size of 0 or above 5 MiB, and accepts 1 and exactly 5 MiB", async () => {
+    const { makeBatch } = await makeImportWorld()
+    await expectCheckViolation(makeBatch({ fileSize: 0 }))
+    await expectCheckViolation(makeBatch({ fileSize: 5_242_881 }))
+    await makeBatch({ fileSize: 1 })
+    await makeBatch({ fileSize: 5_242_880 })
+  })
+
+  it("rejects a negative row count, and accepts zero", async () => {
+    const { makeBatch } = await makeImportWorld()
+    await expectCheckViolation(makeBatch({ rowCount: -1 }))
+    await makeBatch({ rowCount: 0 })
+  })
+
+  it("rejects a row on line 0, and accepts line 1", async () => {
+    const { makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    await expectCheckViolation(prisma.importRow.create({ data: rowData(batch.id, { line: 0 }) }))
+    await prisma.importRow.create({ data: rowData(batch.id, { line: 1 }) })
+  })
+
+  it("rejects a row amount of zero or less, and accepts one paisa or none", async () => {
+    const { makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    await expectCheckViolation(prisma.importRow.create({ data: rowData(batch.id, { line: 1, amountPaise: 0n }) }))
+    await expectCheckViolation(prisma.importRow.create({ data: rowData(batch.id, { line: 2, amountPaise: -1n }) }))
+    await prisma.importRow.create({ data: rowData(batch.id, { line: 3, amountPaise: 1n }) })
+    await prisma.importRow.create({ data: rowData(batch.id, { line: 4, amountPaise: null }) })
+  })
+
+  it("rejects a READY row without a counterpart, and accepts one with", async () => {
+    const { makeBatch, rowData, food } = await makeImportWorld()
+    const batch = await makeBatch()
+    await expectCheckViolation(prisma.importRow.create({ data: rowData(batch.id, { line: 1, status: "READY" }) }))
+    await prisma.importRow.create({
+      data: rowData(batch.id, { line: 2, status: "READY", counterpartNodeId: food.id }),
+    })
+  })
+
+  it("rejects a COMMITTED row missing its transaction or its counterpart, and accepts one with both", async () => {
+    const { makeBatch, rowData, food, makeTransaction } = await makeImportWorld()
+    const batch = await makeBatch()
+    const tx = await makeTransaction()
+    await expectCheckViolation(
+      prisma.importRow.create({
+        data: rowData(batch.id, { line: 1, status: "COMMITTED", counterpartNodeId: food.id }),
+      }),
+    )
+    await expectCheckViolation(
+      prisma.importRow.create({ data: rowData(batch.id, { line: 2, status: "COMMITTED", transactionId: tx.id }) }),
+    )
+    await expectCheckViolation(prisma.importRow.create({ data: rowData(batch.id, { line: 3, status: "COMMITTED" }) }))
+    await prisma.importRow.create({
+      data: rowData(batch.id, { line: 4, status: "COMMITTED", transactionId: tx.id, counterpartNodeId: food.id }),
+    })
+  })
+
+  it("rejects an ERRORED row without a reason, and accepts one with", async () => {
+    const { makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    await expectCheckViolation(prisma.importRow.create({ data: rowData(batch.id, { line: 1, status: "ERRORED" }) }))
+    await prisma.importRow.create({
+      data: rowData(batch.id, { line: 2, status: "ERRORED", errorReason: "The date could not be read." }),
+    })
+  })
+
+  it("allows a row's transaction to be used by one row only", async () => {
+    const { makeBatch, rowData, food, makeTransaction } = await makeImportWorld()
+    const batch = await makeBatch()
+    const tx = await makeTransaction()
+    const committed = (line: number) =>
+      rowData(batch.id, { line, status: "COMMITTED", transactionId: tx.id, counterpartNodeId: food.id })
+    await prisma.importRow.create({ data: committed(1) })
+    await expectUniqueViolation(prisma.importRow.create({ data: committed(2) }))
+  })
+
+  it("keeps one row per line in a batch, and lets two batches both have a line 2", async () => {
+    const { makeBatch, rowData } = await makeImportWorld()
+    const one = await makeBatch()
+    const two = await makeBatch()
+    await prisma.importRow.create({ data: rowData(one.id, { line: 2 }) })
+    await expectUniqueViolation(prisma.importRow.create({ data: rowData(one.id, { line: 2 }) }))
+    await prisma.importRow.create({ data: rowData(two.id, { line: 2 }) })
+  })
+
+  it("keeps a profile name unique per user only", async () => {
+    const { user } = await makeImportWorld()
+    const other = await makeUser()
+    const profile = (userId: string, name: string) =>
+      prisma.importProfile.create({ data: { userId, name, settings: { dateFormat: "DD/MM/YYYY" } } })
+    await profile(user.id, "HDFC savings")
+    await expectUniqueViolation(profile(user.id, "HDFC savings"))
+    await profile(user.id, "ICICI card")
+    await profile(other.id, "HDFC savings")
+  })
+
+  it("keeps a learned rule unique per user, direction and description key", async () => {
+    const { user, food } = await makeImportWorld()
+    const other = await makeUser()
+    const rule = (over: Partial<Prisma.CounterpartRuleUncheckedCreateInput> = {}) =>
+      prisma.counterpartRule.create({
+        data: { userId: user.id, direction: "OUT", descriptionKey: "swiggy", nodeId: food.id, ...over },
+      })
+    const first = await rule()
+    expect(first.hits).toBe(1)
+    await expectUniqueViolation(rule())
+    await rule({ direction: "IN" })
+    await rule({ descriptionKey: "zomato" })
+    await prisma.counterpartRule.create({
+      data: { userId: other.id, direction: "OUT", descriptionKey: "swiggy", nodeId: food.id },
+    })
+  })
+
+  it("stamps updatedAt from the database clock on insert and on update for profiles and rules (EC-66)", async () => {
+    const { user, food } = await makeImportWorld()
+    const old = new Date("2000-01-01T00:00:00Z")
+    const profile = await prisma.importProfile.create({
+      data: { userId: user.id, name: "p", settings: {}, updatedAt: old },
+    })
+    const rule = await prisma.counterpartRule.create({
+      data: { userId: user.id, direction: "OUT", descriptionKey: "k", nodeId: food.id, updatedAt: old },
+    })
+    for (const [table, id] of [
+      ["ImportProfile", profile.id],
+      ["CounterpartRule", rule.id],
+    ] as const) {
+      const [row] = await prisma.$queryRawUnsafe<{ same: boolean }[]>(
+        `SELECT "updatedAt" = "createdAt" AS same FROM "${table}" WHERE "id" = $1`,
+        id,
+      )
+      expect(row.same, `${table} insert`).toBe(true)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const updatedProfile = await prisma.importProfile.update({
+      where: { id: profile.id },
+      data: { name: "q", updatedAt: old },
+    })
+    const updatedRule = await prisma.counterpartRule.update({
+      where: { id: rule.id },
+      data: { hits: 2, updatedAt: old },
+    })
+    expect(updatedProfile.updatedAt.getTime()).toBeGreaterThan(profile.updatedAt.getTime())
+    expect(updatedRule.updatedAt.getTime()).toBeGreaterThan(rule.updatedAt.getTime())
+  })
+
+  it("defaults createdAt on the four new tables to the database clock (EC-66)", async () => {
+    for (const table of ["ImportProfile", "ImportBatch", "ImportRow", "CounterpartRule"]) {
+      const [col] = await prisma.$queryRaw<{ column_default: string | null }[]>`
+        SELECT column_default FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = ${table} AND column_name = 'createdAt'`
+      expect(col?.column_default, `${table}.createdAt`).toMatch(/now\(\)|CURRENT_TIMESTAMP/i)
+    }
+  })
+
+  it("refuses to delete the account a batch names, or a counterpart a row names (ON DELETE RESTRICT)", async () => {
+    const { bank, food, makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    await prisma.importRow.create({ data: rowData(batch.id, { counterpartNodeId: food.id }) })
+    await expect(prisma.ledgerNode.delete({ where: { id: bank.id } })).rejects.toThrow()
+    await expect(prisma.ledgerNode.delete({ where: { id: food.id } })).rejects.toThrow()
+  })
+
+  it("refuses to delete a ledger or a user a profile or a learned rule names (ON DELETE RESTRICT)", async () => {
+    const { user, food } = await makeImportWorld()
+    await prisma.importProfile.create({ data: { userId: user.id, name: "p", settings: {}, nodeId: food.id } })
+    await expect(prisma.ledgerNode.delete({ where: { id: food.id } })).rejects.toThrow()
+    await prisma.importProfile.deleteMany({ where: { userId: user.id } })
+    await prisma.counterpartRule.create({
+      data: { userId: user.id, direction: "OUT", descriptionKey: "k", nodeId: food.id },
+    })
+    await expect(prisma.ledgerNode.delete({ where: { id: food.id } })).rejects.toThrow()
+    await expect(prisma.user.delete({ where: { id: user.id } })).rejects.toThrow()
+  })
+
+  it("lets a saved profile be deleted: the batches made with it keep their history and lose the pointer (SET NULL)", async () => {
+    const { user, makeBatch } = await makeImportWorld()
+    const profile = await prisma.importProfile.create({ data: { userId: user.id, name: "p", settings: {} } })
+    const batch = await makeBatch({ profileId: profile.id })
+    await prisma.importProfile.delete({ where: { id: profile.id } })
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).profileId).toBeNull()
+  })
+
+  it("refuses to delete a batch or a row a transaction names (ON DELETE RESTRICT)", async () => {
+    const { user, bank, food, makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    const row = await prisma.importRow.create({ data: rowData(batch.id, { counterpartNodeId: food.id }) })
+    const tx = await prisma.transaction.create({
+      data: {
+        userId: user.id,
+        fromNodeId: bank.id,
+        toNodeId: food.id,
+        amountPaise: 50_000n,
+        occurredAt: toDbDate(calendarDate("2026-04-01")),
+        importBatchId: batch.id,
+        importRowId: row.id,
+      },
+    })
+    await expect(prisma.importBatch.delete({ where: { id: batch.id } })).rejects.toThrow()
+    await expect(prisma.importRow.delete({ where: { id: row.id } })).rejects.toThrow()
+    expect(tx.importRowId).toBe(row.id)
+  })
+
+  it("lets a transaction carry both import ids, and a row point back at it (the two foreign keys are circular)", async () => {
+    const { user, bank, food, makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    const row = await prisma.importRow.create({ data: rowData(batch.id, { counterpartNodeId: food.id }) })
+    const tx = await prisma.transaction.create({
+      data: {
+        userId: user.id,
+        fromNodeId: bank.id,
+        toNodeId: food.id,
+        amountPaise: 50_000n,
+        occurredAt: toDbDate(calendarDate("2026-04-01")),
+        importBatchId: batch.id,
+        importRowId: row.id,
+      },
+    })
+    const linked = await prisma.importRow.update({
+      where: { id: row.id },
+      data: { status: "COMMITTED", transactionId: tx.id },
+    })
+    expect(linked.transactionId).toBe(tx.id)
+    const read = await prisma.transaction.findUniqueOrThrow({ where: { id: tx.id } })
+    expect(read.importBatchId).toBe(batch.id)
+    expect(read.importRowId).toBe(row.id)
+    // A second transaction may not claim the same row.
+    await expectUniqueViolation(
+      prisma.transaction.create({
+        data: {
+          userId: user.id,
+          fromNodeId: bank.id,
+          toNodeId: food.id,
+          amountPaise: 1n,
+          occurredAt: toDbDate(calendarDate("2026-04-01")),
+          importBatchId: batch.id,
+          importRowId: row.id,
+        },
+      }),
+    )
+  })
+
+  it("a transaction made by hand has neither import id", async () => {
+    const { makeTransaction } = await makeImportWorld()
+    const tx = await makeTransaction()
+    expect(tx.importBatchId).toBeNull()
+    expect(tx.importRowId).toBeNull()
+  })
+
+  it("keeps occurrenceId and duplicateOfTransactionId as plain pointers: no foreign key, so a deleted target does not block (ruling)", async () => {
+    const { makeBatch, rowData } = await makeImportWorld()
+    const batch = await makeBatch()
+    const row = await prisma.importRow.create({
+      data: rowData(batch.id, { occurrenceId: "no-such-occurrence", duplicateOfTransactionId: "no-such-transaction" }),
+    })
+    expect(row.occurrenceId).toBe("no-such-occurrence")
+    expect(row.duplicateOfTransactionId).toBe("no-such-transaction")
+    const fks = await prisma.$queryRaw<{ column_name: string }[]>`
+      SELECT kcu.column_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
+      WHERE tc.table_schema = 'public' AND tc.table_name = 'ImportRow' AND tc.constraint_type = 'FOREIGN KEY'`
+    const columns = fks.map((r) => r.column_name)
+    expect(columns).not.toContain("occurrenceId")
+    expect(columns).not.toContain("duplicateOfTransactionId")
   })
 })

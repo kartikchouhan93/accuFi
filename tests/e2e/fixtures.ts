@@ -19,7 +19,15 @@ export async function deleteUser(userId: string) {
   await prisma.lotConsumption.deleteMany({ where: { userId } })
   await prisma.investmentLot.deleteMany({ where: { userId } })
   await prisma.priceSnapshot.deleteMany({ where: { userId } })
+  // The import tables, then the rest: ImportRow.transactionId and Transaction.importRowId reference each other (both
+  // RESTRICT), so one side is nulled before the transactions go. A COMMITTED row must have a transaction (CHECK), so the
+  // status moves off COMMITTED in the same statement.
+  await prisma.importRow.updateMany({ where: { userId }, data: { transactionId: null, status: "SKIPPED" } })
   await prisma.transaction.deleteMany({ where: { userId } })
+  await prisma.importRow.deleteMany({ where: { userId } })
+  await prisma.importBatch.deleteMany({ where: { userId } })
+  await prisma.importProfile.deleteMany({ where: { userId } })
+  await prisma.counterpartRule.deleteMany({ where: { userId } })
   await prisma.transactionGroup.deleteMany({ where: { userId } })
   await prisma.ledgerNode.deleteMany({ where: { userId, parentId: { not: null } } })
   await prisma.ledgerNode.deleteMany({ where: { userId } })

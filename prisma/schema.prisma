@@ -107,6 +107,10 @@ model User {
   recurringRules       RecurringRule[]
   recurringOccurrences RecurringOccurrence[]
   budgets              Budget[]
+  importProfiles       ImportProfile[]
+  importBatches        ImportBatch[]
+  importRows           ImportRow[]
+  counterpartRules     CounterpartRule[]
 }
 
 // One table for every node of the ledger; `kind` says which. There is deliberately no balance column
@@ -133,16 +137,20 @@ model LedgerNode {
   archivedAt       DateTime?         @db.Timestamptz(3)
   createdAt        DateTime          @default(dbgenerated("now()")) @db.Timestamptz(3)
 
-  user           User            @relation(fields: [userId], references: [id])
-  parent         LedgerNode?     @relation("NodeTree", fields: [parentId], references: [id])
-  children       LedgerNode[]    @relation("NodeTree")
-  outgoing       Transaction[]   @relation("TransactionFrom")
-  incoming       Transaction[]   @relation("TransactionTo")
-  lots           InvestmentLot[]
-  priceSnapshots PriceSnapshot[]
-  recurringFrom  RecurringRule[] @relation("RecurringFrom")
-  recurringTo    RecurringRule[] @relation("RecurringTo")
-  budgets        Budget[]
+  user             User              @relation(fields: [userId], references: [id])
+  parent           LedgerNode?       @relation("NodeTree", fields: [parentId], references: [id])
+  children         LedgerNode[]      @relation("NodeTree")
+  outgoing         Transaction[]     @relation("TransactionFrom")
+  incoming         Transaction[]     @relation("TransactionTo")
+  lots             InvestmentLot[]
+  priceSnapshots   PriceSnapshot[]
+  recurringFrom    RecurringRule[]   @relation("RecurringFrom")
+  recurringTo      RecurringRule[]   @relation("RecurringTo")
+  budgets          Budget[]
+  importBatches    ImportBatch[]     @relation("ImportAccount")
+  importRows       ImportRow[]       @relation("ImportCounterpart")
+  importProfiles   ImportProfile[]
+  counterpartRules CounterpartRule[]
 
   // NULLs are distinct in Postgres, so any number of ordinary nodes (systemRole null) coexist; at most one system node per role.
   @@unique([userId, systemRole])
@@ -174,6 +182,8 @@ model Transaction {
   groupId        String?
   version        Int       @default(0)
   idempotencyKey String?
+  importBatchId  String? // the import batch that created it; null for a transaction made by hand
+  importRowId    String?   @unique // the import row it came from
   deletedAt      DateTime? @db.Timestamptz(3)
   createdAt      DateTime  @default(dbgenerated("now()")) @db.Timestamptz(3)
   updatedAt      DateTime  @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
@@ -185,12 +195,16 @@ model Transaction {
   lot          InvestmentLot? // the lot this transaction acquired, if it bought into a lot-mode investment
   consumptions LotConsumption[] // the lots this disposal cost-basis leg consumed
   occurrence   RecurringOccurrence? // the occurrence that became this transaction; there is deliberately no ruleId here
+  importBatch  ImportBatch?         @relation(fields: [importBatchId], references: [id], onDelete: Restrict)
+  importRow    ImportRow?           @relation("TransactionImportRow", fields: [importRowId], references: [id], onDelete: Restrict)
+  importedAs   ImportRow?           @relation("ImportRowTransaction") // the row that points at this transaction (the other half of the circle)
 
   // NULLs are distinct, so any number of transactions without an idempotency key coexist.
   @@unique([userId, idempotencyKey])
   @@index([userId, toNodeId, occurredAt])
   @@index([userId, fromNodeId, occurredAt])
   @@index([userId, occurredAt, id]) // the listing order: (occurredAt, id). The keyset cursor is filtered, not bounded, by it
+  @@index([userId, importBatchId]) // what a batch created: its page, its filtered list, its reversal
 }
 
 // Fixed-window attempt counters for the auth endpoints (spec §9.5), held in Postgres so they survive a restart
@@ -351,4 +365,130 @@ model Budget {
   node LedgerNode @relation(fields: [nodeId], references: [id])
 
   @@index([userId, nodeId, startMonth])
+}
+
+enum ImportBatchStatus {
+  UPLOADED
+  STAGED
+  COMMITTED
+  REVERSED
+  DISCARDED
+}
+
+enum ImportRowStatus {
+  PENDING
+  READY
+  SKIPPED
+  ERRORED
+  COMMITTED
+}
+
+// The direction of a statement row relative to the batch's account: OUT leaves it, IN enters it. Its members equal
+// IMPORT_DIRECTIONS in src/domain/import-map.ts (tests/db/enum-parity.test.ts compares them).
+enum ImportDirection {
+  OUT
+  IN
+}
+
+// A saved column mapping (M6 design §5), reused for the next statement from the same bank. `settings` is the mapping
+// as JSON; its shape belongs to the service. nodeId is the account it was made for, optional.
+model ImportProfile {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  nodeId    String?
+  settings  Json
+  createdAt DateTime @default(dbgenerated("now()")) @db.Timestamptz(3)
+  updatedAt DateTime @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
+
+  user    User          @relation(fields: [userId], references: [id])
+  node    LedgerNode?   @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  batches ImportBatch[]
+
+  @@unique([userId, name])
+}
+
+// One uploaded statement, for one account. fileBytes holds the raw file until the batch ends and is then dropped (no
+// default: null once there is nothing to re-map). fileHash is the SHA-256 in lowercase hex and is how a re-upload of the
+// same bytes is noticed. fileHash being 64 lowercase hex characters, fileSize in 1..5242880 and rowCount >= 0 are CHECK
+// constraints (migration csv_import); Prisma cannot express them. Ownership of the account is the service's job.
+model ImportBatch {
+  id          String            @id @default(cuid())
+  userId      String
+  nodeId      String // the account the statement is for
+  fileName    String
+  fileSize    Int
+  fileHash    String
+  fileBytes   Bytes?
+  status      ImportBatchStatus @default(UPLOADED)
+  mapping     Json?
+  profileId   String?
+  rowCount    Int
+  committedAt DateTime?         @db.Timestamptz(3)
+  reversedAt  DateTime?         @db.Timestamptz(3)
+  createdAt   DateTime          @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user         User           @relation(fields: [userId], references: [id])
+  node         LedgerNode     @relation("ImportAccount", fields: [nodeId], references: [id])
+  profile      ImportProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  rows         ImportRow[]
+  transactions Transaction[]
+
+  @@index([userId, fileHash])
+  @@index([userId, createdAt])
+}
+
+// One line of a statement as staged. raw is the cells as read; the parsed fields are null until parsing succeeds.
+// occurrenceId (a pending recurring occurrence it was linked to) and duplicateOfTransactionId (the probable duplicate
+// found) are plain pointers with deliberately NO foreign key: a pending occurrence is hard-deleted when its rule is
+// deleted, so a RESTRICT key would make deleting a rule fail, and the duplicate link is re-validated where it is used.
+// transactionId (unique) is what the row became; Transaction.importRowId is the same link from the other side, so the
+// two foreign keys are circular and cleanup nulls transactionId first. line >= 1, amountPaise null or > 0, and the
+// status rules (READY needs a counterpart, COMMITTED needs a transaction and a counterpart, ERRORED needs a reason) are
+// CHECK constraints (migration csv_import).
+model ImportRow {
+  id                       String           @id @default(cuid())
+  userId                   String
+  batchId                  String
+  line                     Int // the line in the file
+  raw                      String[]
+  status                   ImportRowStatus  @default(PENDING)
+  errorReason              String?
+  occurredOn               DateTime?        @db.Date // a calendar day
+  amountPaise              BigInt?
+  direction                ImportDirection?
+  description              String?
+  descriptionKey           String?
+  counterpartNodeId        String?
+  duplicateOfTransactionId String?
+  occurrenceId             String?
+  transactionId            String?          @unique
+  createdAt                DateTime         @default(dbgenerated("now()")) @db.Timestamptz(3)
+
+  user        User         @relation(fields: [userId], references: [id])
+  batch       ImportBatch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  counterpart LedgerNode?  @relation("ImportCounterpart", fields: [counterpartNodeId], references: [id], onDelete: Restrict)
+  transaction Transaction? @relation("ImportRowTransaction", fields: [transactionId], references: [id], onDelete: Restrict)
+  created     Transaction? @relation("TransactionImportRow") // the transaction that points at this row
+
+  @@unique([batchId, line])
+  @@index([userId, batchId, status])
+}
+
+// A suggestion learned from commits: for this user, a row of this direction whose description key is this one went to
+// this ledger. The latest choice wins (hits counts how often it was chosen). Nothing the user made by hand.
+model CounterpartRule {
+  id             String          @id @default(cuid())
+  userId         String
+  direction      ImportDirection
+  descriptionKey String
+  nodeId         String
+  hits           Int             @default(1)
+  createdAt      DateTime        @default(dbgenerated("now()")) @db.Timestamptz(3)
+  updatedAt      DateTime        @default(dbgenerated("now()")) @updatedAt @db.Timestamptz(3)
+
+  user User       @relation(fields: [userId], references: [id])
+  node LedgerNode @relation(fields: [nodeId], references: [id])
+
+  @@unique([userId, direction, descriptionKey])
 }

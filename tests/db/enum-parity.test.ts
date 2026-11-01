@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
+  ImportDirection as PrismaImportDirection,
   LedgerKind as PrismaLedgerKind,
   LotMethod as PrismaLotMethod,
   PriceSource as PrismaPriceSource,
   RecurrenceFrequency as PrismaRecurrenceFrequency,
   SystemNodeRole as PrismaSystemNodeRole,
 } from "@prisma/client"
+import { IMPORT_DIRECTIONS } from "@/domain/import-map"
 import { RECURRENCE_FREQUENCIES } from "@/domain/recurrence"
 import { LEDGER_KINDS, LOT_METHODS, PRICE_SOURCES, SYSTEM_NODE_ROLES } from "@/domain/ledger-kind"
 import { LOT_METHODS as SCHEMA_LOT_METHODS } from "@/lib/schemas/node"
@@ -48,6 +50,10 @@ describe("Prisma enums match the domain unions", () => {
 
   it("RecurrenceFrequency has exactly the domain's members", () => {
     expectSameMembers(RECURRENCE_FREQUENCIES, Object.values(PrismaRecurrenceFrequency))
+  })
+
+  it("ImportDirection has exactly the domain's members", () => {
+    expectSameMembers(IMPORT_DIRECTIONS, Object.values(PrismaImportDirection))
   })
 
   it("the zod schema's LOT_METHODS list is the domain's list", () => {
