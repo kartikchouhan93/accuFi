@@ -1166,6 +1166,17 @@ export async function loadNewImport(
 }
 
 /**
+ * One saved profile's mapping (Task 10's map screen, "use this profile"): null for an id that is not this user's,
+ * the same as any other lookup here. A thin wrapper around `findProfileById` so the map page never reads a
+ * repository directly; `loadMapScreen` already resolves a batch's *own* saved profile on its own, this is only for
+ * switching to a *different* one while already on the map screen.
+ */
+export async function loadProfileMapping(userId: string, profileId: string): Promise<ImportMapping | null> {
+  const profile = await findProfileById(userId, profileId)
+  return profile ? importMappingSchema.parse(profile.settings) : null
+}
+
+/**
  * One batch's page: its view, and, once it has been committed, its commit summary (null before that). A discarded
  * batch is treated as gone, the same as a foreign one (NotFoundError("import")): nothing at `/import/<id>` should show
  * for either. A reversed batch still carries its summary — `buildCommitSummary` reads the same COMMITTED import rows

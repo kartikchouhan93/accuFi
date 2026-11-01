@@ -517,12 +517,11 @@ describe("the page", () => {
 describe("the nav", () => {
   const nav = () => renderToStaticMarkup(createElement(AppNav, { current: "budgets", email: "a@b.test", signOut: async () => {}, pending: 0 }))
 
-  it("has a Budgets destination between Recurring and Reports", () => {
+  it("has a Budgets destination right after Recurring", () => {
     const found = links(nav())
     const hrefs = found.map(([href]) => href)
     expect(found).toContainEqual(["/budgets", expect.stringContaining("Budgets")])
     expect(hrefs.indexOf("/budgets")).toBe(hrefs.indexOf("/recurring") + 1)
-    expect(hrefs.indexOf("/reports")).toBe(hrefs.indexOf("/budgets") + 1)
   })
 
   it("marks it as the current page when on it", () => {

@@ -123,6 +123,22 @@ export function BudgetsSkeleton() {
   )
 }
 
+export function ImportSkeleton() {
+  return (
+    <Shell label="your imports">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-10 w-40" />
+        <Skeleton className="h-11 w-40" />
+      </div>
+      <div className="mt-8 space-y-4">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-24 rounded-2xl" />
+        ))}
+      </div>
+    </Shell>
+  )
+}
+
 export function PricesSkeleton() {
   return (
     <Shell label="the price screen">
