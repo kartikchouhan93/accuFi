@@ -30,6 +30,7 @@ import {
   countRows,
   deleteRows,
   findBatchById,
+  findBatches,
   findCounterpartRules,
   findEarlierUpload,
   findProfileById,
@@ -1139,4 +1140,43 @@ export async function reverseBatch(userId: string, batchId: string): Promise<{ r
 
     return { reversed: transactionIds.length, reopened }
   })
+}
+
+// The loaders the import pages (Task 10-11) read through: a list of every batch, the new-import form's accounts and
+// profiles, and one batch's page (its view, plus a committed or reversed batch's summary). Reads only; nothing here
+// writes or takes the row lock.
+
+/** Every batch of the user, newest first, with its account's name alongside. */
+export async function loadBatchList(userId: string): Promise<BatchView[]> {
+  const [batches, nodes] = await Promise.all([findBatches(userId), listAllNodes(userId, ["ASSET", "LIABILITY"])])
+  const nameById = new Map(nodes.map((node) => [node.id, node.name]))
+  return batches.map((batch) => toBatchView(batch, nameById.get(batch.nodeId) ?? "Unknown account"))
+}
+
+/** The new-import form: every live asset or liability account (design call 3: investments are not importable) and the
+ * user's saved mapping profiles. */
+export async function loadNewImport(
+  userId: string,
+): Promise<{ accounts: { id: string; name: string; kind: "ASSET" | "LIABILITY" }[]; profiles: { id: string; name: string; nodeId: string | null }[] }> {
+  const [nodes, profiles] = await Promise.all([listAllNodes(userId, ["ASSET", "LIABILITY"]), findProfiles(userId)])
+  const accounts = nodes
+    .filter((node) => node.archivedAt === null)
+    .map((node) => ({ id: node.id, name: node.name, kind: node.kind as "ASSET" | "LIABILITY" }))
+  return { accounts, profiles: profiles.map((profile) => ({ id: profile.id, name: profile.name, nodeId: profile.nodeId })) }
+}
+
+/**
+ * One batch's page: its view, and, once it has been committed, its commit summary (null before that). A discarded
+ * batch is treated as gone, the same as a foreign one (NotFoundError("import")): nothing at `/import/<id>` should show
+ * for either. A reversed batch still carries its summary — `buildCommitSummary` reads the same COMMITTED import rows
+ * either way, since reversing a batch deletes its transactions but never changes its rows' own status (Task 8).
+ */
+export async function loadBatchPage(userId: string, batchId: string): Promise<{ batch: BatchView; summary: CommitSummary | null }> {
+  const batch = await findBatchById(userId, batchId)
+  if (!batch || batch.status === "DISCARDED") throw new NotFoundError("import")
+  const node = await requireNode(userId, batch.nodeId)
+  const view = toBatchView(batch, node.name)
+  if (batch.status !== "COMMITTED" && batch.status !== "REVERSED") return { batch: view, summary: null }
+  const summary = await buildCommitSummary(userId, batchId, batch.committedAt!)
+  return { batch: view, summary }
 }

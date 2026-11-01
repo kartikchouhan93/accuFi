@@ -444,7 +444,7 @@ describe("recordPriceAction and deletePriceAction", () => {
 
 describe("cache invalidation", () => {
   const revalidated = () => revalidatePath.mock.calls.map(([path]) => path).sort()
-  const everywhere = ["/", "/budgets", "/investments", "/investments/prices", "/nodes", "/recurring", "/transactions"]
+  const everywhere = ["/", "/budgets", "/import", "/investments", "/investments/prices", "/nodes", "/recurring", "/transactions"]
 
   it("invalidates every screen that shows money or prices after each write that succeeds", async () => {
     const { gold, sell } = await signedInWorld()

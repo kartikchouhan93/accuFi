@@ -57,3 +57,16 @@ export const saveProfileSchema = z.strictObject({
 })
 
 export const batchIdSchema = z.strictObject({ id: z.string().min(1) })
+
+export const rowIdSchema = z.strictObject({ rowId: z.string().min(1) })
+
+const rowChangeSchema = z.strictObject({
+  counterpartNodeId: z.string().min(1).nullable().optional(),
+  decision: z.enum(["IMPORT", "SKIP", "UNDO"]).optional(),
+  occurrence: z.enum(["LINK", "UNLINK"]).optional(),
+})
+
+export const updateRowSchema = z.strictObject({
+  rowId: z.string().min(1),
+  change: rowChangeSchema,
+})

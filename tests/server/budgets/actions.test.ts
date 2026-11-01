@@ -321,7 +321,7 @@ describe("deleteBudgetAction", () => {
 
 describe("cache invalidation", () => {
   const revalidated = () => revalidatePath.mock.calls.map(([path]) => path).sort()
-  const everywhere = ["/", "/budgets", "/investments", "/investments/prices", "/nodes", "/recurring", "/transactions"]
+  const everywhere = ["/", "/budgets", "/import", "/investments", "/investments/prices", "/nodes", "/recurring", "/transactions"]
 
   it("invalidates /budgets, with every other screen wrote() covers, after each write that succeeds", async () => {
     at(TODAY)

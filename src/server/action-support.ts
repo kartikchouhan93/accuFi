@@ -77,6 +77,8 @@ export async function hasLiveSession(): Promise<boolean> {
  * balances on "/transactions"), and `router.refresh()` renews only the page the user happens to be on. The investment
  * screens are listed too: a sale moves the holdings and a price moves their values, and both move net worth. The budgets
  * screen is listed as well: a transaction moves what a budget has used, and a node write can archive a budgeted ledger.
+ * The import screen is listed too: a staged row's decision, a commit or a reversal moves its own batch and row state,
+ * which nothing else renders.
  * Reads and refused writes do not call it.
  */
 export function wrote(): void {
@@ -86,6 +88,7 @@ export function wrote(): void {
   revalidatePath("/investments/prices")
   revalidatePath("/recurring")
   revalidatePath("/budgets")
+  revalidatePath("/import")
   revalidatePath("/")
 }
 
