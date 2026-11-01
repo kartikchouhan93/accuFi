@@ -81,9 +81,11 @@ export interface FilterValues {
   q: string
   /** "1" to list deleted transactions too (so one can be restored), "" otherwise. */
   deleted: string
+  /** An import batch id, carried forward (not shown as its own field): the page's own batch notice is what names it. */
+  batch: string
 }
 
-export const FILTER_KEYS = ["node", "kind", "flow", "from", "to", "min", "max", "tag", "q", "deleted"] as const satisfies readonly (keyof FilterValues)[]
+export const FILTER_KEYS = ["node", "kind", "flow", "from", "to", "min", "max", "tag", "q", "deleted", "batch"] as const satisfies readonly (keyof FilterValues)[]
 
 export interface TransactionScreen {
   /** Today in the user's own timezone: what a new entry is dated and what "current balance" means. */

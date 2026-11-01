@@ -61,6 +61,9 @@ export function Filters({ filter, problems, nodes }: Props) {
   // `key` makes the fields start again from what the server resolved whenever it sends a different filter.
   return (
     <form key={JSON.stringify(filter)} onSubmit={apply} noValidate aria-label="Filter transactions" className="surface rounded-3xl p-5">
+      {/* Not a field a person sets here: carried forward so applying another filter keeps the batch scope the notice
+          above names; its own "Show all transactions" link is what drops it. */}
+      <input type="hidden" name="batch" value={filter.batch} />
       <div className="grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2 2xl:grid-cols-4">
         {field(
           "node",

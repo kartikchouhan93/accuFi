@@ -139,12 +139,14 @@ async function pageOf(userId: string, filter: ListFilter, nodeIds: string[] | un
  * Everything the screen shows at once. `query` is the page's URL parameters. With no date in them the list is the
  * current month (the user's own, by their timezone); a date field that is present but blank means no bound on that
  * side, which is how a user asks for every month. A filter that does not parse leaves the list empty with the reasons
- * in `problems`.
+ * in `problems`. A `batch` link (an import's own "see these transactions") is exempted from the current-month
+ * default too: the batch itself already scopes the list correctly, however long ago it was committed, and defaulting
+ * to the current month on top of it would silently empty a list the notice above it says is showing something.
  */
 export async function loadTransactionScreen(userId: string, query: Record<string, string | undefined>): Promise<TransactionScreen> {
   const today = await todayFor(userId)
   const month = monthRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)))
-  const asked = "from" in query || "to" in query ? query : { ...query, from: month.start, to: month.end }
+  const asked = "from" in query || "to" in query || Boolean(query.batch) ? query : { ...query, from: month.start, to: month.end }
 
   const filter = Object.fromEntries(FILTER_KEYS.map((key) => [key, (asked[key] ?? "").trim()])) as unknown as FilterValues
   const parsed = transactionQuerySchema.safeParse(filter)

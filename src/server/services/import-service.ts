@@ -1191,3 +1191,14 @@ export async function loadBatchPage(userId: string, batchId: string): Promise<{ 
   const summary = await buildCommitSummary(userId, batchId, batch.committedAt!)
   return { batch: view, summary }
 }
+
+/**
+ * The one thing the Transactions screen's `?batch=` notice needs: the file name of the import that created what it is
+ * now showing. Null for a batch that is not this user's, or does not exist (any status is fine, discarded included: a
+ * transaction's `importBatchId` only ever names one that was at least staged, but this stays lenient rather than
+ * throwing, since a bad or stale `batch` id should make the notice silently not show, not break the whole screen).
+ */
+export async function loadBatchLabel(userId: string, batchId: string): Promise<{ fileName: string } | null> {
+  const batch = await findBatchById(userId, batchId)
+  return batch ? { fileName: batch.fileName } : null
+}

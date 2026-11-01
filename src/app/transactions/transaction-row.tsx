@@ -44,9 +44,19 @@ const deletedRowClass = "opacity-75"
 // no "Take out of split", and says why instead.
 const SALE_NOT_EDITED = "A sale cannot be edited. Delete it and enter it again from the Investments screen."
 
-function Tag({ children, title }: { children: React.ReactNode; title?: string }) {
+const TAG_CLASS = "rounded-full border border-line-strong px-2 py-0.5 align-middle text-[11px] font-medium text-fg-soft"
+
+/** `href` renders the tag as a link ("Imported", to the batch it came from) instead of a plain label. */
+function Tag({ children, title, href }: { children: React.ReactNode; title?: string; href?: string }) {
+  if (href) {
+    return (
+      <Link href={href} title={title} className={cn(TAG_CLASS, "transition-colors duration-200 hover:border-fg-soft hover:text-fg")}>
+        {children}
+      </Link>
+    )
+  }
   return (
-    <span title={title} className="rounded-full border border-line-strong px-2 py-0.5 align-middle text-[11px] font-medium text-fg-soft">
+    <span title={title} className={TAG_CLASS}>
       {children}
     </span>
   )
@@ -178,6 +188,14 @@ function SingleRow({ transaction, sale, context, startOpen }: { transaction: Tra
               <>
                 {" "}
                 <Tag>Deleted</Tag>
+              </>
+            )}
+            {transaction.importBatchId && (
+              <>
+                {" "}
+                <Tag href={`/import/${transaction.importBatchId}`} title="Brought in by a CSV import; see the import">
+                  Imported
+                </Tag>
               </>
             )}
           </>

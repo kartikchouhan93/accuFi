@@ -1,6 +1,7 @@
 "use client"
 
 import { Plus, X } from "lucide-react"
+import Link from "next/link"
 import { useRef, useState } from "react"
 import { NoticeToast } from "@/components/ui/notice-toast"
 import { buttonClass } from "@/components/ui/styles"
@@ -17,7 +18,13 @@ import { TransactionList } from "./transaction-list"
 // one message area they share. What is drawn comes from `screen`, which the server renders again after every write (the
 // actions revalidate this page), so no figure here is a client-side guess at what the server now holds.
 
-export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) {
+/** The page's own `?batch=` notice: an import's file name, and where "Show all transactions" leads (the same filters, `batch` dropped). */
+export interface BatchNotice {
+  fileName: string
+  dropHref: string
+}
+
+export function TransactionWorkspace({ screen, batchNotice = null }: { screen: TransactionScreen; batchNotice?: BatchNotice | null }) {
   const [editing, setEditing] = useState<TransactionView | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [notice, setNotice] = useState<TransactionNotice | null>(null)
@@ -53,6 +60,19 @@ export function TransactionWorkspace({ screen }: { screen: TransactionScreen }) 
       <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
         <div className="min-w-0 space-y-8">
           <Balances nodes={screen.nodes} balances={screen.balances} unvalued={screen.unvalued} priced={screen.priced} />
+          {batchNotice && (
+            <div
+              role="status"
+              className="surface flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl border border-line-strong bg-panel-raised px-4 py-3 text-sm"
+            >
+              <span>
+                Showing entries from import <span className="font-medium [overflow-wrap:anywhere]">{batchNotice.fileName}</span>.
+              </span>
+              <Link href={batchNotice.dropHref} className="font-medium text-link underline underline-offset-4">
+                Show all transactions
+              </Link>
+            </div>
+          )}
           <Filters filter={screen.filter} problems={screen.problems} nodes={screen.nodes} />
           {screen.netTotal && <FilteredTotal paise={screen.netTotal.paise} deleted={screen.filter.deleted === "1"} />}
           <TransactionList
