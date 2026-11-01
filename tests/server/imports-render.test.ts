@@ -241,6 +241,13 @@ describe("the preview table", () => {
     expect(html).toContain("figures")
   })
 
+  it("final review I7: writes a parsed day unambiguously as '3 Apr 2026', never as digits a reader must order", () => {
+    // The day staging would record is 3 April; numeric DD/MM digits ("03/04/2026") would read as 4 March under MM/DD.
+    const text = visibleText(table([previewRow({ parsed: { occurredOn: "2026-04-03", amountPaise: "100", direction: "OUT", description: "Coffee" } })]))
+    expect(text).toContain("3 Apr 2026")
+    expect(text).not.toMatch(/\d{2}\/\d{2}\/\d{4}/)
+  })
+
   it("shows the out direction in words too", () => {
     const text = visibleText(table([previewRow({ parsed: { occurredOn: "2026-04-01", amountPaise: "100", direction: "OUT", description: "Groceries" } })]))
     expect(text).toContain("Out")
@@ -337,6 +344,18 @@ describe("the map form", () => {
     const stage = buttonNamed(html, /Stage rows/)
     expect(stage?.attrs).toContain('aria-disabled="true"')
     expect(stage?.attrs).not.toMatch(/\sdisabled(=|\s|>)/)
+  })
+
+  it("final review I6: as first rendered (controls equal to the previewed mapping) Stage rows is open and no 'update the preview' hint shows; the controls form reports changes", () => {
+    const html = form()
+    const stage = buttonNamed(html, /Stage rows/)
+    expect(stage?.attrs).toContain('aria-disabled="false"')
+    expect(visibleText(html)).not.toMatch(/Update the preview first/)
+    // The mapping controls' form is the one watched for changes (React wires onChange itself; this checks the GET form
+    // is still the plain one the server reads, with every mapping field named as the URL carries it).
+    for (const name of ["delim", "enc", "skip", "datefmt", "dec", "sign", "cdate", "cdesc", "camount", "cdebit", "ccredit"]) {
+      expect(html).toContain(`name="${name}"`)
+    }
   })
 })
 

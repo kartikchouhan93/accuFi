@@ -6,6 +6,7 @@ import { defaultSignConvention, parseImportRow, type ImportDirection, type Impor
 import {
   DUPLICATE_WINDOW_DAYS,
   findDuplicate,
+  indexByAmount,
   isLegalCounterpart,
   matchOccurrences,
   suggestFromRules,
@@ -37,6 +38,7 @@ import {
   findProfiles,
   findRowById,
   findRows,
+  flagRowsAsDuplicates,
   insertBatch,
   insertRows,
   lockBatch,
@@ -82,14 +84,24 @@ export { REVIEW_PAGE_SIZE, type ReviewFilter, type ReviewRowView, type ReviewScr
 export const IMPORT_MAX_BYTES = 5 * 1024 * 1024
 export const IMPORT_MAX_ROWS = 20_000
 
-// `commitBatch`'s single interactive transaction runs a handful of queries per READY row (an occurrence lookup for a
-// linked row, the insert, markRowsCommitted's update, up to three for markPosted, upsertRule) even after node lookups
-// are cached per distinct id rather than per row. Prisma's default interactive-transaction timeout (5000ms) is sized
+// `commitBatch`'s single interactive transaction still runs some work per READY row (an occurrence lookup and up to
+// three markPosted queries for a linked row, its share of the inserts, an upsertRule per distinct description key) even
+// though node lookups are cached per distinct id and markRowsCommitted is one set-based statement. Prisma's default interactive-transaction timeout (5000ms) is sized
 // for an ordinary request, not a commit that may touch IMPORT_MAX_ROWS rows, and would surface as an unmapped P2028 to
 // the user well before a large, otherwise-legal statement finished committing. 10ms of budget per row at the ceiling
 // is generous for same-connection queries with no network round trip, while still bounding how long a stuck commit
 // can hold the row lock.
 const COMMIT_TRANSACTION_TIMEOUT_MS = IMPORT_MAX_ROWS * 10
+
+// `stageBatch`'s transaction, by contrast, runs a fixed handful of queries however long the file is (the lock, the
+// bytes, one read each of the account's transactions, pending occurrences and learned rules, one bulk insert of the
+// rows, the status move), but in between does work that grows with it: decoding and parsing every row, a duplicate
+// lookup per row (against only the same-amount transactions, `indexByAmount`) and the occurrence matching, then one
+// insert carrying up to IMPORT_MAX_ROWS rows. Prisma's 5000ms default is sized for an ordinary request and would
+// surface as an unmapped P2028 on a large but perfectly good statement. 3ms of budget per row at the ceiling (a
+// minute) covers that in-process work and the bulk insert with room to spare, while still bounding how long a stuck
+// staging can hold the batch's row lock.
+const STAGE_TRANSACTION_TIMEOUT_MS = IMPORT_MAX_ROWS * 3
 
 const FILE_ERROR_MESSAGE: Record<"EMPTY" | "TOO_LARGE" | "NOT_TEXT" | "TOO_MANY_ROWS", string> = {
   EMPTY: "The file is empty.",
@@ -245,7 +257,8 @@ export interface MapScreen {
 
 /**
  * The map-and-preview screen (design §6 stage 2): the batch, its account, the mapping in effect (the one given, else
- * the batch's saved profile, else a plain default with its columns unset), the first 20 rows as staging would store
+ * the batch's own stored mapping from an earlier staging, else the batch's saved profile, else a plain default with its
+ * columns unset), the first 20 rows as staging would store
  * them, and whether an earlier upload of the same bytes exists (EC-54; discarded earlier uploads do not count).
  * Bytes are read once here and never kept past this call. Throws NotFoundError("import") for a batch that is not the
  * user's.
@@ -266,8 +279,17 @@ export async function loadMapScreen(userId: string, batchId: string, mapping?: I
   if (mapping) {
     effectiveMapping = mapping
   } else {
-    const profile = batch.profileId ? await findProfileById(userId, batch.profileId) : null
-    effectiveMapping = profile ? importMappingSchema.parse(profile.settings) : defaultMapping(account)
+    // The batch's own stored mapping first: a batch sent "Back to mapping" keeps the mapping it was staged with
+    // (`backToMapping` never clears it), and that, not the profile it started from or a blank default, is what the
+    // person was last looking at. Read through the schema, so a stored value that somehow no longer parses falls
+    // through to the profile or the default rather than reaching the preview.
+    const stored = batch.mapping === null ? null : importMappingSchema.safeParse(batch.mapping)
+    if (stored?.success) {
+      effectiveMapping = stored.data
+    } else {
+      const profile = batch.profileId ? await findProfileById(userId, batch.profileId) : null
+      effectiveMapping = profile ? importMappingSchema.parse(profile.settings) : defaultMapping(account)
+    }
   }
 
   let decodeError: string | null = null
@@ -325,6 +347,11 @@ function occurrenceCandidateOf(occurrence: OccurrenceWithRule, accountNodeId: st
     direction,
     otherNodeId: direction === "OUT" ? rule.toNodeId : rule.fromNodeId,
   }
+}
+
+/** A stored transaction as `findDuplicate` reads it. */
+function toExistingTxn(txn: { id: string; fromNodeId: string; toNodeId: string; amountPaise: bigint; occurredAt: Date }): ExistingTxn {
+  return { id: txn.id, fromNodeId: txn.fromNodeId, toNodeId: txn.toNodeId, amountPaise: txn.amountPaise, occurredAt: fromDbDate(txn.occurredAt) }
 }
 
 /** The widened date range a duplicate or occurrence lookup needs to cover every row, or null for no valid rows. */
@@ -420,13 +447,9 @@ export async function stageBatch(
           findPendingForAccount(userId, batch.nodeId, uow),
         ])
       : [[], []]
-    const existingTxns: ExistingTxn[] = existingTxnRows.map((txn) => ({
-      id: txn.id,
-      fromNodeId: txn.fromNodeId,
-      toNodeId: txn.toNodeId,
-      amountPaise: txn.amountPaise,
-      occurredAt: fromDbDate(txn.occurredAt),
-    }))
+    // Grouped by amount once, so each row's duplicate lookup walks only the same-amount transactions rather than every
+    // transaction in the file's whole date range (rows x transactions, inside this one database transaction).
+    const existingByAmount = indexByAmount(existingTxnRows.map(toExistingTxn))
     const occurrenceCandidates = pendingOccurrences.map((occurrence) => occurrenceCandidateOf(occurrence, batch.nodeId))
 
     const validEntries: { index: number; parsed: ParsedRow }[] = []
@@ -473,7 +496,7 @@ export async function stageBatch(
         }
       }
       const { parsed } = entry
-      const duplicate = findDuplicate(parsed, batch.nodeId, existingTxns)
+      const duplicate = findDuplicate(parsed, batch.nodeId, existingByAmount.get(parsed.amountPaise) ?? [])
       if (duplicate) duplicates++
       const occurrence = occurrenceByIndex.get(index) ?? null
       if (occurrence) linked++
@@ -501,7 +524,7 @@ export async function stageBatch(
     if (!staged) throw new NotFoundError("import")
 
     return { rows: rows.length, errored, duplicates, linked, suggested }
-  })
+  }, { timeout: STAGE_TRANSACTION_TIMEOUT_MS })
 }
 
 /** Discard an UPLOADED or STAGED batch (design §6): its rows and bytes go, it moves to DISCARDED. Already discarded is a
@@ -591,10 +614,14 @@ async function duplicateViewOf(userId: string, transactionId: string, accountNod
   }
 }
 
-/** The pending occurrence a row's `occurrenceId` names, as the review screen shows it; null once it no longer resolves. */
+/**
+ * The pending occurrence a row's `occurrenceId` names, as the review screen shows it; null once it no longer resolves,
+ * and null once it is no longer PENDING (posted, skipped or dismissed since staging): only an entry still waiting in the
+ * inbox can be offered as "Matches the pending recurring entry", since only that one could still be linked and committed.
+ */
 async function occurrenceViewOf(userId: string, occurrenceId: string, accountNodeId: string): Promise<ReviewRowView["occurrence"]> {
   const occurrence = await findOccurrenceById(userId, occurrenceId)
-  if (!occurrence) return null
+  if (!occurrence || occurrence.status !== "PENDING") return null
   const candidate = occurrenceCandidateOf(occurrence, accountNodeId)
   return { id: occurrence.id, ruleName: candidate.ruleName, dueOn: candidate.dueOn, otherNodeId: candidate.otherNodeId }
 }
@@ -671,21 +698,8 @@ export type RowChange = {
   occurrence?: "LINK" | "UNLINK"
 }
 
-/**
- * Change one row's decision (design §6 stage 4). `counterpartNodeId` (set or `null` to clear) is checked against
- * `isLegalCounterpart` before it is written. `occurrence: "LINK"` needs the row to already hold an `occurrenceId`
- * (from staging): it takes the rule's other ledger as the counterpart, under the same legality check; "UNLINK" only
- * clears the link, leaving any counterpart as it is. `decision: "IMPORT"` needs a counterpart: the one given in this
- * same call, else the row's own, else (if neither, the row holds a linked occurrence, and this same call is not also
- * unlinking it) the occurrence's other ledger; without one of those it is InvalidImportError on field
- * "counterpartNodeId" — in particular, combining `occurrence: "UNLINK"` with `decision: "IMPORT"` on a row with no
- * stored counterpart is refused this way, never silently re-deriving a counterpart from the link just removed.
- * "SKIP" and "UNDO" need no
- * counterpart. A row that is ERRORED or COMMITTED, or whose batch is not STAGED, is refused as NotFoundError("import"),
- * the same as a row that is not this user's; this is checked before anything else, since an ERRORED row has no
- * direction for `isLegalCounterpart` to check against.
- */
-/** The row's linked occurrence's other ledger, legality-checked, or null if the row has none or it no longer resolves. */
+/** The row's linked occurrence's other ledger, legality-checked, or null if the row has none, it no longer resolves, or
+ * it is no longer PENDING (an entry already posted, skipped or dismissed cannot be linked). */
 async function linkedOccurrenceCounterpart(
   userId: string,
   row: ImportRow,
@@ -693,12 +707,34 @@ async function linkedOccurrenceCounterpart(
 ): Promise<string | null> {
   if (!row.occurrenceId) return null
   const occurrence = await findOccurrenceById(userId, row.occurrenceId)
-  if (!occurrence) return null
+  if (!occurrence || occurrence.status !== "PENDING") return null
   const candidate = occurrenceCandidateOf(occurrence, account.id)
   await assertLegalCounterpart(userId, account, candidate.direction, candidate.otherNodeId)
   return candidate.otherNodeId
 }
 
+/**
+ * Change one row's decision (design §6 stage 4). `counterpartNodeId` (set or `null` to clear) is checked against
+ * `isLegalCounterpart` before it is written.
+ *
+ * `occurrence: "LINK"` needs the row to already hold an `occurrenceId` (from staging) that is still PENDING: it takes the
+ * rule's other ledger as the counterpart, under the same legality check, and a different `counterpartNodeId` in the same
+ * call is refused (a linked row always commits to its rule's ledger, so the two can never disagree). "UNLINK" only
+ * clears the link, leaving any counterpart as it is.
+ *
+ * `decision: "IMPORT"` readies the row with a counterpart: the one given in this same call, else the row's own; without
+ * one it is InvalidImportError on field "counterpartNodeId". Unless this same call says `occurrence: "LINK"`, IMPORT
+ * also clears the row's `occurrenceId`, here, whatever the caller sent: importing a row without choosing to link it
+ * means the counterpart shown is the one that will be posted, and a stale or coincidental occurrence match must never
+ * be left on the row for commit to post against instead (and to consume an occurrence nobody chose). In particular a
+ * row with a matched occurrence but no counterpart of its own is refused, never silently linked. For the same reason,
+ * changing the counterpart of a row that is already READY and linked (without re-linking) clears its link.
+ *
+ * "SKIP" and "UNDO" need no counterpart; UNDO keeps any link, so the row can be linked again. A row that is ERRORED or
+ * COMMITTED, or whose batch is not STAGED, is refused as NotFoundError("import"), the same as a row that is not this
+ * user's; this is checked before anything else, since an ERRORED row has no direction for `isLegalCounterpart` to
+ * check against.
+ */
 export async function updateRow(userId: string, rowId: string, change: RowChange): Promise<ReviewRowView> {
   const row = await findRowById(userId, rowId)
   if (!row) throw new NotFoundError("import")
@@ -709,27 +745,37 @@ export async function updateRow(userId: string, rowId: string, change: RowChange
   }
   const node = await requireNode(userId, batch.nodeId)
   const account = { id: node.id, kind: node.kind as "ASSET" | "LIABILITY" }
+  const linking = change.occurrence === "LINK"
 
   const changes: Partial<{ status: ImportRowStatus; counterpartNodeId: string | null; occurrenceId: string | null }> = {}
 
-  if (change.occurrence === "UNLINK") {
-    changes.occurrenceId = null
-  } else if (change.occurrence === "LINK") {
+  if (linking) {
     if (!row.occurrenceId) {
       throw new InvalidImportError([{ field: "occurrence", message: "This row has no linked recurring occurrence." }])
     }
     const counterpartNodeId = await linkedOccurrenceCounterpart(userId, row, account)
-    if (!counterpartNodeId) throw new NotFoundError("occurrence")
+    if (!counterpartNodeId) {
+      throw new InvalidImportError([{ field: "occurrence", message: "This recurring entry is no longer pending." }])
+    }
+    if (change.counterpartNodeId !== undefined && change.counterpartNodeId !== counterpartNodeId) {
+      throw new InvalidImportError([
+        { field: "counterpartNodeId", message: "A row linked to a recurring entry takes that entry's ledger." },
+      ])
+    }
     changes.counterpartNodeId = counterpartNodeId
-  }
-
-  if (change.counterpartNodeId !== undefined) {
-    if (change.counterpartNodeId === null) {
-      changes.counterpartNodeId = null
-    } else {
-      // row.direction is non-null here: an ERRORED row (the only kind with a null direction) was already refused above.
-      await assertLegalCounterpart(userId, account, row.direction!, change.counterpartNodeId)
-      changes.counterpartNodeId = change.counterpartNodeId
+  } else {
+    if (change.occurrence === "UNLINK") changes.occurrenceId = null
+    if (change.counterpartNodeId !== undefined) {
+      if (change.counterpartNodeId === null) {
+        changes.counterpartNodeId = null
+      } else {
+        // row.direction is non-null here: an ERRORED row (the only kind with a null direction) was already refused above.
+        await assertLegalCounterpart(userId, account, row.direction!, change.counterpartNodeId)
+        changes.counterpartNodeId = change.counterpartNodeId
+      }
+      // A READY, linked row given a different ledger: the explicit choice wins, so the link goes with it rather than
+      // leaving commit a row whose stored ledger and linked rule disagree.
+      if (row.status === "READY" && row.occurrenceId !== null) changes.occurrenceId = null
     }
   }
 
@@ -738,25 +784,17 @@ export async function updateRow(userId: string, rowId: string, change: RowChange
   } else if (change.decision === "UNDO") {
     changes.status = "PENDING"
   } else if (change.decision === "IMPORT") {
-    const hasExplicitCounterpart = changes.counterpartNodeId !== undefined
-    let effective = hasExplicitCounterpart ? changes.counterpartNodeId : row.counterpartNodeId
-    // No counterpart chosen in this call, and none stored yet: fall back to the row's own linked occurrence, if any
-    // (already legality-checked above when `change.occurrence` was itself "LINK", so this only runs otherwise). Never
-    // fall back when this same call is clearing the occurrence link (`occurrence: "UNLINK"`, `changes.occurrenceId ===
-    // null`): the row's `occurrenceId` at this point still points at the link being removed, so deriving a
-    // counterpart from it here would silently resurrect the very link this call is meant to clear.
-    if (!effective && !hasExplicitCounterpart && changes.occurrenceId !== null) {
-      effective = await linkedOccurrenceCounterpart(userId, row, account)
-    }
+    // The server-side unlink rule: only an explicit LINK in this same call keeps the occurrence. No caller has to
+    // remember to send UNLINK for a plain Import to post exactly the ledger it shows.
+    if (!linking) changes.occurrenceId = null
+    const hasNewCounterpart = changes.counterpartNodeId !== undefined
+    const effective = hasNewCounterpart ? changes.counterpartNodeId : row.counterpartNodeId
     if (!effective) {
       throw new InvalidImportError([{ field: "counterpartNodeId", message: "Choose a counterpart before importing this row." }])
     }
-    // A counterpart just set above (explicitly, from a linked occurrence just checked, or the fallback just above) is
-    // already checked; only the row's own stored value, carried over unchanged, needs checking now, since it may have
-    // stopped being legal since it was set.
-    if (!hasExplicitCounterpart && effective === row.counterpartNodeId) {
-      await assertLegalCounterpart(userId, account, row.direction!, effective)
-    }
+    // A counterpart set in this call (chosen, or the linked occurrence's) is already checked; only the row's own stored
+    // value, carried over unchanged, needs checking now, since it may have stopped being legal since it was set.
+    if (!hasNewCounterpart) await assertLegalCounterpart(userId, account, row.direction!, effective)
     changes.counterpartNodeId = effective
     changes.status = "READY"
   }
@@ -799,10 +837,13 @@ export async function applyCounterpartToSimilar(userId: string, rowId: string): 
 }
 
 /**
- * Ready every PENDING row of the batch that already has a counterpart (a learned-rule prefill, or one chosen earlier)
- * and carries no duplicate flag: the bulk "confirm suggestions" action. A duplicate-flagged row is left PENDING even
- * with a counterpart; it needs the explicit "import anyway" decision (`updateRow` with `decision: "IMPORT"`). Returns
- * how many rows changed. Throws NotFoundError("import") for a batch that is not the user's.
+ * Ready every PENDING row of the batch that already has a counterpart (a learned-rule prefill, or one chosen earlier),
+ * carries no duplicate flag and is not matched to a recurring occurrence: the bulk "confirm suggestions" action. A
+ * duplicate-flagged row is left PENDING even with a counterpart; it needs the explicit "import anyway" decision
+ * (`updateRow` with `decision: "IMPORT"`). So is an occurrence-matched row: its prefilled ledger and its matched rule's
+ * ledger were worked out independently at staging and may differ, so only the person can say which it is — Import (the
+ * ledger shown, unlinked) or Link (the rule's ledger, posting the occurrence) — and a bulk confirm must never pick for
+ * them. Returns how many rows changed. Throws NotFoundError("import") for a batch that is not the user's.
  */
 export async function confirmSuggestions(userId: string, batchId: string): Promise<number> {
   const batch = await findBatchById(userId, batchId)
@@ -810,7 +851,7 @@ export async function confirmSuggestions(userId: string, batchId: string): Promi
   const candidates = await findRows(userId, batchId, { status: ["PENDING"], offset: 0, limit: IMPORT_MAX_ROWS })
   let count = 0
   for (const row of candidates) {
-    if (row.counterpartNodeId === null || row.duplicateOfTransactionId !== null) continue
+    if (row.counterpartNodeId === null || row.duplicateOfTransactionId !== null || row.occurrenceId !== null) continue
     const updated = await updateImportRow(userId, row.id, { status: "READY" })
     if (updated) count++
   }
@@ -834,7 +875,9 @@ export class ImportNotReadyError extends Error {
 }
 
 /** One or more READY rows are no longer legal to commit (a counterpart archived, a flow now illegal, a link resolved
- * since staging or review). Named by line, so the review screen can point at exactly what changed. Nothing was written. */
+ * since staging or review, a matching transaction recorded since staging). Named by line, so the review screen can point
+ * at exactly what changed. No transaction was written; a row refused as a new duplicate was sent back to PENDING with its
+ * duplicate flag set, which is the only change such a refusal makes. */
 export class ImportRowsIllegalError extends Error {
   constructor(readonly rows: { line: number; reason: string }[]) {
     super(`${rows.length} row${rows.length === 1 ? "" : "s"} are no longer legal to commit: ${rows.map((r) => `line ${r.line} (${r.reason})`).join("; ")}`)
@@ -921,9 +964,12 @@ interface PreparedRow {
 
 /**
  * Work out and re-validate what one READY row would commit as, against the ledgers as they are right now: a linked
- * row (carried-forward ruling, Task 6->8) takes its counterpart from the occurrence's rule, never from the row's own
- * stored `counterpartNodeId`, and the occurrence must still be PENDING (handled since staging or review is a refusal,
- * not a re-link). An unlinked row is checked against its own stored counterpart. Either way the result is re-checked
+ * row's occurrence must still be PENDING (handled since staging or review is a refusal, not a re-link), its rule must
+ * still touch the account in the row's direction, and the rule's other ledger must be exactly the row's own stored
+ * `counterpartNodeId` — the ledger the review screen showed. `updateRow` keeps the two equal (LINK sets one from the
+ * other; anything else clears the link), so a difference here means something moved underneath (the rule edited after
+ * linking, a caller bypassing the service): that is a refusal naming the line, never a silent posting to a ledger the
+ * person did not see. An unlinked row is checked against its own stored counterpart. Either way the result is re-checked
  * with `isLegalCounterpart` (archived, system, lot-held, the account itself) and `validateTransaction` (both ends live,
  * the flow legal, a positive amount) exactly as a fresh entry would be. Returns a violation naming the row's line
  * instead of throwing, so the caller can collect every illegal row before refusing the whole commit.
@@ -937,7 +983,7 @@ async function prepareReadyRow(
   nodeCache: Map<string, LedgerNode>,
 ): Promise<{ prepared: PreparedRow } | { violation: { line: number; reason: string } }> {
   const direction = row.direction! // a READY row always has a direction: it came from a successfully parsed entry
-  let counterpartNodeId = row.counterpartNodeId
+  const counterpartNodeId = row.counterpartNodeId
   if (row.occurrenceId !== null) {
     const occurrence = await findOccurrenceById(userId, row.occurrenceId, uow)
     if (!occurrence || occurrence.status !== "PENDING") {
@@ -956,7 +1002,14 @@ async function prepareReadyRow(
     if (candidate.direction !== direction) {
       return { violation: { line: row.line, reason: "The linked recurring rule's direction no longer matches this row." } }
     }
-    counterpartNodeId = candidate.otherNodeId
+    if (row.counterpartNodeId !== candidate.otherNodeId) {
+      return {
+        violation: {
+          line: row.line,
+          reason: "This row's ledger no longer matches its linked recurring entry's. Undo it and decide it again.",
+        },
+      }
+    }
   }
   if (!counterpartNodeId) return { violation: { line: row.line, reason: "This row has no counterpart." } }
 
@@ -988,12 +1041,72 @@ async function prepareReadyRow(
   }
 }
 
+/** Why a READY row was sent back for review at commit: a matching transaction appeared after it was staged. */
+const NEW_DUPLICATE_REASON = "A matching transaction was recorded since staging. It is back in review as a possible duplicate."
+
+/**
+ * The READY rows with no duplicate flag that now match a live transaction on the account (same amount and direction,
+ * within the window: `findDuplicate`, exactly as staging applies it), as row id -> the matched transaction's id. Read
+ * inside the commit's own transaction, under the batch's lock. A transaction this batch itself created is left out
+ * (there are none before the commit writes, but a row must never be matched against its own posting).
+ */
+async function findDuplicatesSinceStaging(
+  userId: string,
+  batchId: string,
+  accountNodeId: string,
+  readyRows: readonly ImportRow[],
+  uow: UnitOfWork,
+): Promise<Map<string, string>> {
+  const unflagged = readyRows.filter((row) => row.duplicateOfTransactionId === null)
+  const range = dateRangeOf(unflagged.map((row) => fromDbDate(row.occurredOn!)))
+  const found = new Map<string, string>()
+  if (!range) return found
+  const live = await findAccountTransactions(userId, accountNodeId, range.from, range.to, uow)
+  const byAmount = indexByAmount(live.filter((txn) => txn.importBatchId !== batchId).map(toExistingTxn))
+  for (const row of unflagged) {
+    const candidates = byAmount.get(row.amountPaise!)
+    if (!candidates) continue
+    const duplicate = findDuplicate(
+      { occurredOn: fromDbDate(row.occurredOn!), amountPaise: row.amountPaise!, direction: row.direction! },
+      accountNodeId,
+      candidates,
+    )
+    if (duplicate) found.set(row.id, duplicate.id)
+  }
+  return found
+}
+
+/** The learned rules a commit teaches: one per distinct direction and description key among the rows, holding the
+ * ledger of the last such row in file order (the rows arrive in line order) and how many rows taught it. */
+function rulesToLearn(prepared: readonly PreparedRow[]): { direction: ImportDirection; descriptionKey: string; nodeId: string; hits: number }[] {
+  const byKey = new Map<string, { direction: ImportDirection; descriptionKey: string; nodeId: string; hits: number }>()
+  for (const p of prepared) {
+    const descriptionKey = p.row.descriptionKey
+    if (!descriptionKey) continue
+    const direction = p.row.direction!
+    const key = `${direction}\u0000${descriptionKey}`
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.nodeId = p.counterpartNodeId
+      existing.hits++
+    } else {
+      byKey.set(key, { direction, descriptionKey, nodeId: p.counterpartNodeId, hits: 1 })
+    }
+  }
+  return [...byKey.values()]
+}
+
 /**
  * Commit a STAGED batch (design §6 stage 5): every READY row becomes a real transaction, atomically, under the
  * batch's row lock. Refuses, writing nothing, if the batch is not STAGED or COMMITTED (InvalidImportError), if any row
  * is still PENDING (ImportNotReadyError, with the count), or if any READY row is no longer legal to commit
  * (ImportRowsIllegalError, naming every such line) — that check runs over every row before any insert, so a batch with
- * one bad row among a thousand good ones writes nothing at all.
+ * one bad row among a thousand good ones writes nothing at all. A READY row with no duplicate flag that now matches a
+ * live transaction on the account (one recorded since staging: another statement's commit, a hand entry, a recurring
+ * posting) is refused the same way, and is also sent back to PENDING with that duplicate flag set
+ * (`flagRowsAsDuplicates`), so the review screen offers the usual "Import anyway" / "Skip as duplicate" choice for it;
+ * that re-flag is the only thing such a refused commit writes. A READY row that already carries a duplicate flag was
+ * imported anyway on purpose and is not re-checked.
  *
  * Once every row passes, the touched `blockNegative` ledgers (the account and every counterpart a row would move money
  * through) are checked before and after the inserts, as of the later of today and the latest row's day, exactly as any
@@ -1012,7 +1125,7 @@ async function prepareReadyRow(
  * COMMITTED once it gets the lock. Throws NotFoundError("import") for a batch that is not the user's.
  */
 export async function commitBatch(userId: string, batchId: string): Promise<CommitSummary> {
-  return inTransaction(async (uow) => {
+  const outcome = await inTransaction(async (uow): Promise<CommitSummary | { refused: { line: number; reason: string }[] }> => {
     const batch = await lockBatch(userId, batchId, uow)
     if (!batch) throw new NotFoundError("import")
     if (batch.status === "COMMITTED") return buildCommitSummary(userId, batchId, batch.committedAt!, uow)
@@ -1031,16 +1144,40 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
     // same counterpart (one vendor, paid repeatedly) would otherwise re-fetch that counterpart's node every time.
     const nodeCache = new Map<string, LedgerNode>([[account.id, account]])
 
+    // Duplicates, re-checked against the ledger as it is now (design: re-validate "against the ledgers as they are
+    // now"), not only as it was at staging: a second, overlapping statement committed since, a hand-entered entry, or
+    // one the recurring sweep posted can each have recorded a READY row's transaction already. Only rows with no
+    // duplicate flag are checked: a READY row that carries one is one the person already saw flagged and chose to
+    // import anyway, against that transaction, and is never second-guessed here.
+    const newDuplicates = await findDuplicatesSinceStaging(userId, batchId, account.id, readyRows, uow)
+
     // Every row is checked, and every violation collected, before anything is written: a commit either writes every
     // READY row or none of them.
     const violations: { line: number; reason: string }[] = []
     const prepared: PreparedRow[] = []
     for (const row of readyRows) {
+      if (newDuplicates.has(row.id)) {
+        violations.push({ line: row.line, reason: NEW_DUPLICATE_REASON })
+        continue
+      }
       const result = await prepareReadyRow(userId, row, account, accountInfo, uow, nodeCache)
       if ("violation" in result) violations.push(result.violation)
       else prepared.push(result.prepared)
     }
-    if (violations.length > 0) throw new ImportRowsIllegalError(violations)
+    if (violations.length > 0) {
+      // Nothing is posted. A newly found duplicate is not just refused but sent back for review — PENDING, flagged
+      // against the transaction it matches, exactly as staging would have flagged it — so the review screen shows it
+      // with the same "Import anyway" / "Skip as duplicate" choice, rather than the commit refusing the same row
+      // again on every retry with no way forward. That one write is kept (the transaction below returns rather than
+      // throwing, so it commits); the refusal itself is raised once it has.
+      await flagRowsAsDuplicates(
+        userId,
+        batchId,
+        [...newDuplicates].map(([rowId, transactionId]) => ({ rowId, transactionId })),
+        uow,
+      )
+      return { refused: violations.sort((a, b) => a.line - b.line) }
+    }
 
     // The overdraft guard, as writeUnlessOverdrawn applies it, but for the batch as a whole rather than one write: one
     // `asOf` (the later of today and the latest row's own day), read before and after the inserts, over every node a
@@ -1098,11 +1235,10 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
       if (!posted) throw new ImportRowsIllegalError([{ line: p.row.line, reason: "The linked recurring occurrence changed while this import was being committed." }])
     }
 
-    for (const p of prepared) {
-      if (p.row.descriptionKey) {
-        await upsertRule(userId, { direction: p.row.direction!, descriptionKey: p.row.descriptionKey, nodeId: p.counterpartNodeId }, uow)
-      }
-    }
+    // One upsert per distinct (direction, description key), not one per row: the rule table holds one ledger per key,
+    // so the end state is the same as upserting row by row in file order — the last row's ledger wins and every row
+    // counts as a hit — in a fraction of the statements.
+    for (const rule of rulesToLearn(prepared)) await upsertRule(userId, rule, uow)
 
     const committedAt = new Date()
     const updated = await transitionBatch(userId, batchId, { from: ["STAGED"], to: "COMMITTED", committedAt, dropBytes: true }, uow)
@@ -1110,6 +1246,9 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
 
     return buildCommitSummary(userId, batchId, committedAt, uow)
   }, { timeout: COMMIT_TRANSACTION_TIMEOUT_MS })
+
+  if ("refused" in outcome) throw new ImportRowsIllegalError(outcome.refused)
+  return outcome
 }
 
 /**

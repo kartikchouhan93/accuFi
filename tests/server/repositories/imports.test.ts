@@ -489,6 +489,53 @@ describe("markRowsCommitted", () => {
     const w = await registry.makeWorld()
     await inTransaction((uow) => repo.markRowsCommitted(w.user.id, [], uow))
   })
+
+  it("refuses a row named twice, rolling back the lot", async () => {
+    const w = await registry.makeWorld()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const ready = await registry.makeImportRow(w.user.id, batch.id, 1, { status: "READY", counterpartNodeId: w.food.id })
+    const t1 = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id)
+    const t2 = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id)
+    await expectNotFound(
+      inTransaction((uow) =>
+        repo.markRowsCommitted(w.user.id, [{ rowId: ready.id, transactionId: t1.id }, { rowId: ready.id, transactionId: t2.id }], uow),
+      ),
+      "import",
+    )
+    expect(await prisma.importRow.findUniqueOrThrow({ where: { id: ready.id } })).toMatchObject({ status: "READY", transactionId: null })
+  })
+})
+
+describe("flagRowsAsDuplicates", () => {
+  it("sends READY rows of the batch back to PENDING, each flagged against its own transaction, keeping their counterpart", async () => {
+    const w = await registry.makeWorld()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const r1 = await registry.makeImportRow(w.user.id, batch.id, 1, { status: "READY", counterpartNodeId: w.food.id })
+    const r2 = await registry.makeImportRow(w.user.id, batch.id, 2, { status: "READY", counterpartNodeId: w.food.id })
+    const t1 = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id)
+    await inTransaction((uow) => repo.flagRowsAsDuplicates(w.user.id, batch.id, [{ rowId: r1.id, transactionId: t1.id }, { rowId: r2.id, transactionId: w.tx.id }], uow))
+    expect(await prisma.importRow.findUniqueOrThrow({ where: { id: r1.id } })).toMatchObject({ status: "PENDING", duplicateOfTransactionId: t1.id, counterpartNodeId: w.food.id })
+    expect(await prisma.importRow.findUniqueOrThrow({ where: { id: r2.id } })).toMatchObject({ status: "PENDING", duplicateOfTransactionId: w.tx.id })
+  })
+
+  it("rolls back the lot when a row is not READY or belongs to another batch, and does nothing for no pairs", async () => {
+    const w = await registry.makeWorld()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const other = await registry.makeBatch(w.user.id, w.bank.id)
+    const ready = await registry.makeImportRow(w.user.id, batch.id, 1, { status: "READY", counterpartNodeId: w.food.id })
+    const skipped = await registry.makeImportRow(w.user.id, batch.id, 2, { status: "SKIPPED" })
+    const elsewhere = await registry.makeImportRow(w.user.id, other.id, 1, { status: "READY", counterpartNodeId: w.food.id })
+    for (const second of [skipped, elsewhere]) {
+      await expectNotFound(
+        inTransaction((uow) =>
+          repo.flagRowsAsDuplicates(w.user.id, batch.id, [{ rowId: ready.id, transactionId: w.tx.id }, { rowId: second.id, transactionId: w.tx.id }], uow),
+        ),
+        "import",
+      )
+    }
+    expect(await prisma.importRow.findUniqueOrThrow({ where: { id: ready.id } })).toMatchObject({ status: "READY", duplicateOfTransactionId: null })
+    await inTransaction((uow) => repo.flagRowsAsDuplicates(w.user.id, batch.id, [], uow))
+  })
 })
 
 describe("profiles", () => {
@@ -529,6 +576,13 @@ describe("counterpart rules", () => {
     expect(rules.find((r) => r.direction === "IN")).toMatchObject({ nodeId: w.income.id, hits: 1 })
   })
 
+  it("counts several hits at once when told how many rows taught it", async () => {
+    const w = await registry.makeWorld()
+    await inTransaction((uow) => repo.upsertRule(w.user.id, { direction: "OUT", descriptionKey: "tea", nodeId: w.food.id, hits: 5 }, uow))
+    await inTransaction((uow) => repo.upsertRule(w.user.id, { direction: "OUT", descriptionKey: "tea", nodeId: w.food.id, hits: 3 }, uow))
+    expect(await repo.findCounterpartRules(w.user.id)).toMatchObject([{ descriptionKey: "tea", hits: 8 }])
+  })
+
   it("refuses a ledger that is not the user's", async () => {
     const w = await registry.makeWorld()
     await expectNotFound(inTransaction((uow) => repo.upsertRule(w.user.id, { direction: "OUT", descriptionKey: "k", nodeId: b.food.id }, uow)), "node")
@@ -537,15 +591,16 @@ describe("counterpart rules", () => {
 })
 
 describe("countImportsNaming and deleteImportConfigFor", () => {
-  it("counts batches of the account in any status plus rows choosing it as counterpart", async () => {
+  it("counts batches of the account in any status but DISCARDED, plus rows choosing it as counterpart", async () => {
     const w = await registry.makeWorld()
     expect(await repo.countImportsNaming(w.user.id, w.bank.id)).toBe(0)
     const live = await registry.makeBatch(w.user.id, w.bank.id)
-    await registry.makeBatch(w.user.id, w.bank.id, { status: "DISCARDED" })
+    await registry.makeBatch(w.user.id, w.bank.id, { status: "COMMITTED", fileBytes: null })
+    await registry.makeBatch(w.user.id, w.bank.id, { status: "DISCARDED", fileBytes: null })
     await registry.makeImportRow(w.user.id, live.id, 1, { status: "READY", counterpartNodeId: w.food.id })
     await registry.makeImportRow(w.user.id, live.id, 2, { counterpartNodeId: w.food.id })
     await registry.makeImportRow(w.user.id, live.id, 3)
-    expect(await repo.countImportsNaming(w.user.id, w.bank.id)).toBe(2)
+    expect(await repo.countImportsNaming(w.user.id, w.bank.id)).toBe(2) // the STAGED and COMMITTED batches, not the DISCARDED one
     expect(await repo.countImportsNaming(w.user.id, w.food.id)).toBe(2)
     expect(await inTransaction((uow) => repo.countImportsNaming(w.user.id, w.food.id, uow))).toBe(2)
     expect(await repo.countImportsNaming(w.user.id, w.income.id)).toBe(0)
@@ -563,6 +618,17 @@ describe("countImportsNaming and deleteImportConfigFor", () => {
     await inTransaction((uow) => repo.deleteImportConfigFor(w.user.id, w.food.id, uow))
     expect((await repo.findProfiles(w.user.id)).map((p) => p.name)).toEqual(["for bank", "for nothing"])
     expect((await repo.findCounterpartRules(w.user.id)).map((r) => r.descriptionKey)).toEqual(["b"])
+  })
+
+  it("deletes the DISCARDED batches for the ledger as the account, and no live batch or another ledger's", async () => {
+    const w = await registry.makeWorld()
+    const other = await registry.makeNode(w.user.id, "ASSET", "Other")
+    const discarded = await registry.makeBatch(w.user.id, w.bank.id, { status: "DISCARDED", fileBytes: null })
+    const staged = await registry.makeBatch(w.user.id, w.bank.id)
+    const otherDiscarded = await registry.makeBatch(w.user.id, other.id, { status: "DISCARDED", fileBytes: null })
+    await inTransaction((uow) => repo.deleteImportConfigFor(w.user.id, w.bank.id, uow))
+    expect(await prisma.importBatch.count({ where: { id: discarded.id } })).toBe(0)
+    expect(await prisma.importBatch.count({ where: { id: { in: [staged.id, otherDiscarded.id] } } })).toBe(2)
   })
 
   it("a profile used by a batch can be deleted: the batch keeps its history and loses the link", async () => {

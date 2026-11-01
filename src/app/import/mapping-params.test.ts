@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { ImportMapping } from "@/domain/import-map"
-import { mappingFromParams, paramsFromMapping } from "./mapping-params"
+import { mappingControlsDiffer, mappingFromParams, paramsFromMapping } from "./mapping-params"
 
 // mappingFromParams/paramsFromMapping: the pure heart of the GET-driven map screen. mappingFromParams must never
 // throw, whatever a hand-edited URL hands it, and must fall back to the given defaults field by field, not as a whole.
@@ -105,5 +105,26 @@ describe("mappingFromParams falling back", () => {
   it("falls back for a skip of 99, which is past the maximum", () => {
     expect(mappingFromParams({ skip: "99" }, BASE_DEFAULTS).skipRows).toBe(BASE_DEFAULTS.skipRows)
     expect(mappingFromParams({ skip: "50" }, BASE_DEFAULTS).skipRows).toBe(50) // the maximum itself is readable
+  })
+})
+
+describe("mappingControlsDiffer (final review I6)", () => {
+  const previewed = paramsFromMapping(AMOUNT_MAPPING)
+  const asSubmitted = (params: Record<string, string>) => ({ cdebit: "", ccredit: "", camount: "", ...params })
+
+  it("is false when the controls read exactly as the preview's mapping, an unused column's empty value included", () => {
+    expect(mappingControlsDiffer(asSubmitted(previewed), previewed)).toBe(false)
+    expect(mappingControlsDiffer({ ...previewed }, previewed)).toBe(false)
+  })
+
+  it("is true as soon as any one control differs: the date format above all", () => {
+    expect(mappingControlsDiffer(asSubmitted({ ...previewed, datefmt: previewed.datefmt === "MM/DD/YYYY" ? "DD/MM/YYYY" : "MM/DD/YYYY" }), previewed)).toBe(true)
+    for (const name of ["delim", "enc", "skip", "dec", "sign", "cdate", "cdesc", "camount"]) {
+      expect(mappingControlsDiffer(asSubmitted({ ...previewed, [name]: "changed" }), previewed), name).toBe(true)
+    }
+  })
+
+  it("is true when switching from a single amount column to a debit/credit pair", () => {
+    expect(mappingControlsDiffer(asSubmitted({ ...previewed, camount: "", cdebit: "2", ccredit: "3" }), previewed)).toBe(true)
   })
 })

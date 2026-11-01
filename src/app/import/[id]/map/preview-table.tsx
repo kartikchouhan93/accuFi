@@ -1,7 +1,9 @@
 import { ArrowDownLeft, ArrowUpRight, CircleAlert } from "lucide-react"
 import { Amount } from "@/app/amount"
 import { figure } from "@/app/feedback"
+import { calendarDate } from "@/domain/calendar-date"
 import type { ImportDirection } from "@/domain/import-map"
+import { formatDay } from "@/lib/transaction-text"
 import type { PreviewRow } from "@/server/services/import-service"
 
 // The first 20 rows of the batch, exactly as staging would record them (design §6 stage 2): a date, a description, an
@@ -26,10 +28,10 @@ function DirectionChip({ direction }: { direction: ImportDirection }) {
   )
 }
 
-function monthDay(occurredOn: string): string {
-  const [year, month, day] = occurredOn.split("-")
-  return `${day}/${month}/${year}`
-}
+/** The day as the review screen writes it, "3 Apr 2026": never digits a reader has to put back in order. The
+ * preview exists to show what a chosen date format makes of the file, so the day it shows must be impossible to
+ * misread under any format — "04/03/2026" would read as 4 March to one person and 3 April to another. */
+const day = (occurredOn: string) => formatDay(calendarDate(occurredOn))
 
 export function PreviewTable({ rows }: { rows: PreviewRow[] }) {
   if (rows.length === 0) {
@@ -76,7 +78,7 @@ export function PreviewTable({ rows }: { rows: PreviewRow[] }) {
                 </td>
               ) : row.parsed ? (
                 <>
-                  <td className="figures px-3 py-2 whitespace-nowrap">{monthDay(row.parsed.occurredOn)}</td>
+                  <td className="figures px-3 py-2 whitespace-nowrap">{day(row.parsed.occurredOn)}</td>
                   <td className="px-3 py-2 [overflow-wrap:anywhere]">{row.parsed.description || <span className="text-fg-soft">(no description)</span>}</td>
                   <td className="px-3 py-2">
                     <DirectionChip direction={row.parsed.direction} />

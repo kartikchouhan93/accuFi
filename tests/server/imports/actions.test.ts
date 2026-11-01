@@ -434,6 +434,38 @@ describe("commitBatchAction", () => {
     expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
   })
 
+  it("final review I3: answers a commit that would overdraw a blockNegative ledger as overdraft_blocked with its own message, not an unmapped error", async () => {
+    const w = await signedInWorld()
+    const guarded = await registry.makeNode(w.user.id, "ASSET", "Guarded", { blockNegative: true })
+    const batch = await registry.makeBatch(w.user.id, guarded.id, { status: "STAGED" })
+    await readyRow(w.user.id, batch.id, 1, w.food.id)
+    const result = await actions.commitBatchAction({ id: batch.id })
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "overdraft_blocked",
+        message: "Guarded does not allow a negative balance, so this would overdraw it. Nothing was imported; the import is still staged.",
+      },
+    })
+    assertPlainData(result)
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
+    expect(await prisma.transaction.count({ where: { importBatchId: batch.id } })).toBe(0)
+  })
+
+  it("final review C2: answers a duplicate recorded since staging with the line and the way forward, and the row is back in review", async () => {
+    const w = await signedInWorld()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id, { status: "STAGED" })
+    const row = await readyRow(w.user.id, batch.id, 3, w.food.id)
+    const stored = await prisma.importRow.findUniqueOrThrow({ where: { id: row.id } })
+    await registry.makeTransaction(w.user.id, w.bank.id, w.food.id, { amountPaise: stored.amountPaise!, occurredAt: "2026-04-11" })
+    const result = await actions.commitBatchAction({ id: batch.id })
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "invalid", message: "Line 3: A matching transaction was recorded since staging. It is back in review as a possible duplicate." },
+    })
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("PENDING")
+  })
+
   it("answers a batch that cannot be committed with the exact invalid message", async () => {
     const w = await signedInWorld()
     const batch = await registry.makeBatch(w.user.id, w.bank.id, { status: "UPLOADED" })

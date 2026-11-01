@@ -18,6 +18,9 @@ import { ReviewRow } from "./review-row"
 
 export function ReviewWorkspace({ batchId, screen }: { batchId: string; screen: ReviewScreen }) {
   const [notice, setNotice] = useState<ToastNotice | null>(null)
+  // While a commit is in flight every row's controls are held still: the server already serializes a decision behind
+  // the commit (and refuses it once the batch is committed), this just stops the person making one that cannot land.
+  const [committing, setCommitting] = useState(false)
   const statusRef = useRef<HTMLDivElement>(null)
 
   const announce: Announce = (next: TransactionNotice, moveFocus = false) => {
@@ -39,7 +42,7 @@ export function ReviewWorkspace({ batchId, screen }: { batchId: string; screen: 
       </div>
 
       <div className="mt-4">
-        <CommitBar batchId={batchId} fileName={screen.batch.fileName} counts={screen.counts} canCommit={screen.canCommit} announce={announce} />
+        <CommitBar batchId={batchId} fileName={screen.batch.fileName} counts={screen.counts} canCommit={screen.canCommit} announce={announce} onCommittingChange={setCommitting} />
       </div>
 
       <div className="mt-6">
@@ -48,7 +51,7 @@ export function ReviewWorkspace({ batchId, screen }: { batchId: string; screen: 
         ) : (
           <ul aria-label="Staged rows" className="space-y-4">
             {screen.rows.map((row) => (
-              <ReviewRow key={row.id} row={row} account={screen.account} ledgers={screen.ledgers} siblings={screen.rows} announce={announce} />
+              <ReviewRow key={row.id} row={row} account={screen.account} ledgers={screen.ledgers} siblings={screen.rows} announce={announce} locked={committing} />
             ))}
           </ul>
         )}

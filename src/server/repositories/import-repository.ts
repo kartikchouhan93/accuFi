@@ -264,11 +264,46 @@ export async function countRows(userId: string, batchId: string, uow?: UnitOfWor
   return { byStatus, duplicates, linked }
 }
 
+type Db = Prisma.TransactionClient
+
+/**
+ * Run `work` holding a share lock (`FOR SHARE`) on the batch `lock` names, inside the caller's transaction or, without
+ * one, a short transaction of its own. A row decision written under it serializes against `lockBatch`'s `FOR UPDATE`:
+ * a decision made while a commit (or a discard, a re-stage) holds the batch waits for it to finish and then sees the
+ * batch as that left it — no longer STAGED, so the conditional UPDATE matches nothing — rather than slipping a row
+ * into READY after the commit has already read which rows are READY. Two decisions on the same batch share the lock
+ * and never wait on each other. The batch is always locked before any row, the same order `lockBatch`'s callers take,
+ * so the two cannot deadlock.
+ */
+async function underBatchShareLock<T>(
+  uow: UnitOfWork | undefined,
+  lock: (db: Db) => Promise<unknown>,
+  work: (db: Db) => Promise<T>,
+): Promise<T> {
+  const run = async (db: Db) => {
+    await lock(db)
+    return work(db)
+  }
+  return uow ? run(clientOf(uow)) : prisma.$transaction(run)
+}
+
+/** Share-lock the batch that holds the user's row `rowId`; locks nothing if the row is not theirs. */
+const shareLockBatchOfRow = (userId: string, rowId: string) => (db: Db) =>
+  db.$queryRaw`
+    SELECT b."id" FROM "ImportBatch" b JOIN "ImportRow" r ON r."batchId" = b."id"
+     WHERE r."id" = ${rowId} AND r."userId" = ${userId} AND b."userId" = ${userId}
+       FOR SHARE OF b`
+
+/** Share-lock the user's batch `batchId`; locks nothing if it is not theirs. */
+const shareLockBatch = (userId: string, batchId: string) => (db: Db) =>
+  db.$queryRaw`SELECT "id" FROM "ImportBatch" WHERE "id" = ${batchId} AND "userId" = ${userId} FOR SHARE`
+
 /**
  * Change one row's decision: its status, counterpart or linked occurrence (`null` clears the last two, `undefined`
  * leaves a column alone). One UPDATE that applies only while the row is the user's, is not ERRORED or COMMITTED, and its
  * batch is STAGED; returns the row as it is now, or null if it matched nothing. A counterpart that is not the user's
- * ledger throws NotFoundError("node").
+ * ledger throws NotFoundError("node"). The write is made under a share lock on the row's batch (`underBatchShareLock`),
+ * so it can never interleave with a commit of the same batch.
  */
 export async function updateRow(
   userId: string,
@@ -276,24 +311,26 @@ export async function updateRow(
   changes: Partial<{ status: ImportRowStatus; counterpartNodeId: string | null; occurrenceId: string | null }>,
   uow?: UnitOfWork,
 ): Promise<ImportRow | null> {
-  const db = dbOf(uow)
-  if (changes.counterpartNodeId) await assertNodesOwned(userId, [changes.counterpartNodeId], db)
-  const where: Prisma.ImportRowWhereInput = {
-    id,
-    userId,
-    status: { notIn: FINAL_ROW_STATUSES },
-    batch: { is: { userId, status: "STAGED" } },
-  }
-  const data = { status: changes.status, counterpartNodeId: changes.counterpartNodeId, occurrenceId: changes.occurrenceId }
-  // An UPDATE with nothing to set reports nothing matched, which would read as a refusal: it is the plain lookup instead.
-  if (Object.values(data).every((value) => value === undefined)) return db.importRow.findFirst({ where })
-  const { count } = await db.importRow.updateMany({ where, data })
-  return count === 0 ? null : db.importRow.findFirst({ where: { id, userId } })
+  return underBatchShareLock(uow, shareLockBatchOfRow(userId, id), async (db) => {
+    if (changes.counterpartNodeId) await assertNodesOwned(userId, [changes.counterpartNodeId], db)
+    const where: Prisma.ImportRowWhereInput = {
+      id,
+      userId,
+      status: { notIn: FINAL_ROW_STATUSES },
+      batch: { is: { userId, status: "STAGED" } },
+    }
+    const data = { status: changes.status, counterpartNodeId: changes.counterpartNodeId, occurrenceId: changes.occurrenceId }
+    // An UPDATE with nothing to set reports nothing matched, which would read as a refusal: it is the plain lookup instead.
+    if (Object.values(data).every((value) => value === undefined)) return db.importRow.findFirst({ where })
+    const { count } = await db.importRow.updateMany({ where, data })
+    return count === 0 ? null : db.importRow.findFirst({ where: { id, userId } })
+  })
 }
 
 /**
  * Apply one choice to every row of the batch that reads the same: same direction and description key, and currently in
  * `match.status`. Only a STAGED batch's rows that are not ERRORED or COMMITTED are touched. Returns how many changed.
+ * Written under a share lock on the batch, for the same reason as `updateRow`.
  */
 export async function updateRowsWhereSame(
   userId: string,
@@ -302,27 +339,37 @@ export async function updateRowsWhereSame(
   changes: { status?: ImportRowStatus; counterpartNodeId?: string },
   uow?: UnitOfWork,
 ): Promise<number> {
-  const db = dbOf(uow)
-  if (changes.counterpartNodeId) await assertNodesOwned(userId, [changes.counterpartNodeId], db)
-  if (FINAL_ROW_STATUSES.includes(match.status)) return 0
-  const { count } = await db.importRow.updateMany({
-    where: {
-      userId,
-      batchId,
-      direction: match.direction,
-      descriptionKey: match.descriptionKey,
-      status: match.status,
-      batch: { is: { userId, status: "STAGED" } },
-    },
-    data: { status: changes.status, counterpartNodeId: changes.counterpartNodeId },
+  return underBatchShareLock(uow, shareLockBatch(userId, batchId), async (db) => {
+    if (changes.counterpartNodeId) await assertNodesOwned(userId, [changes.counterpartNodeId], db)
+    if (FINAL_ROW_STATUSES.includes(match.status)) return 0
+    const { count } = await db.importRow.updateMany({
+      where: {
+        userId,
+        batchId,
+        direction: match.direction,
+        descriptionKey: match.descriptionKey,
+        status: match.status,
+        batch: { is: { userId, status: "STAGED" } },
+      },
+      data: { status: changes.status, counterpartNodeId: changes.counterpartNodeId },
+    })
+    return count
   })
-  return count
+}
+
+/** Throws NotFoundError("transaction") unless every one of `transactionIds` is this user's. */
+async function assertTransactionsOwned(userId: string, transactionIds: string[], db: Db): Promise<void> {
+  const distinct = [...new Set(transactionIds)]
+  if ((await db.transaction.count({ where: { userId, id: { in: distinct } } })) !== distinct.length) {
+    throw new NotFoundError("transaction")
+  }
 }
 
 /**
  * Record what each READY row became: its status to COMMITTED and its `transactionId`. Throws NotFoundError("transaction")
- * if a transaction is not this user's and NotFoundError("import") if a row is not theirs or not READY, so the caller's
- * transaction rolls back rather than a commit being half recorded.
+ * if a transaction is not this user's and NotFoundError("import") if a row is not theirs or not READY (or is named
+ * twice), so the caller's transaction rolls back rather than a commit being half recorded. One set-based UPDATE over
+ * every pair, not one per row: a commit of `IMPORT_MAX_ROWS` rows is one statement here, not twenty thousand.
  */
 export async function markRowsCommitted(
   userId: string,
@@ -331,17 +378,39 @@ export async function markRowsCommitted(
 ): Promise<void> {
   if (pairs.length === 0) return
   const db = clientOf(uow)
-  const transactionIds = [...new Set(pairs.map((pair) => pair.transactionId))]
-  if ((await db.transaction.count({ where: { userId, id: { in: transactionIds } } })) !== transactionIds.length) {
-    throw new NotFoundError("transaction")
-  }
-  for (const pair of pairs) {
-    const { count } = await db.importRow.updateMany({
-      where: { id: pair.rowId, userId, status: "READY" },
-      data: { status: "COMMITTED", transactionId: pair.transactionId },
-    })
-    if (count === 0) throw new NotFoundError("import")
-  }
+  await assertTransactionsOwned(userId, pairs.map((pair) => pair.transactionId), db)
+  const rowIds = pairs.map((pair) => pair.rowId)
+  const transactionIds = pairs.map((pair) => pair.transactionId)
+  const updated = await db.$executeRaw`
+    UPDATE "ImportRow" AS r SET "status" = 'COMMITTED', "transactionId" = v."transactionId"
+      FROM unnest(${rowIds}::text[], ${transactionIds}::text[]) AS v("rowId", "transactionId")
+     WHERE r."id" = v."rowId" AND r."userId" = ${userId} AND r."status" = 'READY'`
+  if (updated !== pairs.length) throw new NotFoundError("import")
+}
+
+/**
+ * Send READY rows of the user's batch back to PENDING, each flagged as a probable duplicate of the transaction paired
+ * with it: what a commit does when it finds, at the last moment, a matching transaction recorded since staging. One
+ * set-based UPDATE. Throws NotFoundError("transaction") if a transaction is not this user's and NotFoundError("import")
+ * if a row is not theirs, not in this batch, or not READY, so the caller's transaction rolls back rather than flagging
+ * only some of them.
+ */
+export async function flagRowsAsDuplicates(
+  userId: string,
+  batchId: string,
+  pairs: { rowId: string; transactionId: string }[],
+  uow: UnitOfWork,
+): Promise<void> {
+  if (pairs.length === 0) return
+  const db = clientOf(uow)
+  await assertTransactionsOwned(userId, pairs.map((pair) => pair.transactionId), db)
+  const rowIds = pairs.map((pair) => pair.rowId)
+  const transactionIds = pairs.map((pair) => pair.transactionId)
+  const updated = await db.$executeRaw`
+    UPDATE "ImportRow" AS r SET "status" = 'PENDING', "duplicateOfTransactionId" = v."transactionId"
+      FROM unnest(${rowIds}::text[], ${transactionIds}::text[]) AS v("rowId", "transactionId")
+     WHERE r."id" = v."rowId" AND r."userId" = ${userId} AND r."batchId" = ${batchId} AND r."status" = 'READY'`
+  if (updated !== pairs.length) throw new NotFoundError("import")
 }
 
 /** Save a mapping under `name`, or replace the one the user already has under it. `nodeId`, if given, must be their ledger. */
@@ -376,43 +445,51 @@ export function findCounterpartRules(userId: string, uow?: UnitOfWork): Promise<
 }
 
 /**
- * Learn that a row of this direction and description key went to `nodeId`: a new rule starts at one hit, an existing one
- * moves to the new ledger (the latest choice wins) and counts the hit. Throws NotFoundError("node") if the ledger is not
- * the user's.
+ * Learn that `hits` rows (one, unless given) of this direction and description key went to `nodeId`: a new rule starts
+ * at that many hits, an existing one moves to the new ledger (the latest choice wins) and counts them. A commit calls
+ * this once per distinct key with the count of its rows, rather than once per row. Throws NotFoundError("node") if the
+ * ledger is not the user's.
  */
 export async function upsertRule(
   userId: string,
-  data: { direction: ImportDirection; descriptionKey: string; nodeId: string },
+  data: { direction: ImportDirection; descriptionKey: string; nodeId: string; hits?: number },
   uow: UnitOfWork,
 ): Promise<void> {
   const db = clientOf(uow)
   await assertNodesOwned(userId, [data.nodeId], db)
+  const hits = data.hits ?? 1
   await db.counterpartRule.upsert({
     where: { userId_direction_descriptionKey: { userId, direction: data.direction, descriptionKey: data.descriptionKey } },
-    create: { userId, direction: data.direction, descriptionKey: data.descriptionKey, nodeId: data.nodeId },
-    update: { nodeId: data.nodeId, hits: { increment: 1 } },
+    create: { userId, direction: data.direction, descriptionKey: data.descriptionKey, nodeId: data.nodeId, hits },
+    update: { nodeId: data.nodeId, hits: { increment: hits } },
   })
 }
 
 /**
- * How many things of the user's import history name the ledger: batches for it as the account, in any status, and rows
- * that chose it as the counterpart. Both foreign keys are RESTRICT, so this is what a delete must be refused over.
+ * How many things of the user's import history name the ledger: batches for it as the account, in any status but
+ * DISCARDED, and rows that chose it as the counterpart. Both foreign keys are RESTRICT, so this is what a delete must be
+ * refused over. A DISCARDED batch is left out: it holds no rows and no file, there is nothing left of it for the user to
+ * act on, and `deleteImportConfigFor` removes it along with the ledger rather than letting it block the delete forever.
  */
 export async function countImportsNaming(userId: string, nodeId: string, uow?: UnitOfWork): Promise<number> {
   const db = dbOf(uow)
   const [batches, rows] = await Promise.all([
-    db.importBatch.count({ where: { userId, nodeId } }),
+    db.importBatch.count({ where: { userId, nodeId, status: { not: "DISCARDED" } } }),
     db.importRow.count({ where: { userId, counterpartNodeId: nodeId } }),
   ])
   return batches + rows
 }
 
 /**
- * Delete the user's saved mappings and learned suggestions that name the ledger, which go with it: they hold nothing the
- * user made by hand beyond a suggestion.
+ * Delete what of the user's import configuration and history goes with the ledger: the saved mappings and learned
+ * suggestions that name it (they hold nothing the user made by hand beyond a suggestion), and the DISCARDED batches for
+ * it as the account (already emptied of rows and file by the discard; any stray row is removed first all the same, so
+ * the batch's RESTRICT foreign key can never stop it).
  */
 export async function deleteImportConfigFor(userId: string, nodeId: string, uow: UnitOfWork): Promise<void> {
   const db = clientOf(uow)
   await db.importProfile.deleteMany({ where: { userId, nodeId } })
   await db.counterpartRule.deleteMany({ where: { userId, nodeId } })
+  await db.importRow.deleteMany({ where: { userId, batch: { is: { userId, nodeId, status: "DISCARDED" } } } })
+  await db.importBatch.deleteMany({ where: { userId, nodeId, status: "DISCARDED" } })
 }

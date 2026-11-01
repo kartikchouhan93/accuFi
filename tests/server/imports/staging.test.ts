@@ -7,6 +7,7 @@ import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { upsertRule } from "@/server/repositories/import-repository"
 import { updateNode } from "@/server/repositories/node-repository"
+import * as unitOfWork from "@/server/repositories/unit-of-work"
 import { inTransaction } from "@/server/repositories/unit-of-work"
 import {
   backToMapping,
@@ -287,6 +288,59 @@ describe("stageBatch", () => {
     })
   })
 
+  it("final review I10: an amount too large for the database is that row's own parse error; every other row still stages", async () => {
+    const w = await setup()
+    const rows = [
+      "01/04/2026,Coffee,120.00",
+      "02/04/2026,Garbage,99999999999999999999999999999999999999.00",
+      "03/04/2026,Rent,2000.00",
+    ]
+    const batch = await uploadedBatch(w, rows)
+    const result = await stageBatch(w.user.id, batch.id, BASE_MAPPING, { confirmedRepeat: false })
+    expect(result).toMatchObject({ rows: 3, errored: 1 })
+    const stored = await storedRows(batch.id)
+    expect(stored.map((r) => r.status)).toEqual(["PENDING", "ERRORED", "PENDING"])
+    expect(stored[1].errorReason).toBe("The amount column is too large")
+    expect(stored[1].amountPaise).toBeNull()
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
+  })
+
+  it("final review I11: staging runs in a transaction with an explicit timeout sized for the row cap, not Prisma's 5s default", async () => {
+    const w = await setup()
+    const batch = await uploadedBatch(w, ["01/04/2026,Coffee,100.00"])
+    const spy = vi.spyOn(unitOfWork, "inTransaction")
+    await stageBatch(w.user.id, batch.id, BASE_MAPPING, { confirmedRepeat: false })
+    const options = spy.mock.calls[0]?.[1]
+    spy.mockRestore()
+    expect(options?.timeout).toBeGreaterThanOrEqual(IMPORT_MAX_ROWS * 2)
+  })
+
+  it("final review I11: a dense re-import with many same-day transactions still flags each row against its own amount, closest first", async () => {
+    const w = await setup()
+    // 300 existing transactions across 30 amounts in the file's range: the per-amount index must give the same answer
+    // the full scan did.
+    const existing: { id: string; amount: number; day: string }[] = []
+    for (let i = 0; i < 300; i++) {
+      const amount = 100 + (i % 30)
+      const day = `2026-04-${String(1 + (i % 9)).padStart(2, "0")}`
+      const txn = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id, { amountPaise: BigInt(amount * 100), occurredAt: day })
+      existing.push({ id: txn.id, amount, day })
+    }
+    const rows = ["05/04/2026,Hit,105.00", "05/04/2026,Miss,999.00", "20/04/2026,Out of range,105.00"]
+    const batch = await uploadedBatch(w, rows)
+    const result = await stageBatch(w.user.id, batch.id, BASE_MAPPING, { confirmedRepeat: false })
+    expect(result.duplicates).toBe(1)
+    const stored = await storedRows(batch.id)
+    const hit = existing.find((t) => t.id === stored[0].duplicateOfTransactionId)
+    // The 105.00 transactions fall on the 3rd, 6th and 9th: the nearest (one day off, the 6th) wins, and among several
+    // on that day the lowest id, exactly as a full scan would choose.
+    const tied = existing.filter((t) => t.amount === 105 && t.day === "2026-04-06").map((t) => t.id).sort()
+    expect(hit).toMatchObject({ amount: 105, day: "2026-04-06" })
+    expect(stored[0].duplicateOfTransactionId).toBe(tied[0])
+    expect(stored[1].duplicateOfTransactionId).toBeNull()
+    expect(stored[2].duplicateOfTransactionId).toBeNull()
+  }, 60_000)
+
   it("refuses to stage an already-staged batch", async () => {
     const w = await setup()
     const batch = await uploadedBatch(w, ["01/04/2026,Coffee,100.00"])
@@ -418,6 +472,28 @@ describe("discardBatch and backToMapping", () => {
     expect(stored.status).toBe("UPLOADED")
     expect(stored.mapping).toMatchObject({ dateFormat: "DD/MM/YYYY" })
     expect(await prisma.importRow.count({ where: { batchId: batch.id } })).toBe(0)
+  })
+
+  it("final review I8: after Back to mapping the map screen opens on the mapping the batch was staged with, not the plain default", async () => {
+    const w = await setup()
+    const batch = await uploadedBatch(w, ["03/04/2026,Coffee,100.00"])
+    const staged: ImportMapping = { ...BASE_MAPPING, dateFormat: "MM/DD/YYYY", signConvention: "POSITIVE_IN" }
+    await stageBatch(w.user.id, batch.id, staged, { confirmedRepeat: false })
+    await backToMapping(w.user.id, batch.id)
+
+    const screen = await loadMapScreen(w.user.id, batch.id)
+    expect(screen.mapping).toEqual(staged)
+    expect(screen.previewRows[0].parsed?.occurredOn).toBe("2026-03-04") // read as MM/DD, exactly as it was staged
+    // An explicit mapping (the GET form's parameters) still wins over the stored one.
+    expect((await loadMapScreen(w.user.id, batch.id, BASE_MAPPING)).mapping).toEqual(BASE_MAPPING)
+  })
+
+  it("final review I8: a stored mapping that no longer parses falls back to the default rather than reaching the preview", async () => {
+    const w = await setup()
+    const batch = await uploadedBatch(w, ["03/04/2026,Coffee,100.00"])
+    await prisma.importBatch.update({ where: { id: batch.id }, data: { mapping: { not: "a mapping" } } })
+    const screen = await loadMapScreen(w.user.id, batch.id)
+    expect(screen.mapping.columns).toEqual({ date: -1, description: -1 })
   })
 
   it("refuses backToMapping on a batch that is not STAGED", async () => {

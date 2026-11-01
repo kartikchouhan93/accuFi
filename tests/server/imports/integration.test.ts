@@ -55,12 +55,12 @@ const readyRow = (
     ...over,
   })
 
-const MESSAGE = "An import uses this ledger. Delete the import, or archive the ledger instead."
+const MESSAGE = "An import uses this ledger. Discard the import, or archive the ledger instead."
 
 describe("removeLedgerNode and imports", () => {
-  it("refuses to delete the account an import batch names, in any status including DISCARDED, and leaves it in place", async () => {
+  it("refuses to delete the account an import batch names, in any status but DISCARDED, and leaves it in place", async () => {
     const w = await setup()
-    for (const status of ["UPLOADED", "STAGED", "COMMITTED", "REVERSED", "DISCARDED"] as const) {
+    for (const status of ["UPLOADED", "STAGED", "COMMITTED", "REVERSED"] as const) {
       const account = await registry.makeNode(w.user.id, "ASSET", `Account ${status}`)
       await registry.makeBatch(w.user.id, account.id, { status, fileBytes: status === "UPLOADED" ? undefined : null })
       const error = await removeLedgerNode(w.user.id, account.id).catch((e: unknown) => e)
@@ -68,6 +68,24 @@ describe("removeLedgerNode and imports", () => {
       expect((error as Error).message).toBe(MESSAGE)
       expect(await prisma.ledgerNode.count({ where: { id: account.id } })).toBe(1)
     }
+  })
+
+  it("final review I9: a DISCARDED upload no longer blocks deleting its account forever: the ledger is deleted and the discarded batch goes with it", async () => {
+    const w = await setup()
+    const account = await registry.makeNode(w.user.id, "ASSET", "Closed account")
+    const discarded = await registry.makeBatch(w.user.id, account.id, { status: "DISCARDED", fileBytes: null })
+    await removeLedgerNode(w.user.id, account.id)
+    expect(await prisma.ledgerNode.count({ where: { id: account.id } })).toBe(0)
+    expect(await prisma.importBatch.count({ where: { id: discarded.id } })).toBe(0)
+  })
+
+  it("a ledger with both a discarded and a live batch is still refused, and the discarded one is kept with it", async () => {
+    const w = await setup()
+    const account = await registry.makeNode(w.user.id, "ASSET", "Busy account")
+    const discarded = await registry.makeBatch(w.user.id, account.id, { status: "DISCARDED", fileBytes: null })
+    await registry.makeBatch(w.user.id, account.id, { status: "STAGED" })
+    await expect(removeLedgerNode(w.user.id, account.id)).rejects.toBeInstanceOf(NodeInImportError)
+    expect(await prisma.importBatch.count({ where: { id: discarded.id } })).toBe(1)
   })
 
   it("refuses to delete a ledger a staged row chose as its counterpart", async () => {

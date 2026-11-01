@@ -5,6 +5,7 @@ import { NotFoundError } from "@/server/repositories/errors"
 import { updateNode } from "@/server/repositories/node-repository"
 import {
   applyCounterpartToSimilar,
+  commitBatch,
   confirmSuggestions,
   InvalidImportError,
   loadReview,
@@ -277,16 +278,100 @@ describe("updateRow", () => {
     expect(unlinked.counterpartNodeId).toBe(w.food.id) // UNLINK only clears the occurrence link
   })
 
-  it("IMPORT alone derives the counterpart from a linked occurrence when the row has none stored yet", async () => {
+  it("final review C1: IMPORT alone never derives a counterpart from a matched occurrence: with none stored it is refused, and the row stays as it was", async () => {
     const w = await setup()
     const rule = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { amountPaise: 1_000n, name: "Rent" })
     const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-10")
     const batch = await registry.makeBatch(w.user.id, w.bank.id)
     const created = await row(w.user.id, batch.id, 1, { occurrenceId: occurrence.id })
 
-    const imported = await updateRow(w.user.id, created.id, { decision: "IMPORT" })
-    expect(imported.status).toBe("READY")
-    expect(imported.counterpartNodeId).toBe(w.food.id)
+    await expect(updateRow(w.user.id, created.id, { decision: "IMPORT" })).rejects.toMatchObject({
+      name: "InvalidImportError",
+      violations: [{ field: "counterpartNodeId" }],
+    })
+    const unchanged = await prisma.importRow.findUniqueOrThrow({ where: { id: created.id } })
+    expect(unchanged.status).toBe("PENDING")
+    expect(unchanged.occurrenceId).toBe(occurrence.id)
+
+    // LINK is the one way to take the rule's ledger, and it keeps the link.
+    const linked = await updateRow(w.user.id, created.id, { occurrence: "LINK", decision: "IMPORT" })
+    expect(linked.status).toBe("READY")
+    expect(linked.counterpartNodeId).toBe(w.food.id)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: created.id } })).occurrenceId).toBe(occurrence.id)
+  })
+
+  it("final review C1: IMPORT with a counterpart on an occurrence-matched row clears the match server-side, without the caller sending UNLINK", async () => {
+    const w = await setup()
+    const subscriptions = await registry.makeNode(w.user.id, "EXPENSE", "Subscriptions")
+    const shopping = await registry.makeNode(w.user.id, "EXPENSE", "Shopping")
+    const rule = await registry.makeRule(w.user.id, w.bank.id, subscriptions.id, { amountPaise: 10_000n, name: "Streaming" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-10")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    // A learned-rule prefill (Shopping) and a coincidental occurrence match (Subscriptions), computed independently.
+    const created = await row(w.user.id, batch.id, 1, { counterpartNodeId: shopping.id, occurrenceId: occurrence.id })
+
+    const explicit = await updateRow(w.user.id, created.id, { decision: "IMPORT", counterpartNodeId: shopping.id })
+    expect(explicit.status).toBe("READY")
+    expect(explicit.counterpartNodeId).toBe(shopping.id)
+    expect(explicit.occurrence).toBeNull()
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: created.id } })).occurrenceId).toBeNull()
+
+    // The stored counterpart carried over (no counterpart in the call) clears it the same way.
+    const second = await row(w.user.id, batch.id, 2, { counterpartNodeId: shopping.id, occurrenceId: occurrence.id })
+    const carried = await updateRow(w.user.id, second.id, { decision: "IMPORT" })
+    expect(carried.counterpartNodeId).toBe(shopping.id)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: second.id } })).occurrenceId).toBeNull()
+    // The occurrence itself is untouched: still waiting in the inbox for its real payment.
+    expect((await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).status).toBe("PENDING")
+  })
+
+  it("final review C1: LINK refuses a different explicit counterpart in the same call, and re-pointing a READY linked row's ledger drops the link", async () => {
+    const w = await setup()
+    const shop = await registry.makeNode(w.user.id, "EXPENSE", "Shop")
+    const rule = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { amountPaise: 1_000n, name: "Rent" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-10")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const created = await row(w.user.id, batch.id, 1, { occurrenceId: occurrence.id })
+
+    await expect(
+      updateRow(w.user.id, created.id, { occurrence: "LINK", decision: "IMPORT", counterpartNodeId: shop.id }),
+    ).rejects.toMatchObject({ name: "InvalidImportError", violations: [{ field: "counterpartNodeId" }] })
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: created.id } })).status).toBe("PENDING")
+
+    await updateRow(w.user.id, created.id, { occurrence: "LINK", decision: "IMPORT", counterpartNodeId: w.food.id })
+    const repointed = await updateRow(w.user.id, created.id, { counterpartNodeId: shop.id })
+    expect(repointed.status).toBe("READY")
+    expect(repointed.counterpartNodeId).toBe(shop.id)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: created.id } })).occurrenceId).toBeNull()
+  })
+
+  it("final review I5: an occurrence no longer PENDING (posted, dismissed) or deleted is not shown as a match and cannot be linked; a plain Import still readies the row and drops the stale id", async () => {
+    const w = await setup()
+    const rule = await registry.makeRule(w.user.id, w.bank.id, w.food.id, { amountPaise: 1_000n, name: "Rent" })
+    const dismissed = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-10", { status: "DISMISSED", resolvedAt: new Date() })
+    const vanished = await registry.makeOccurrence(w.user.id, rule.id, "2026-05-10")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const onDismissed = await row(w.user.id, batch.id, 1, { counterpartNodeId: w.food.id, occurrenceId: dismissed.id })
+    const onVanished = await row(w.user.id, batch.id, 2, { counterpartNodeId: w.food.id, occurrenceId: vanished.id })
+    await prisma.recurringOccurrence.delete({ where: { id: vanished.id } })
+
+    const review = await loadReview(w.user.id, batch.id, { filter: "all", page: 1 })
+    expect(review.rows.map((r) => r.occurrence)).toEqual([null, null])
+
+    await expect(updateRow(w.user.id, onDismissed.id, { occurrence: "LINK" })).rejects.toMatchObject({
+      name: "InvalidImportError",
+      violations: [{ field: "occurrence" }],
+    })
+
+    for (const created of [onDismissed, onVanished]) {
+      const imported = await updateRow(w.user.id, created.id, { decision: "IMPORT" })
+      expect(imported.status).toBe("READY")
+      expect((await prisma.importRow.findUniqueOrThrow({ where: { id: created.id } })).occurrenceId).toBeNull()
+    }
+    // And with the stale ids gone the batch commits, where before it was refused on every attempt.
+    const summary = await commitBatch(w.user.id, batch.id)
+    expect(summary.imported).toBe(2)
+    expect(summary.linked).toBe(0)
   })
 
   it("UNLINK combined with IMPORT in the same call does not derive a counterpart from the occurrence being removed", async () => {
@@ -424,6 +509,23 @@ describe("confirmSuggestions", () => {
     expect((await prisma.importRow.findUniqueOrThrow({ where: { id: duplicateFlagged.id } })).status).toBe("PENDING")
     expect((await prisma.importRow.findUniqueOrThrow({ where: { id: noCounterpart.id } })).status).toBe("PENDING")
     expect((await prisma.importRow.findUniqueOrThrow({ where: { id: alreadyReady.id } })).status).toBe("READY")
+  })
+
+  it("final review C1: leaves PENDING a row that has both a prefilled counterpart and a matched recurring occurrence", async () => {
+    const w = await setup()
+    const subscriptions = await registry.makeNode(w.user.id, "EXPENSE", "Subscriptions")
+    const shopping = await registry.makeNode(w.user.id, "EXPENSE", "Shopping")
+    const rule = await registry.makeRule(w.user.id, w.bank.id, subscriptions.id, { amountPaise: 10_000n, name: "Streaming" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-10")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const plain = await row(w.user.id, batch.id, 1, { counterpartNodeId: shopping.id })
+    const matched = await row(w.user.id, batch.id, 2, { counterpartNodeId: shopping.id, occurrenceId: occurrence.id })
+
+    expect(await confirmSuggestions(w.user.id, batch.id)).toBe(1)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: plain.id } })).status).toBe("READY")
+    const stored = await prisma.importRow.findUniqueOrThrow({ where: { id: matched.id } })
+    expect(stored.status).toBe("PENDING")
+    expect(stored.occurrenceId).toBe(occurrence.id)
   })
 
   it("a foreign batch id is NotFoundError", async () => {

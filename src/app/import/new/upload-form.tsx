@@ -7,12 +7,14 @@ import { useRef, useState } from "react"
 import { Field } from "@/app/transactions/transaction-form"
 import { SpotlightCard } from "@/components/ui/spotlight-card"
 import { buttonClass, inputClass } from "@/components/ui/styles"
+import { readUploadResponse, SESSION_EXPIRED_MESSAGE } from "./upload-response"
 
 // The first screen of an import: the browser's own `fetch`/`FormData`, straight to the upload route
 // (src/app/api/import/upload/route.ts) — a multipart file cannot travel through a Server Action in this app's
 // pattern. Field errors from the route (account, file) are shown beside their own field; anything else is one
-// message above the buttons. A successful upload navigates straight to the new batch's map screen; nothing here
-// shows the file's own content, only its name.
+// message above the buttons; an answer that is not the route's JSON at all is a lapsed session (ruling R2,
+// upload-response.ts). A successful upload navigates straight to the new batch's map screen; nothing here shows the
+// file's own content, only its name.
 
 interface Account {
   id: string
@@ -26,27 +28,12 @@ interface Profile {
   nodeId: string | null
 }
 
-interface UploadFailure {
-  code: string
-  message: string
-  fieldErrors?: Record<string, string[]>
-}
-
 const KIND_LABEL: Record<Account["kind"], string> = { ASSET: "Asset accounts", LIABILITY: "Liability accounts" }
 
 function groupAccounts(accounts: Account[]): { kind: Account["kind"]; accounts: Account[] }[] {
   return (["ASSET", "LIABILITY"] as const)
     .map((kind) => ({ kind, accounts: accounts.filter((a) => a.kind === kind) }))
     .filter((group) => group.accounts.length > 0)
-}
-
-async function parseFailure(response: Response): Promise<UploadFailure> {
-  try {
-    const body = (await response.json()) as { ok: false; error: UploadFailure }
-    return body.error
-  } catch {
-    return { code: "invalid", message: "Something went wrong. Check your connection and try again." }
-  }
 }
 
 export function UploadForm({ accounts, profiles }: { accounts: Account[]; profiles: Profile[] }) {
@@ -91,15 +78,19 @@ export function UploadForm({ accounts, profiles }: { accounts: Account[]; profil
         return
       }
 
-      if (!response.ok) {
-        const failure = await parseFailure(response)
-        setFieldErrors(failure.fieldErrors ?? {})
-        setMessage(failure.fieldErrors ? null : failure.message)
+      // Ruling R2: anything that is not the route's own JSON (the login page after a lapsed session, an HTML error
+      // page) is an expired session, never a success and never an uncaught parse error.
+      const outcome = await readUploadResponse(response)
+      if (outcome.kind === "expired") {
+        setMessage(SESSION_EXPIRED_MESSAGE)
         return
       }
-
-      const body = (await response.json()) as { ok: true; data: { batchId: string } }
-      router.push(`/import/${body.data.batchId}/map`)
+      if (outcome.kind === "failed") {
+        setFieldErrors(outcome.failure.fieldErrors ?? {})
+        setMessage(outcome.failure.fieldErrors ? null : outcome.failure.message)
+        return
+      }
+      router.push(`/import/${outcome.batchId}/map`)
     } finally {
       inFlight.current = false
       setPending(false)

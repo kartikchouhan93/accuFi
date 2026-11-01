@@ -55,6 +55,22 @@ export function findDuplicate(
   return best
 }
 
+/**
+ * The existing transactions grouped by amount, so a duplicate lookup only walks the ones that could possibly match
+ * (`findDuplicate` requires the exact same amount): pass `index.get(row.amountPaise) ?? []` as its `existing`. The
+ * answer is identical to passing the whole list, since every transaction it leaves out has a different amount and
+ * would have been skipped anyway; it only stops a dense statement from comparing every row against every transaction.
+ */
+export function indexByAmount(existing: readonly ExistingTxn[]): Map<Paise, ExistingTxn[]> {
+  const index = new Map<Paise, ExistingTxn[]>()
+  for (const txn of existing) {
+    const bucket = index.get(txn.amountPaise)
+    if (bucket) bucket.push(txn)
+    else index.set(txn.amountPaise, [txn])
+  }
+  return index
+}
+
 export interface OccurrenceCandidate {
   occurrenceId: string
   ruleName: string

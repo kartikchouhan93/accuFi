@@ -62,7 +62,7 @@ export class NodeInBudgetError extends Error {
 /** An import batch (any status) names the ledger as its account, or a row chose it as a counterpart: both are RESTRICT. */
 export class NodeInImportError extends Error {
   constructor() {
-    super("An import uses this ledger. Delete the import, or archive the ledger instead.")
+    super("An import uses this ledger. Discard the import, or archive the ledger instead.")
     this.name = "NodeInImportError"
   }
 }

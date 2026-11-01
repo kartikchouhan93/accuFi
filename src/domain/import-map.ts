@@ -112,14 +112,23 @@ export interface ParsedAmount {
   suffix: AmountSuffix
 }
 
-type AmountFailure = "empty" | "invalid" | "decimals" | "zero"
+type AmountFailure = "empty" | "invalid" | "decimals" | "zero" | "tooLarge"
 type AmountRead = { ok: true; value: ParsedAmount } | { ok: false; reason: AmountFailure }
+
+/**
+ * The largest amount one statement row may carry: ₹10,00,00,00,00,000.00 (one lakh crore rupees), in paise. Far beyond
+ * any real statement line, and small enough that even `IMPORT_MAX_ROWS` rows of it stay well inside the database's
+ * BIGINT column (about 9.22e18): a garbage or hostile cell of forty digits must be one row's parse error, never a raw
+ * database overflow that fails every other row of the file with it.
+ */
+export const IMPORT_AMOUNT_MAX_PAISE: Paise = 10n ** 14n
 
 const FAILURE_TEXT: Record<AmountFailure, string> = {
   empty: "is empty",
   invalid: "is not a valid amount",
   decimals: "has more than two decimal places",
   zero: "is zero",
+  tooLarge: "is too large",
 }
 
 // Grouping is validated, not just stripped: under "." as the decimal mark, "1,5" is almost certainly a
@@ -179,6 +188,7 @@ function readAmount(text: string, decimalSeparator: "." | ","): AmountRead {
   const whole = (body[1] ?? "0").replaceAll(groupMark, "")
   const paise = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"))
   if (paise === 0n) return { ok: false, reason: "zero" }
+  if (paise > IMPORT_AMOUNT_MAX_PAISE) return { ok: false, reason: "tooLarge" }
 
   const sign: AmountSign = negative ? "NEGATIVE" : positive ? "POSITIVE" : "NONE"
   return { ok: true, value: { paise, sign, suffix } }

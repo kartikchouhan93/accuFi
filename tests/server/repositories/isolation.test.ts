@@ -1274,6 +1274,22 @@ describe("import repository", () => {
     await prisma.importRow.delete({ where: { id: ownReady.id } })
   })
 
+  isolation("flagRowsAsDuplicates", "refuses another user's rows, another user's transactions and another batch's rows, changing nothing", async () => {
+    const bBefore = await snapshotRows(b.user.id)
+    const aBefore = await snapshotRows(a.user.id)
+    const ownTx = await registry.makeTransaction(a.user.id, a.bank.id, a.food.id)
+    const ownReady = await registry.makeImportRow(a.user.id, aBatch.id, 51, { status: "READY", counterpartNodeId: a.food.id })
+    const flag = (batchId: string, rowId: string, transactionId: string) =>
+      inTransaction((uow) => importRepo.flagRowsAsDuplicates(a.user.id, batchId, [{ rowId, transactionId }], uow))
+    await expectNotFound(flag(bBatch.id, bReadyRow.id, ownTx.id)) // B's row, named with B's own batch
+    await expectNotFound(flag(aBatch.id, bReadyRow.id, ownTx.id)) // B's row, named under A's batch
+    await expectNotFound(flag(aBatch.id, ownReady.id, b.tx.id)) // A's row, flagged against B's transaction
+    expect(await snapshotRows(b.user.id)).toEqual(bBefore)
+    expect((await snapshotRows(a.user.id)).filter((r) => r.id !== ownReady.id)).toEqual(aBefore)
+    expect(await prisma.importRow.findUniqueOrThrow({ where: { id: ownReady.id } })).toMatchObject({ status: "READY", duplicateOfTransactionId: null })
+    await prisma.importRow.delete({ where: { id: ownReady.id } })
+  })
+
   isolation("upsertProfile", "refuses another user's ledger, and a name another user has is the caller's own profile", async () => {
     const bBefore = await snapshotProfiles(b.user.id)
     await expectNotFound(importRepo.upsertProfile(a.user.id, { name: "x", nodeId: b.bank.id, settings: {} }))
@@ -1316,13 +1332,16 @@ describe("import repository", () => {
     expect(await importRepo.countImportsNaming(b.user.id, b.food.id)).toBe(1)
   })
 
-  isolation("deleteImportConfigFor", "deletes nothing of another user's profiles and rules", async () => {
+  isolation("deleteImportConfigFor", "deletes nothing of another user's profiles, rules or discarded batches", async () => {
+    const bDiscarded = await registry.makeBatch(b.user.id, b.bank.id, { status: "DISCARDED", fileBytes: null })
     const profilesBefore = await snapshotProfiles(b.user.id)
     const rulesBefore = await snapshotRules(b.user.id)
     await inTransaction((uow) => importRepo.deleteImportConfigFor(a.user.id, b.bank.id, uow))
     await inTransaction((uow) => importRepo.deleteImportConfigFor(a.user.id, b.food.id, uow))
     expect(await snapshotProfiles(b.user.id)).toEqual(profilesBefore)
     expect(await snapshotRules(b.user.id)).toEqual(rulesBefore)
+    expect(await prisma.importBatch.count({ where: { id: bDiscarded.id } })).toBe(1)
+    await prisma.importBatch.delete({ where: { id: bDiscarded.id } })
   })
 
   isolation("insertTransactions", "refuses another user's import batch or row on a draft and writes nothing", async () => {

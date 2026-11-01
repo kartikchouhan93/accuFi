@@ -247,12 +247,29 @@ test("an ambiguous date previews differently under each date format, and switchi
   // Columns chosen, date format left at the map screen's own default (DD/MM/YYYY): 3 April.
   await setMapping(page, { dateCol: "Date", descCol: "Description", amountCol: "Amount" })
   const preview = page.getByRole("region", { name: "Preview of the first 20 rows, as they will be recorded" })
-  await expect(preview).toContainText(`03/04/${year}`)
+  // Written out in words (final review I7), so the day previewed can never itself be misread under either format.
+  await expect(preview).toContainText(`3 Apr ${year}`)
 
   // Switched to MM/DD/YYYY: the same text now reads as 4 March.
   await setMapping(page, { dateFormat: "MM/DD/YYYY" })
-  await expect(preview).toContainText(`04/03/${year}`)
-  await expect(preview).not.toContainText(`03/04/${year}`)
+  await expect(preview).toContainText(`4 Mar ${year}`)
+  await expect(preview).not.toContainText(`3 Apr ${year}`)
+
+  // Final review I6: changing a control without updating the preview holds "Stage rows" back, so the mapping staged is
+  // always the one previewed; updating the preview releases it.
+  const stage = page.getByRole("button", { name: "Stage rows" })
+  await expect(stage).toHaveAttribute("aria-disabled", "false")
+  await page.getByLabel("Date format").selectOption("DD/MM/YYYY")
+  await expect(stage).toHaveAttribute("aria-disabled", "true")
+  await expect(page.getByText("Update the preview first", { exact: false }).first()).toBeVisible()
+  await stage.click({ force: true })
+  await expect(page).toHaveURL(/\/map(\?|$)/) // not staged: still on the map screen
+  await page.getByLabel("Date format").selectOption("MM/DD/YYYY") // back to what the preview shows
+  await expect(stage).toHaveAttribute("aria-disabled", "false")
+  await page.getByLabel("Date format").selectOption("DD/MM/YYYY")
+  await page.getByRole("button", { name: "Update preview" }).click()
+  await expect(preview).toContainText(`3 Apr ${year}`)
+  await expect(stage).toHaveAttribute("aria-disabled", "false")
 })
 
 test("a card statement's positive charges spend and a negative payment is money in, under POSITIVE_OUT", async ({ session: { page, userId } }) => {
@@ -343,7 +360,7 @@ test("deleting the ledger an import names is refused with the exact message", as
   const checking = await openRow(page, "Checking")
   await checking.getByRole("button", { name: "Delete", exact: true }).click()
   await checking.getByRole("button", { name: "Confirm delete" }).click()
-  await expect(checking.getByRole("alert")).toContainText("An import uses this ledger. Delete the import, or archive the ledger instead.")
+  await expect(checking.getByRole("alert")).toContainText("An import uses this ledger. Discard the import, or archive the ledger instead.")
   await expect(checking).toBeVisible()
 })
 

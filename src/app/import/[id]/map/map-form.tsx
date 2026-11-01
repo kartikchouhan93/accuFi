@@ -12,14 +12,16 @@ import type { ActionFailure } from "@/server/action-support"
 import type { MapScreen } from "@/server/services/import-service"
 import { attempt, couldNot } from "@/app/feedback"
 import { saveProfileAction, stageBatchAction } from "../../actions"
-import { paramsFromMapping } from "../../mapping-params"
+import { mappingControlsDiffer, paramsFromMapping } from "../../mapping-params"
 import { PreviewTable } from "./preview-table"
 
-// The map-and-preview screen (design §6 stage 2). The mapping controls are a plain `method="get"` form: every change
-// is a full navigation back to this same page with new search parameters, which the server reads
-// (mapping-params.ts) and turns straight back into the preview below — no client state, no scripting, needed for
-// that part at all. Only the two writes (Save as profile, Stage rows) are client-driven, the same way every other
-// screen's actions are.
+// The map-and-preview screen (design §6 stage 2). The mapping controls are a plain `method="get"` form: "Update
+// preview" is a full navigation back to this same page with new search parameters, which the server reads
+// (mapping-params.ts) and turns straight back into the preview below. Only the two writes (Save as profile, Stage
+// rows) are client-driven, the same way every other screen's actions are, and both send the mapping the preview was
+// made with. So the one piece of client state here is whether the controls have been changed since that preview: while
+// they have, Stage rows and Save mapping are held back ("Update the preview first"), so neither can ever write a
+// mapping other than the one the person can see in the preview.
 
 const DELIMITER_LABEL: Record<ImportDelimiter, string> = { ",": "Comma ( , )", ";": "Semicolon ( ; )", "\t": "Tab", "|": "Pipe ( | )" }
 const ENCODING_LABEL: Record<ImportEncoding, string> = { "utf-8": "UTF-8", "windows-1252": "Windows-1252 (Latin-1)", "utf-16le": "UTF-16LE" }
@@ -73,6 +75,18 @@ export function MapForm({ batchId, basePath, screen }: Props) {
   const formId = useId()
   const { account, mapping, decodeError, sample, headerCells, previewRows, profiles, earlier, batch } = screen
   const currentParams = paramsFromMapping(mapping)
+  // Which preview the controls were last compared against: a new screen (a new mapping) resets the comparison, so a
+  // stale "changed" from the previous preview never carries over.
+  const previewKey = JSON.stringify(currentParams)
+  const [changedSince, setChangedSince] = useState<string | null>(null)
+  const controlsChanged = changedSince === previewKey
+  const staleId = `${formId}-stale`
+
+  function onControlsChange(event: React.FormEvent<HTMLFormElement>) {
+    const values: Record<string, string> = {}
+    for (const [name, value] of new FormData(event.currentTarget)) if (typeof value === "string") values[name] = value
+    setChangedSince(mappingControlsDiffer(values, currentParams) ? previewKey : null)
+  }
 
   const columnCount = Math.max(headerCells.length, ...previewRows.map((row) => row.cells.length), 0)
   const columnLabel = (index: number) => {
@@ -92,6 +106,10 @@ export function MapForm({ batchId, basePath, screen }: Props) {
   const profileInFlight = useRef(false)
 
   function stage() {
+    if (controlsChanged) {
+      setStageOutcome({ message: "Update the preview first: the mapping above has changed since this preview was made.", fieldErrors: {} })
+      return
+    }
     if (earlier && !confirmedRepeat) {
       setStageOutcome({ message: "Confirm the repeat upload below before staging this import.", fieldErrors: {} })
       return
@@ -115,6 +133,10 @@ export function MapForm({ batchId, basePath, screen }: Props) {
 
   function saveAsProfile() {
     const name = profileName.trim()
+    if (controlsChanged) {
+      setProfileOutcome({ message: "Update the preview first: the mapping above has changed since this preview was made.", saved: null })
+      return
+    }
     if (name === "") {
       setProfileOutcome({ message: "Enter a name for this mapping.", saved: null })
       return
@@ -187,7 +209,7 @@ export function MapForm({ batchId, basePath, screen }: Props) {
           </div>
         )}
 
-        <form method="get" action={basePath} className="mt-4 space-y-4">
+        <form key={previewKey} method="get" action={basePath} onChange={onControlsChange} className="mt-4 space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field idBase={`${formId}-delim`} label="Column delimiter" errors={undefined}>
               {(props) => (
@@ -329,9 +351,14 @@ export function MapForm({ batchId, basePath, screen }: Props) {
             </div>
           </div>
 
-          <button type="submit" className={buttonClass({ variant: "secondary" })}>
+          <button type="submit" className={buttonClass({ variant: controlsChanged ? "primary" : "secondary" })}>
             Update preview
           </button>
+          {controlsChanged && (
+            <p id={staleId} role="status" className="text-sm font-medium text-notice-fg">
+              Update the preview first: the mapping above has changed since the preview below was made.
+            </p>
+          )}
         </form>
       </section>
 
@@ -371,7 +398,12 @@ export function MapForm({ batchId, basePath, screen }: Props) {
               />
             )}
           </Field>
-          <button type="submit" aria-disabled={profilePending} className={buttonClass({ variant: "secondary", className: "aria-disabled:opacity-55" })}>
+          <button
+            type="submit"
+            aria-disabled={profilePending || controlsChanged}
+            aria-describedby={controlsChanged ? staleId : undefined}
+            className={buttonClass({ variant: "secondary", className: "aria-disabled:opacity-55" })}
+          >
             {profilePending && <LoaderCircle aria-hidden className="size-4 animate-spin" />}
             Save mapping
           </button>
@@ -411,7 +443,8 @@ export function MapForm({ batchId, basePath, screen }: Props) {
         <div className="mt-4">
           <button
             type="button"
-            aria-disabled={stagePending || Boolean(decodeError) || (Boolean(earlier) && !confirmedRepeat)}
+            aria-disabled={stagePending || controlsChanged || Boolean(decodeError) || (Boolean(earlier) && !confirmedRepeat)}
+            aria-describedby={controlsChanged ? staleId : undefined}
             onClick={stage}
             className={buttonClass({ className: "aria-disabled:opacity-55" })}
           >

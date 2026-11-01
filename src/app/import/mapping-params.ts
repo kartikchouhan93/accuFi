@@ -79,3 +79,17 @@ export function paramsFromMapping(mapping: ImportMapping): Record<string, string
   if (mapping.columns.credit !== undefined) params.ccredit = String(mapping.columns.credit)
   return params
 }
+
+/** Every search parameter the mapping controls submit: the names `paramsFromMapping` writes. */
+export const MAPPING_PARAM_NAMES = ["delim", "enc", "skip", "datefmt", "dec", "sign", "cdate", "cdesc", "camount", "cdebit", "ccredit"] as const
+
+/**
+ * Whether the mapping controls, as they read now, ask for something other than the mapping the preview was made with
+ * (`previewed`, from `paramsFromMapping`). Compared as the strings the form would submit, with an absent value the same
+ * as an empty one (an unused amount, debit or credit column submits ""). The map screen holds "Stage rows" back while
+ * this is true: staging always uses the previewed mapping, so staging with changed controls would stage something
+ * other than what the controls show — the very misread date this screen exists to prevent.
+ */
+export function mappingControlsDiffer(current: MappingParams, previewed: Record<string, string>): boolean {
+  return MAPPING_PARAM_NAMES.some((name) => (current[name] ?? "") !== (previewed[name] ?? ""))
+}

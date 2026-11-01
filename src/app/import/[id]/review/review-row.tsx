@@ -30,7 +30,7 @@ const DIRECTION: Record<ImportDirection, { label: string; Icon: typeof ArrowUpRi
 }
 
 /** The view types carry a day as a plain, already-valid "YYYY-MM-DD" string; `formatDay` wants the branded type, so this
- * re-brands it rather than duplicating a parser `preview-table.tsx` already has its own copy of. */
+ * re-brands it (`preview-table.tsx` does the same, so both screens write a day identically). */
 const day = (value: string) => formatDay(calendarDate(value))
 
 function DirectionChip({ direction }: { direction: ImportDirection }) {
@@ -53,12 +53,10 @@ function transactionsHref(duplicate: NonNullable<ReviewRowView["duplicate"]>): s
 /**
  * What `decision: "IMPORT"` sends for a row, whether the user got here via the plain Import button or a
  * duplicate-flagged row's "Import anyway": either way an explicit counterpart choice at review time must win over a
- * stale occurrence match, so a row still carrying one is always unlinked first. Left unhandled, a row that is BOTH
- * duplicate-flagged AND matched to a pending recurring occurrence (staging computes the two independently, so both
- * can be true at once) would keep `occurrenceId` set, and `prepareReadyRow` re-derives the counterpart from the
- * occurrence's own rule at commit time regardless of what is stored here — silently discarding the user's explicit
- * choice and posting to the wrong ledger. Exported, and shared by both buttons, so the two can never again diverge on
- * this the way "Import anyway" once did. */
+ * stale or coincidental occurrence match, so a row still carrying one is unlinked. The server enforces this itself
+ * (`updateRow` clears the link on any IMPORT that is not also a LINK, and commit refuses a linked row whose ledger and
+ * rule disagree), so sending UNLINK here is belt and braces, not what correctness rests on. Exported, and shared by
+ * both buttons, so the two can never diverge. */
 export function buildImportChange(row: Pick<ReviewRowView, "occurrence">, selected: string): RowChange {
   const change: RowChange = { decision: "IMPORT" }
   if (row.occurrence) change.occurrence = "UNLINK"
@@ -66,13 +64,13 @@ export function buildImportChange(row: Pick<ReviewRowView, "occurrence">, select
   return change
 }
 
-function useRowAction(announce: Announce) {
+function useRowAction(announce: Announce, locked: boolean) {
   const [pending, startTransition] = useTransition()
   const inFlight = useRef(false)
   const router = useRouter()
 
   function run(change: RowChange, rowId: string, line: number, verbPhrase: string, successLine: string) {
-    if (inFlight.current) return
+    if (inFlight.current || locked) return
     inFlight.current = true
     startTransition(async () => {
       try {
@@ -90,7 +88,7 @@ function useRowAction(announce: Announce) {
     })
   }
 
-  return { pending, run }
+  return { pending: pending || locked, run }
 }
 
 export function ReviewRow({
@@ -99,15 +97,18 @@ export function ReviewRow({
   ledgers,
   siblings,
   announce,
+  locked = false,
 }: {
   row: ReviewRowView
   account: ReviewScreen["account"]
   ledgers: ReviewScreen["ledgers"]
   siblings: ReviewRowView[]
   announce: Announce
+  /** A commit of this batch is in flight: every control is held (aria-disabled) until it settles. */
+  locked?: boolean
 }) {
   const router = useRouter()
-  const { pending, run } = useRowAction(announce)
+  const { pending, run } = useRowAction(announce, locked)
   const [applying, startApplying] = useTransition()
   const applyInFlight = useRef(false)
 
@@ -151,7 +152,7 @@ export function ReviewRow({
   }
 
   function doApplyToSimilar() {
-    if (applyInFlight.current || selected === "") return
+    if (applyInFlight.current || locked || selected === "") return
     applyInFlight.current = true
     startApplying(async () => {
       try {
@@ -268,7 +269,15 @@ export function ReviewRow({
         <label htmlFor={`ledger-${row.id}`} className="text-sm font-medium">
           Counterpart ledger
         </label>
-        <select id={`ledger-${row.id}`} value={selected} onChange={(event) => setSelected(event.target.value)} className={`${inputClass} mt-1.5 max-w-sm`}>
+        <select
+          id={`ledger-${row.id}`}
+          value={selected}
+          aria-disabled={locked}
+          onChange={(event) => {
+            if (!locked) setSelected(event.target.value)
+          }}
+          className={`${inputClass} mt-1.5 max-w-sm aria-disabled:opacity-55`}
+        >
           <option value="">Choose a ledger…</option>
           {legalLedgers.map((ledger) => (
             <option key={ledger.id} value={ledger.id}>
@@ -280,7 +289,7 @@ export function ReviewRow({
 
         {canApplyToSimilar && (
           <div className="mt-2">
-            <button type="button" aria-disabled={applying} onClick={doApplyToSimilar} className={buttonClass({ variant: "ghost", size: "sm", className: "aria-disabled:opacity-55" })}>
+            <button type="button" aria-disabled={applying || locked} onClick={doApplyToSimilar} className={buttonClass({ variant: "ghost", size: "sm", className: "aria-disabled:opacity-55" })}>
               Use this ledger for every row that reads the same
             </button>
           </div>

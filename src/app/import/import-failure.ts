@@ -7,6 +7,7 @@ import {
   ImportRowsIllegalError,
   InvalidImportError,
 } from "@/server/services/import-service"
+import { OverdraftBlockedError } from "@/server/services/transaction-service"
 
 // What an expected refusal of the import actions and the upload route looks like to the screen. Anything else is
 // rethrown for Next to log. The statement's own bytes never reach a message here: every string below is fixed, or
@@ -47,6 +48,11 @@ export function mapImportFailure(error: unknown): ActionFailure | null {
   }
   if (error instanceof ImportNotReadyError) return failed("invalid", `${error.pending} row(s) still need a decision.`)
   if (error instanceof ImportRowsIllegalError) return failed("invalid", illegalRowsMessage(error))
+  // A commit that would take a `blockNegative` ledger below zero (the account or a counterpart): the whole commit is
+  // rolled back. The message names the ledger (never anything from the file) and says plainly that nothing moved.
+  if (error instanceof OverdraftBlockedError) {
+    return failed("overdraft_blocked", `${error.message} Nothing was imported; the import is still staged.`)
+  }
   if (error instanceof NotFoundError) {
     return failed(
       "not_found",

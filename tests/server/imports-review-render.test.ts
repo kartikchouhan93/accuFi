@@ -151,6 +151,18 @@ describe("ReviewRow", () => {
     expect(out).not.toContain("Use this ledger for every row that reads the same")
   })
 
+  it("final review I4: while a commit is in flight (locked) every control of a pending row is aria-disabled, not removed", () => {
+    const r = row({ counterpartNodeId: "food1" })
+    const locked = renderToStaticMarkup(
+      createElement("ul", null, createElement(ReviewRow, { row: r, account: ACCOUNT, ledgers: LEDGERS, siblings: [r], announce: vi.fn(), locked: true })),
+    )
+    expect(buttonNamed(locked, "Import line 7")!.attrs).toContain('aria-disabled="true"')
+    expect(buttonNamed(locked, "Skip line 7")!.attrs).toContain('aria-disabled="true"')
+    expect(locked).toMatch(/<select[^>]*id="ledger-row1"[^>]*aria-disabled="true"|<select[^>]*aria-disabled="true"[^>]*id="ledger-row1"/)
+    const open = html(r)
+    expect(buttonNamed(open, "Import line 7")!.attrs).toContain('aria-disabled="false"')
+  })
+
   it("a pending row with a suggested counterpart marks it in the select and preselects it", () => {
     const out = html(row({ counterpartNodeId: "food1" }))
     expect(selectedValue(out, "ledger-row1")).toBe("food1")

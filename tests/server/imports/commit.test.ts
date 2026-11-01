@@ -4,6 +4,7 @@ import { prisma } from "@/server/db"
 import { NotFoundError } from "@/server/repositories/errors"
 import { updateNode } from "@/server/repositories/node-repository"
 import { findPending, updateRule } from "@/server/repositories/recurring-repository"
+import * as importRepo from "@/server/repositories/import-repository"
 import * as transactionRepo from "@/server/repositories/transaction-repository"
 import { sumBalances } from "@/server/repositories/transaction-repository"
 import {
@@ -11,6 +12,8 @@ import {
   ImportNotReadyError,
   ImportRowsIllegalError,
   InvalidImportError,
+  loadReview,
+  updateRow,
 } from "@/server/services/import-service"
 import { OverdraftBlockedError } from "@/server/services/transaction-service"
 import { createRegistry } from "../repositories/fixtures"
@@ -296,14 +299,15 @@ describe("commitBatch", () => {
     expect(await balanceOf(w.user.id, guarded.id)).toBe(500n)
   })
 
-  it("a linked row commits with the bank's date and amount, takes its counterpart from the rule (not the row's own stored counterpart), and marks the occurrence POSTED; it leaves the recurring inbox", async () => {
+  it("a linked row commits with the bank's date and amount, to its rule's ledger (which LINK stored as the row's own counterpart), and marks the occurrence POSTED; it leaves the recurring inbox", async () => {
     const w = await setup()
     const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
     const rule = await registry.makeRule(w.user.id, w.bank.id, gym.id, { amountPaise: 2_000n, name: "Gym" })
     const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-15")
     const batch = await registry.makeBatch(w.user.id, w.bank.id)
-    // Stored counterpart is deliberately wrong (w.food): commit must derive it from the rule, not trust this.
-    const row = await readyRow(w.user.id, batch.id, 1, w.food.id, {
+    // Exactly the state `updateRow({ occurrence: "LINK", decision: "IMPORT" })` leaves: the rule's ledger stored as the
+    // row's own counterpart, alongside the link.
+    const row = await readyRow(w.user.id, batch.id, 1, gym.id, {
       occurrenceId: occurrence.id,
       amountPaise: 2_050n,
       occurredOn: toDbDate(calendarDate("2026-04-16")),
@@ -314,7 +318,7 @@ describe("commitBatch", () => {
     expect(summary.linked).toBe(1)
 
     const txn = await txnOf(row.id)
-    expect(txn.toNodeId).toBe(gym.id) // the rule's other ledger, not w.food
+    expect(txn.toNodeId).toBe(gym.id)
     expect(txn.fromNodeId).toBe(w.bank.id)
     expect(txn.amountPaise).toBe(2_050n) // the bank's amount, not the rule's 2000
     expect(fromDbDate(txn.occurredAt)).toBe("2026-04-16") // the bank's date, not the rule's due day
@@ -325,6 +329,58 @@ describe("commitBatch", () => {
 
     const inbox = await findPending(w.user.id)
     expect(inbox.map((o) => o.id)).not.toContain(occurrence.id)
+  })
+
+  it("final review C1: a linked row whose own stored ledger differs from its rule's is refused, naming the line, rather than silently posted to the rule's ledger; nothing is written and the occurrence stays PENDING", async () => {
+    const w = await setup()
+    const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
+    const rule = await registry.makeRule(w.user.id, w.bank.id, gym.id, { amountPaise: 2_000n, name: "Gym" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-15")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const ok = await readyRow(w.user.id, batch.id, 1, w.food.id)
+    // The review screen showed "-> Food" for this row (its stored counterpart) while it still carried a coincidental
+    // occurrence match whose rule posts to Gym: a state `updateRow` no longer produces, built directly here. Before the
+    // fix, commit silently posted it to Gym, consumed the occurrence and taught the rule table Gym.
+    const diverged = await readyRow(w.user.id, batch.id, 2, w.food.id, {
+      occurrenceId: occurrence.id,
+      amountPaise: 2_050n,
+      occurredOn: toDbDate(calendarDate("2026-04-16")),
+      descriptionKey: "gym payment",
+    })
+
+    const error = await commitBatch(w.user.id, batch.id).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ImportRowsIllegalError)
+    expect((error as ImportRowsIllegalError).rows).toEqual([{ line: 2, reason: expect.stringContaining("linked recurring entry") }])
+
+    expect((await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe("STAGED")
+    for (const id of [ok.id, diverged.id]) {
+      const stored = await prisma.importRow.findUniqueOrThrow({ where: { id } })
+      expect(stored.status).toBe("READY")
+      expect(stored.transactionId).toBeNull()
+    }
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: batch.id } })).toBe(0)
+    expect((await prisma.recurringOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).status).toBe("PENDING")
+    expect(await prisma.counterpartRule.count({ where: { userId: w.user.id } })).toBe(0)
+    expect(await balanceOf(w.user.id, gym.id)).toBe(0n)
+  })
+
+  it("final review C1: a rule re-pointed at another ledger after the row was linked is refused at commit, not followed", async () => {
+    const w = await setup()
+    const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
+    const club = await registry.makeNode(w.user.id, "EXPENSE", "Club")
+    const rule = await registry.makeRule(w.user.id, w.bank.id, gym.id, { amountPaise: 2_000n, name: "Gym" })
+    const occurrence = await registry.makeOccurrence(w.user.id, rule.id, "2026-04-15")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    await readyRow(w.user.id, batch.id, 1, gym.id, { occurrenceId: occurrence.id, amountPaise: 2_000n, occurredOn: toDbDate(calendarDate("2026-04-15")) })
+
+    // Same account, same direction, a different ledger: the row was reviewed as "-> Gym".
+    await updateRule(w.user.id, rule.id, 0, { fromNodeId: w.bank.id, toNodeId: club.id })
+
+    const error = await commitBatch(w.user.id, batch.id).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ImportRowsIllegalError)
+    expect((error as ImportRowsIllegalError).rows).toEqual([{ line: 1, reason: expect.any(String) }])
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: batch.id } })).toBe(0)
+    expect(await balanceOf(w.user.id, club.id)).toBe(0n)
   })
 
   it("review focus (critical): a rule edited to no longer touch the account since staging refuses the whole commit, naming the line, and writes nothing", async () => {
@@ -398,7 +454,9 @@ describe("commitBatch", () => {
 
     const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
     const batch2 = await registry.makeBatch(w.user.id, w.bank.id)
-    await readyRow(w.user.id, batch2.id, 1, gym.id, { descriptionKey: "coffee shop" })
+    // A different day than the first batch's row: the same day and amount would (rightly) now be caught at commit as a
+    // duplicate of the transaction the first batch just recorded.
+    await readyRow(w.user.id, batch2.id, 1, gym.id, { descriptionKey: "coffee shop", occurredOn: toDbDate(calendarDate("2026-04-25")) })
     await commitBatch(w.user.id, batch2.id)
     const rule2 = await prisma.counterpartRule.findUniqueOrThrow({
       where: { userId_direction_descriptionKey: { userId: w.user.id, direction: "OUT", descriptionKey: "coffee shop" } },
@@ -448,6 +506,7 @@ describe("commitBatch", () => {
     })
 
     const bankBefore = await balanceOf(w.user.id, w.bank.id)
+    const upsertSpy = vi.spyOn(importRepo, "upsertRule")
     const summary = await commitBatch(w.user.id, batch.id)
 
     expect(summary.imported).toBe(ROW_COUNT)
@@ -462,6 +521,180 @@ describe("commitBatch", () => {
       where: { userId_direction_descriptionKey: { userId: w.user.id, direction: "OUT", descriptionKey: "scale-test" } },
     })
     expect(rule.nodeId).toBe(w.food.id)
-    expect(rule.hits).toBe(ROW_COUNT)
+    expect(rule.hits).toBe(ROW_COUNT) // every row still counts as a hit...
+    expect(upsertSpy).toHaveBeenCalledTimes(1) // ...taught in one upsert for the one key, not one per row
+    upsertSpy.mockRestore()
   }, 60_000)
+
+  it("final review I12: teaches one rule per distinct key, the last row's ledger in file order winning and every row counted, exactly as row-by-row upserts would", async () => {
+    const w = await setup()
+    const gym = await registry.makeNode(w.user.id, "EXPENSE", "Gym")
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const on = (day: string) => ({ occurredOn: toDbDate(calendarDate(day)) })
+    await readyRow(w.user.id, batch.id, 1, w.food.id, { descriptionKey: "corner shop", ...on("2026-04-11") })
+    await readyRow(w.user.id, batch.id, 2, w.food.id, { descriptionKey: "corner shop", ...on("2026-04-12") })
+    await readyRow(w.user.id, batch.id, 3, gym.id, { descriptionKey: "corner shop", ...on("2026-04-13") })
+    await readyRow(w.user.id, batch.id, 4, w.income.id, { direction: "IN", descriptionKey: "corner shop", ...on("2026-04-14") })
+    await readyRow(w.user.id, batch.id, 5, w.food.id, { descriptionKey: "", ...on("2026-04-15") })
+
+    const spy = vi.spyOn(importRepo, "upsertRule")
+    await commitBatch(w.user.id, batch.id)
+    expect(spy).toHaveBeenCalledTimes(2) // OUT "corner shop" and IN "corner shop"; the empty key teaches nothing
+    spy.mockRestore()
+
+    const rules = await prisma.counterpartRule.findMany({ where: { userId: w.user.id }, orderBy: { direction: "asc" } })
+    expect(rules.map((r) => ({ direction: r.direction, key: r.descriptionKey, nodeId: r.nodeId, hits: r.hits }))).toEqual([
+      { direction: "OUT", key: "corner shop", nodeId: gym.id, hits: 3 },
+      { direction: "IN", key: "corner shop", nodeId: w.income.id, hits: 1 },
+    ])
+  })
+})
+
+describe("commitBatch re-checks duplicates against the ledger as it is now (final review C2)", () => {
+  it("a transaction hand-entered after staging that duplicates a READY row refuses the whole commit, naming the line, writes no transaction, and sends that row back to review flagged against it", async () => {
+    const w = await setup()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const clean = await readyRow(w.user.id, batch.id, 1, w.food.id, { amountPaise: 7_000n })
+    const later = await readyRow(w.user.id, batch.id, 2, w.food.id, { amountPaise: 4_200n, occurredOn: toDbDate(calendarDate("2026-04-20")) })
+
+    // After staging (no flag on either row), before commit: the same 42.00 is entered by hand a day later.
+    const handEntered = await registry.makeTransaction(w.user.id, w.bank.id, w.food.id, { amountPaise: 4_200n, occurredAt: "2026-04-21" })
+    const bankBefore = await balanceOf(w.user.id, w.bank.id)
+
+    const error = await commitBatch(w.user.id, batch.id).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ImportRowsIllegalError)
+    expect((error as ImportRowsIllegalError).rows).toEqual([{ line: 2, reason: expect.stringContaining("recorded since staging") }])
+
+    // Nothing posted; the batch is still STAGED and its bytes kept; the clean row is untouched.
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: batch.id } })).toBe(0)
+    expect(await balanceOf(w.user.id, w.bank.id)).toBe(bankBefore)
+    const storedBatch = await prisma.importBatch.findUniqueOrThrow({ where: { id: batch.id } })
+    expect(storedBatch.status).toBe("STAGED")
+    expect(storedBatch.fileBytes).not.toBeNull()
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: clean.id } })).status).toBe("READY")
+
+    // The duplicate row is recoverable, not stuck: PENDING again, flagged against the hand entry, and shown on the review
+    // screen with the duplicate it matches, exactly as a staging-time duplicate would be.
+    const flagged = await prisma.importRow.findUniqueOrThrow({ where: { id: later.id } })
+    expect(flagged.status).toBe("PENDING")
+    expect(flagged.duplicateOfTransactionId).toBe(handEntered.id)
+    expect(flagged.counterpartNodeId).toBe(w.food.id)
+    const review = await loadReview(w.user.id, batch.id, { filter: "duplicates", page: 1 })
+    expect(review.rows.map((r) => r.line)).toEqual([2])
+    expect(review.rows[0].duplicate).toMatchObject({ transactionId: handEntered.id, occurredAt: "2026-04-21", amountPaise: "4200" })
+    expect(review.canCommit).toBe(false)
+
+    // The person decides it as usual ("Skip as duplicate" here), and the next commit goes through with only the clean row.
+    await updateRow(w.user.id, later.id, { decision: "SKIP" })
+    const summary = await commitBatch(w.user.id, batch.id)
+    expect(summary.imported).toBe(1)
+    expect(summary.skipped).toBe(1)
+    expect(await balanceOf(w.user.id, w.bank.id)).toBe(bankBefore - 7_000n)
+  })
+
+  it("two overlapping statements staged before either is committed: committing the second after the first refuses the overlap rather than posting it twice", async () => {
+    const w = await setup()
+    // Statement A (staged and committed first) and statement B overlap on one 99.00 line; neither saw the other at staging.
+    const first = await registry.makeBatch(w.user.id, w.bank.id)
+    await readyRow(w.user.id, first.id, 1, w.food.id, { amountPaise: 9_900n, occurredOn: toDbDate(calendarDate("2026-03-28")) })
+    const second = await registry.makeBatch(w.user.id, w.bank.id)
+    const overlap = await readyRow(w.user.id, second.id, 1, w.food.id, { amountPaise: 9_900n, occurredOn: toDbDate(calendarDate("2026-03-28")) })
+    await readyRow(w.user.id, second.id, 2, w.food.id, { amountPaise: 1_100n, occurredOn: toDbDate(calendarDate("2026-04-02")) })
+
+    await commitBatch(w.user.id, first.id)
+    const posted = await txnOf((await prisma.importRow.findFirstOrThrow({ where: { batchId: first.id } })).id)
+
+    const error = await commitBatch(w.user.id, second.id).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ImportRowsIllegalError)
+    expect((error as ImportRowsIllegalError).rows).toEqual([{ line: 1, reason: expect.any(String) }])
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, importBatchId: second.id } })).toBe(0)
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, amountPaise: 9_900n, deletedAt: null } })).toBe(1)
+    const flagged = await prisma.importRow.findUniqueOrThrow({ where: { id: overlap.id } })
+    expect(flagged.status).toBe("PENDING")
+    expect(flagged.duplicateOfTransactionId).toBe(posted.id)
+  })
+
+  it("does not re-refuse a row the person already chose to import anyway against a staging-time duplicate", async () => {
+    const w = await setup()
+    // Staging flagged this row against w.tx (500 paise, bank -> food, 2026-04-01) and the person chose "Import anyway":
+    // READY with the flag kept. It still matches w.tx at commit, and must commit regardless.
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    const accepted = await registry.makeImportRow(w.user.id, batch.id, 1, {
+      status: "PENDING",
+      direction: "OUT",
+      amountPaise: 500n,
+      occurredOn: toDbDate(calendarDate("2026-04-01")),
+      description: "Lunch again",
+      descriptionKey: "lunch again",
+      counterpartNodeId: w.food.id,
+      duplicateOfTransactionId: w.tx.id,
+    })
+    const imported = await updateRow(w.user.id, accepted.id, { decision: "IMPORT" })
+    expect(imported.status).toBe("READY")
+
+    const summary = await commitBatch(w.user.id, batch.id)
+    expect(summary.imported).toBe(1)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: accepted.id } })).status).toBe("COMMITTED")
+  })
+
+  it("an unflagged READY row that matches nothing new commits normally, and a soft-deleted or other-account transaction is no match", async () => {
+    const w = await setup()
+    const wallet = await registry.makeNode(w.user.id, "ASSET", "Wallet")
+    await registry.makeTransaction(w.user.id, w.bank.id, w.food.id, { amountPaise: 3_300n, occurredAt: "2026-04-10", deletedAt: new Date() })
+    await registry.makeTransaction(w.user.id, wallet.id, w.food.id, { amountPaise: 3_300n, occurredAt: "2026-04-10" })
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    await readyRow(w.user.id, batch.id, 1, w.food.id, { amountPaise: 3_300n })
+    const summary = await commitBatch(w.user.id, batch.id)
+    expect(summary.imported).toBe(1)
+  })
+})
+
+describe("row decisions serialize against a commit in flight (final review I4)", () => {
+  /** Holds `commitBatch` inside its open transaction, just before it inserts, until `release()` is called. */
+  function holdCommitBeforeInsert() {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let reached!: () => void
+    const inside = new Promise<void>((resolve) => (reached = resolve))
+    const original = transactionRepo.insertTransactions
+    const spy = vi.spyOn(transactionRepo, "insertTransactions").mockImplementationOnce(async (...args) => {
+      reached()
+      await gate
+      return original(...args)
+    })
+    return { inside, release, restore: () => spy.mockRestore() }
+  }
+
+  it("a row readied while a commit of its batch is mid-flight waits for the commit and is then refused, never left READY in a COMMITTED batch", async () => {
+    const w = await setup()
+    const batch = await registry.makeBatch(w.user.id, w.bank.id)
+    await readyRow(w.user.id, batch.id, 1, w.food.id)
+    const skipped = await registry.makeImportRow(w.user.id, batch.id, 2, {
+      status: "SKIPPED",
+      direction: "OUT",
+      amountPaise: 1_234n,
+      occurredOn: toDbDate(calendarDate("2026-04-12")),
+      counterpartNodeId: w.food.id,
+    })
+
+    const hold = holdCommitBeforeInsert()
+    const committing = commitBatch(w.user.id, batch.id)
+    await hold.inside // the commit holds the batch's lock and has already read which rows are READY
+    const deciding = updateRow(w.user.id, skipped.id, { decision: "IMPORT" }).then(
+      (view) => ({ ok: true as const, view }),
+      (error: unknown) => ({ ok: false as const, error }),
+    )
+    // Give the decision every chance to slip in while the commit is held.
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    hold.release()
+    const summary = await committing
+    hold.restore()
+    const decided = await deciding
+
+    expect(summary.imported).toBe(1)
+    expect(decided.ok).toBe(false)
+    if (!decided.ok) expect(decided.error).toBeInstanceOf(NotFoundError)
+    expect((await prisma.importRow.findUniqueOrThrow({ where: { id: skipped.id } })).status).toBe("SKIPPED")
+    expect(await prisma.importRow.count({ where: { batchId: batch.id, status: "READY" } })).toBe(0)
+  })
 })

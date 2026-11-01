@@ -4,6 +4,7 @@ import type { LedgerKind, SystemNodeRole } from "./ledger-kind"
 import {
   DUPLICATE_WINDOW_DAYS,
   findDuplicate,
+  indexByAmount,
   isLegalCounterpart,
   matchOccurrences,
   suggestFromRules,
@@ -98,6 +99,37 @@ describe("findDuplicate", () => {
     const copy = [...list]
     findDuplicate(out, ACCOUNT, list)
     expect(list).toEqual(copy)
+  })
+})
+
+describe("indexByAmount", () => {
+  it("groups transactions by exact amount, keeping each bucket in the given order", () => {
+    const a = txn("a", ACCOUNT, "X", 100n, "2026-05-10")
+    const b = txn("b", ACCOUNT, "Y", 200n, "2026-05-10")
+    const c = txn("c", "Z", ACCOUNT, 100n, "2026-05-11")
+    const index = indexByAmount([a, b, c])
+    expect(index.get(100n)).toEqual([a, c])
+    expect(index.get(200n)).toEqual([b])
+    expect(index.get(300n)).toBeUndefined()
+  })
+
+  it("gives findDuplicate the same answer through the amount's bucket as through the whole list", () => {
+    const existing = [
+      txn("a", ACCOUNT, "X", 150_000n, "2026-05-12"),
+      txn("b", ACCOUNT, "X", 150_000n, "2026-05-11"),
+      txn("c", ACCOUNT, "X", 90_000n, "2026-05-10"),
+      txn("d", "X", ACCOUNT, 150_000n, "2026-05-10"),
+      txn("e", ACCOUNT, "X", 150_001n, "2026-05-10"),
+    ]
+    const index = indexByAmount(existing)
+    for (const probe of [
+      row("2026-05-10", 150_000n, "OUT"),
+      row("2026-05-10", 150_000n, "IN"),
+      row("2026-05-10", 90_000n, "OUT"),
+      row("2026-05-10", 1n, "OUT"),
+    ]) {
+      expect(findDuplicate(probe, ACCOUNT, index.get(probe.amountPaise) ?? [])).toEqual(findDuplicate(probe, ACCOUNT, existing))
+    }
   })
 })
 

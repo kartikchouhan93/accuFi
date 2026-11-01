@@ -78,12 +78,15 @@ export function CommitBar({
   counts,
   canCommit,
   announce,
+  onCommittingChange,
 }: {
   batchId: string
   fileName: string
   counts: ReviewScreen["counts"]
   canCommit: boolean
   announce: Announce
+  /** Told when a commit starts and ends, so the workspace can hold every row's controls still meanwhile. */
+  onCommittingChange?: (committing: boolean) => void
 }) {
   const router = useRouter()
   const reason = commitBlockedReason(counts)
@@ -104,17 +107,21 @@ export function CommitBar({
   function onCommit() {
     if (!canCommit || commitInFlight.current) return
     commitInFlight.current = true
+    onCommittingChange?.(true)
     startCommit(async () => {
       try {
         const result = await attempt(() => commitBatchAction({ id: batchId }))
         if (result === null || !result.ok) {
           announce({ tone: "warning", lines: [couldNot("commit this import", result)] })
-          if (result !== null) onNotFound(result.error.code, router.refresh)
+          // Any refusal re-reads the screen, not only a vanished batch: a commit that finds a duplicate recorded since
+          // staging sends that row back to review, and the person needs to see it there to decide it.
+          if (result !== null) router.refresh()
           return
         }
         router.push(`/import/${batchId}/batch`)
       } finally {
         commitInFlight.current = false
+        onCommittingChange?.(false)
       }
     })
   }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  IMPORT_AMOUNT_MAX_PAISE,
   IMPORT_DATE_FORMATS,
   IMPORT_DIRECTIONS,
   defaultSignConvention,
@@ -154,9 +155,18 @@ describe("parseImportAmount", () => {
     expect(amount("500 Dr Cr").ok).toBe(false)
   })
 
-  it("keeps an eighteen-digit amount exact", () => {
-    expect(amount("123456789012345678")).toEqual(okAmount(12_345_678_901_234_567_800n))
-    expect(amount("123456789012345678.99")).toEqual(okAmount(12_345_678_901_234_567_899n))
+  it("keeps an amount up to the cap exact, to the paisa", () => {
+    expect(amount("999999999999.99")).toEqual(okAmount(99_999_999_999_999n))
+    expect(amount("10,00,00,00,00,000.00")).toEqual(okAmount(IMPORT_AMOUNT_MAX_PAISE))
+  })
+
+  it("refuses an amount above the cap as this row's own parse error, never a value too large for the database", () => {
+    expect(IMPORT_AMOUNT_MAX_PAISE).toBe(100_000_000_000_000n) // ₹10,00,00,00,00,000.00, one lakh crore
+    expect(amount("1000000000000.01")).toEqual({ ok: false, error: "The amount column is too large" })
+    // An eighteen-digit cell, and one past BIGINT's own range (about 9.22e18 paise), both refused the same way.
+    expect(amount("123456789012345678")).toEqual({ ok: false, error: "The amount column is too large" })
+    expect(amount("99999999999999999999999999999999999999")).toEqual({ ok: false, error: "The amount column is too large" })
+    expect(parseImportAmount("99999999999999999999", ".", "debit")).toEqual({ ok: false, error: "The debit column is too large" })
   })
 
   it("names the column role and the reason, never the cell text", () => {
@@ -316,6 +326,11 @@ describe("parseImportRow with debit and credit columns", () => {
     const inn = row("", "700")
     expect(inn.ok && inn.value.direction).toBe("IN")
     expect(inn.ok && inn.value.amountPaise).toBe(70_000n)
+  })
+
+  it("refuses a debit or credit above the amount cap as a row error, naming the column", () => {
+    expect(row("99999999999999999999", "")).toEqual({ ok: false, error: "The debit column is too large" })
+    expect(row("", "99999999999999999999")).toEqual({ ok: false, error: "The credit column is too large" })
   })
 
   it("ignores the sign convention, which only applies to a single column", () => {
