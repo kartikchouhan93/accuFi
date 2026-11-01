@@ -39,9 +39,10 @@ export function monthLabel(month: string): string {
   return `${MONTH_NAMES[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`
 }
 
-/** "May 2026 to Sep 2026", or "May 2026 onwards" for a span with no end. */
+/** "May 2026 to Sep 2026", "May 2026 onwards" for a span with no end, and "May 2026" for a span of that one month. */
 export function spanLabel(startMonth: string, endMonth: string | null): string {
-  return endMonth === null ? `${monthLabel(startMonth)} onwards` : `${monthLabel(startMonth)} to ${monthLabel(endMonth)}`
+  if (endMonth === null) return `${monthLabel(startMonth)} onwards`
+  return monthLabel(startMonth) === monthLabel(endMonth) ? monthLabel(startMonth) : `${monthLabel(startMonth)} to ${monthLabel(endMonth)}`
 }
 
 // -- The budgets screen ---------------------------------------------------------------------------------------------------

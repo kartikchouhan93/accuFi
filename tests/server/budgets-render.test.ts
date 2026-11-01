@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { BudgetCard, BudgetHistoryRow, BudgetsScreen, UpcomingBudget } from "@/lib/budget-view"
+import { spanLabel, type BudgetCard, type BudgetHistoryRow, type BudgetsScreen, type UpcomingBudget } from "@/lib/budget-view"
 
 // What the Budgets screen, its nav item and its month parameter say, as markup, from literal views shaped exactly as the
 // server sends them (paise as text, months as "YYYY-MM-01"). Rendering to markup has no app router, so the router is
@@ -267,6 +267,15 @@ describe("a budget card", () => {
     const html = renderCard({ name: "A very long ledger name that goes on and on and on", usedPaise: "123456789012345678" })
     expect(html).toMatch(/min-w-0/)
     expect(html).toMatch(/break-words|\[overflow-wrap:anywhere\]/)
+  })
+})
+
+describe("the label of a span of months", () => {
+  it("names one month once, a run of months as from-to, and an open end as onwards", () => {
+    expect(spanLabel("2026-10-01", "2026-10-01")).toBe("Oct 2026")
+    expect(spanLabel("2026-08-01", "2026-10-01")).toBe("Aug 2026 to Oct 2026")
+    expect(spanLabel("2026-08-01", null)).toBe("Aug 2026 onwards")
+    expect(cardDeleteText({ startMonth: "2026-10-01", endMonth: "2026-10-01" })).toContain("This removes the budget for Oct 2026.")
   })
 })
 
