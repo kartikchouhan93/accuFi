@@ -147,7 +147,7 @@ export async function requireNode(userId: string, nodeId: string, uow?: UnitOfWo
  * later. A future-dated transaction is outside today's balance (EC-10), so judging it against today would never notice
  * that it overdraws the account on the day it lands.
  */
-const asOfFor = (today: CalendarDate, occurredAt: CalendarDate): CalendarDate =>
+export const asOfFor = (today: CalendarDate, occurredAt: CalendarDate): CalendarDate =>
   compareDates(occurredAt, today) > 0 ? occurredAt : today
 
 export const cleanNote = (note: string | null | undefined): string | null => note?.trim() || null
@@ -162,9 +162,9 @@ function assertLegal(from: LedgerNode, to: LedgerNode, amount: Paise, occurredAt
 }
 
 // Only an asset can be overdrawn (EC-11): an expense or income node is a flow total, a liability is meant to be negative.
-const isGuarded = (node: LedgerNode): boolean => node.kind === "ASSET" && node.blockNegative
+export const isGuarded = (node: LedgerNode): boolean => node.kind === "ASSET" && node.blockNegative
 
-async function balancesAt(userId: string, asOf: CalendarDate, uow: UnitOfWork): Promise<Map<string, Paise>> {
+export async function balancesAt(userId: string, asOf: CalendarDate, uow: UnitOfWork): Promise<Map<string, Paise>> {
   return new Map((await sumBalances(userId, asOf, uow)).map((row) => [row.nodeId, row.balance]))
 }
 
@@ -173,7 +173,7 @@ async function balancesAt(userId: string, asOf: CalendarDate, uow: UnitOfWork): 
  * was already below zero is only refused if the write lowered it further, so an edit that does not touch the money
  * (a note, a tag) is not held to an overdraft that was there already. Without `before` any negative balance refuses.
  */
-function assertNoOverdraft(nodes: readonly LedgerNode[], after: Map<string, Paise>, before?: Map<string, Paise>): void {
+export function assertNoOverdraft(nodes: readonly LedgerNode[], after: Map<string, Paise>, before?: Map<string, Paise>): void {
   for (const node of nodes.filter(isGuarded)) {
     const now = after.get(node.id) ?? 0n
     if (now < 0n && (before === undefined || now < (before.get(node.id) ?? 0n))) throw new OverdraftBlockedError(node.name)

@@ -462,7 +462,7 @@ describe("the edit page", () => {
 describe("Make recurring on a row", () => {
   const view = (over: Partial<TransactionView> = {}): TransactionView => ({
     id: "t1", fromNodeId: "bank", toNodeId: "food", amountPaise: "50000", occurredAt: day("2026-03-31"), note: null, tags: [],
-    groupId: null, deleted: false, version: 0, warnings: [], ...over,
+    groupId: null, importBatchId: null, deleted: false, version: 0, warnings: [], ...over,
   })
   const nodes = new Map(NODES.map((n) => [n.id, n]))
   nodes.set("opening", node({ id: "opening", name: "Opening Balance", kind: "INCOME_SOURCE", systemRole: "OPENING_BALANCE" }))

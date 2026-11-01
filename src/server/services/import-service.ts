@@ -12,6 +12,7 @@ import {
   type ExistingTxn,
   type OccurrenceCandidate,
 } from "@/domain/import-match"
+import { validateTransaction } from "@/domain/transaction-rules"
 import { importMappingSchema } from "@/lib/schemas/import"
 import {
   REVIEW_PAGE_SIZE,
@@ -22,6 +23,7 @@ import {
   type ReviewRowView,
   type ReviewScreen,
 } from "@/lib/import-view"
+import { NOTE_MAX_LENGTH } from "@/lib/schemas/transaction"
 import { serialisePaise } from "@/lib/serialise"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
@@ -37,19 +39,34 @@ import {
   insertBatch,
   insertRows,
   lockBatch,
+  markRowsCommitted,
   readBatchBytes,
   transitionBatch,
   updateRow as updateImportRow,
   updateRowsWhereSame,
   upsertProfile,
+  upsertRule,
   type RowData,
 } from "@/server/repositories/import-repository"
-import { findOccurrenceById, findPendingForAccount, type OccurrenceWithRule } from "@/server/repositories/recurring-repository"
-import { findAccountTransactions, findTransactionById } from "@/server/repositories/transaction-repository"
-import { inTransaction } from "@/server/repositories/unit-of-work"
+import {
+  findOccurrenceById,
+  findPendingForAccount,
+  markPosted,
+  reopenPostedByTransactions,
+  type OccurrenceWithRule,
+} from "@/server/repositories/recurring-repository"
+import {
+  findAccountTransactions,
+  findTransactionById,
+  insertTransactions,
+  softDeleteByBatch,
+  type InsertDraft,
+} from "@/server/repositories/transaction-repository"
+import { inTransaction, type UnitOfWork } from "@/server/repositories/unit-of-work"
 import { lotModeOf } from "@/server/services/lot-rules"
 import { listAllNodes } from "@/server/services/node-service"
-import { requireNode } from "@/server/services/transaction-service"
+import { asOfFor, assertNoOverdraft, balancesAt, isGuarded, requireNode } from "@/server/services/transaction-service"
+import { todayFor } from "@/server/services/clock"
 
 export { REVIEW_PAGE_SIZE, type ReviewFilter, type ReviewRowView, type ReviewScreen }
 
@@ -788,4 +805,295 @@ export async function confirmSuggestions(userId: string, batchId: string): Promi
     if (updated) count++
   }
   return count
+}
+
+// Commit and reversal (design §6 stage 5): the money-moving step. Nothing is written until the last moment: every
+// READY row is re-validated against the ledgers as they are *now*, not as they were at staging or review, and the
+// whole batch is re-validated before a single row is inserted. Everything from there (the inserts, marking the rows
+// COMMITTED, posting linked occurrences, learning rules, moving the batch to COMMITTED and dropping its bytes) happens
+// inside one `inTransaction`, under the row lock `lockBatch` takes: a failure anywhere leaves nothing written and the
+// batch STAGED, and two concurrent commits of the same batch cannot both write (the second waits for the lock, then
+// finds the batch already COMMITTED).
+
+/** The batch is not STAGED or COMMITTED (already reversed, discarded, or still UPLOADED): nothing was written. */
+export class ImportNotReadyError extends Error {
+  constructor(readonly pending: number) {
+    super(`${pending} row${pending === 1 ? "" : "s"} still need a decision before this import can be committed.`)
+    this.name = "ImportNotReadyError"
+  }
+}
+
+/** One or more READY rows are no longer legal to commit (a counterpart archived, a flow now illegal, a link resolved
+ * since staging or review). Named by line, so the review screen can point at exactly what changed. Nothing was written. */
+export class ImportRowsIllegalError extends Error {
+  constructor(readonly rows: { line: number; reason: string }[]) {
+    super(`${rows.length} row${rows.length === 1 ? "" : "s"} are no longer legal to commit: ${rows.map((r) => `line ${r.line} (${r.reason})`).join("; ")}`)
+    this.name = "ImportRowsIllegalError"
+  }
+}
+
+export interface CommitSummary {
+  imported: number
+  skipped: number
+  linked: number
+  errored: number
+  firstDate: string | null
+  lastDate: string | null
+  totalInPaise: string
+  totalOutPaise: string
+  committedAt: string
+}
+
+/** The trimmed description, held to the note limit, or null for an empty one: what a committed row's transaction notes. */
+function noteFromDescription(description: string | null): string | null {
+  const trimmed = description?.trim() ?? ""
+  return trimmed === "" ? null : trimmed.slice(0, NOTE_MAX_LENGTH)
+}
+
+/**
+ * The summary of a committed batch, built from its own rows rather than kept anywhere: a repeat of `commitBatch`
+ * reads the same COMMITTED rows and recomputes exactly the same figures, which is what makes it idempotent without a
+ * stored copy. `direction`, `amountPaise` and `occurredOn` are never changed once a row is staged, and `occurrenceId`
+ * is never cleared by a commit, so this reads the same thing every time it is called for this batch.
+ */
+async function buildCommitSummary(userId: string, batchId: string, committedAt: Date, uow?: UnitOfWork): Promise<CommitSummary> {
+  const [counts, committed] = await Promise.all([
+    countRows(userId, batchId, uow),
+    findRows(userId, batchId, { status: ["COMMITTED"], offset: 0, limit: IMPORT_MAX_ROWS }, uow),
+  ])
+  let totalIn = 0n
+  let totalOut = 0n
+  let firstDate: CalendarDate | null = null
+  let lastDate: CalendarDate | null = null
+  let linked = 0
+  for (const row of committed) {
+    if (row.occurrenceId !== null) linked++
+    const amount = row.amountPaise ?? 0n
+    if (row.direction === "IN") totalIn += amount
+    else totalOut += amount
+    if (row.occurredOn !== null) {
+      const day = fromDbDate(row.occurredOn)
+      if (firstDate === null || compareDates(day, firstDate) < 0) firstDate = day
+      if (lastDate === null || compareDates(day, lastDate) > 0) lastDate = day
+    }
+  }
+  return {
+    imported: committed.length,
+    skipped: counts.byStatus.SKIPPED,
+    linked,
+    errored: counts.byStatus.ERRORED,
+    firstDate,
+    lastDate,
+    totalInPaise: serialisePaise(totalIn),
+    totalOutPaise: serialisePaise(totalOut),
+    committedAt: committedAt.toISOString(),
+  }
+}
+
+/** What a READY row needs, worked out and legality-checked before anything is written. */
+interface PreparedRow {
+  row: ImportRow
+  counterpartNodeId: string
+  fromNodeId: string
+  toNodeId: string
+}
+
+/**
+ * Work out and re-validate what one READY row would commit as, against the ledgers as they are right now: a linked
+ * row (carried-forward ruling, Task 6->8) takes its counterpart from the occurrence's rule, never from the row's own
+ * stored `counterpartNodeId`, and the occurrence must still be PENDING (handled since staging or review is a refusal,
+ * not a re-link). An unlinked row is checked against its own stored counterpart. Either way the result is re-checked
+ * with `isLegalCounterpart` (archived, system, lot-held, the account itself) and `validateTransaction` (both ends live,
+ * the flow legal, a positive amount) exactly as a fresh entry would be. Returns a violation naming the row's line
+ * instead of throwing, so the caller can collect every illegal row before refusing the whole commit.
+ */
+async function prepareReadyRow(
+  userId: string,
+  row: ImportRow,
+  account: LedgerNode,
+  accountInfo: { id: string; kind: "ASSET" | "LIABILITY" },
+  uow: UnitOfWork,
+): Promise<{ prepared: PreparedRow } | { violation: { line: number; reason: string } }> {
+  const direction = row.direction! // a READY row always has a direction: it came from a successfully parsed entry
+  let counterpartNodeId = row.counterpartNodeId
+  if (row.occurrenceId !== null) {
+    const occurrence = await findOccurrenceById(userId, row.occurrenceId, uow)
+    if (!occurrence || occurrence.status !== "PENDING") {
+      return { violation: { line: row.line, reason: "The linked recurring occurrence is no longer pending." } }
+    }
+    counterpartNodeId = occurrenceCandidateOf(occurrence, account.id).otherNodeId
+  }
+  if (!counterpartNodeId) return { violation: { line: row.line, reason: "This row has no counterpart." } }
+
+  const counterpart = await requireNode(userId, counterpartNodeId, uow)
+  const legal = isLegalCounterpart(accountInfo, direction, {
+    id: counterpart.id,
+    kind: counterpart.kind,
+    systemRole: counterpart.systemRole,
+    archived: counterpart.archivedAt !== null,
+    heldByLots: lotModeOf(counterpart) !== null,
+  })
+  if (!legal) return { violation: { line: row.line, reason: "This ledger can no longer be the counterpart of this row." } }
+
+  const fromNode = direction === "OUT" ? account : counterpart
+  const toNode = direction === "OUT" ? counterpart : account
+  const violations = validateTransaction(
+    { fromNode, toNode, amount: row.amountPaise!, occurredAt: fromDbDate(row.occurredOn!) },
+    { allowArchived: false },
+  )
+  if (violations.length > 0) return { violation: { line: row.line, reason: violations.map((v) => v.message).join(" ") } }
+
+  return {
+    prepared: {
+      row,
+      counterpartNodeId,
+      fromNodeId: direction === "OUT" ? account.id : counterpart.id,
+      toNodeId: direction === "OUT" ? counterpart.id : account.id,
+    },
+  }
+}
+
+/**
+ * Commit a STAGED batch (design §6 stage 5): every READY row becomes a real transaction, atomically, under the
+ * batch's row lock. Refuses, writing nothing, if the batch is not STAGED or COMMITTED (InvalidImportError), if any row
+ * is still PENDING (ImportNotReadyError, with the count), or if any READY row is no longer legal to commit
+ * (ImportRowsIllegalError, naming every such line) — that check runs over every row before any insert, so a batch with
+ * one bad row among a thousand good ones writes nothing at all.
+ *
+ * Once every row passes, the touched `blockNegative` ledgers (the account and every counterpart a row would move money
+ * through) are checked before and after the inserts, as of the later of today and the latest row's day, exactly as any
+ * other write is (`writeUnlessOverdrawn`'s pattern): an overdraft rolls the whole commit back and leaves the batch
+ * STAGED. Each transaction is inserted with `occurredAt` and `amountPaise` from the row (never recomputed), a note
+ * trimmed to the note limit, the idempotency key `import:<rowId>` (so a retried commit after a crash is a no-op, not a
+ * double entry), and both import ids, which is what lets `insertTransactions`' ownership check (and a human reviewer)
+ * see exactly which row made which transaction. A linked row's occurrence is marked POSTED with the new transaction
+ * (`markPosted`); a non-empty description key teaches the counterpart just used to `upsertRule`, whether the row was
+ * linked or not. The batch then moves to COMMITTED, stamped `committedAt`, with its statement bytes dropped
+ * (`dropBytes`): nothing will ever re-map this batch again.
+ *
+ * A repeat of an already-COMMITTED batch (the exact same call again, or two racing calls under the same lock) writes
+ * nothing and returns the same summary, built fresh from the batch's own COMMITTED rows (`buildCommitSummary`), which
+ * is also how two concurrent commits settle on exactly one set of transactions: the second finds the batch already
+ * COMMITTED once it gets the lock. Throws NotFoundError("import") for a batch that is not the user's.
+ */
+export async function commitBatch(userId: string, batchId: string): Promise<CommitSummary> {
+  return inTransaction(async (uow) => {
+    const batch = await lockBatch(userId, batchId, uow)
+    if (!batch) throw new NotFoundError("import")
+    if (batch.status === "COMMITTED") return buildCommitSummary(userId, batchId, batch.committedAt!, uow)
+    if (batch.status !== "STAGED") {
+      throw new InvalidImportError([{ field: "id", message: "This import cannot be committed." }])
+    }
+
+    const counts = await countRows(userId, batchId, uow)
+    if (counts.byStatus.PENDING > 0) throw new ImportNotReadyError(counts.byStatus.PENDING)
+
+    const account = await requireNode(userId, batch.nodeId, uow)
+    const accountInfo = { id: account.id, kind: account.kind as "ASSET" | "LIABILITY" }
+    const readyRows = await findRows(userId, batchId, { status: ["READY"], offset: 0, limit: IMPORT_MAX_ROWS }, uow)
+
+    // Every row is checked, and every violation collected, before anything is written: a commit either writes every
+    // READY row or none of them.
+    const violations: { line: number; reason: string }[] = []
+    const prepared: PreparedRow[] = []
+    for (const row of readyRows) {
+      const result = await prepareReadyRow(userId, row, account, accountInfo, uow)
+      if ("violation" in result) violations.push(result.violation)
+      else prepared.push(result.prepared)
+    }
+    if (violations.length > 0) throw new ImportRowsIllegalError(violations)
+
+    // The overdraft guard, as writeUnlessOverdrawn applies it, but for the batch as a whole rather than one write: one
+    // `asOf` (the later of today and the latest row's own day), read before and after the inserts, over every node a
+    // prepared row touches.
+    const today = await todayFor(userId)
+    let lastRowDate = today
+    const touchedIds = new Set<string>([account.id])
+    for (const p of prepared) {
+      touchedIds.add(p.counterpartNodeId)
+      const day = fromDbDate(p.row.occurredOn!)
+      if (compareDates(day, lastRowDate) > 0) lastRowDate = day
+    }
+    const asOf = asOfFor(today, lastRowDate)
+    const touchedNodes: LedgerNode[] = [account]
+    for (const id of touchedIds) {
+      if (id !== account.id) touchedNodes.push(await requireNode(userId, id, uow))
+    }
+    const guarded = touchedNodes.some(isGuarded)
+    const before = guarded ? await balancesAt(userId, asOf, uow) : undefined
+
+    const drafts: InsertDraft[] = prepared.map((p) => ({
+      fromNodeId: p.fromNodeId,
+      toNodeId: p.toNodeId,
+      amountPaise: p.row.amountPaise!,
+      occurredAt: fromDbDate(p.row.occurredOn!),
+      note: noteFromDescription(p.row.description),
+      idempotencyKey: `import:${p.row.id}`,
+      importBatchId: batchId,
+      importRowId: p.row.id,
+    }))
+    const inserted = prepared.length === 0 ? [] : await insertTransactions(userId, drafts, undefined, uow)
+
+    if (guarded) assertNoOverdraft(touchedNodes, await balancesAt(userId, asOf, uow), before)
+
+    await markRowsCommitted(
+      userId,
+      prepared.map((p, i) => ({ rowId: p.row.id, transactionId: inserted[i].id })),
+      uow,
+    )
+
+    for (let i = 0; i < prepared.length; i++) {
+      const p = prepared[i]
+      if (p.row.occurrenceId === null) continue
+      const posted = await markPosted(userId, p.row.occurrenceId, inserted[i].id, uow)
+      // Re-validated as PENDING just above, under the batch's lock, in the same database transaction: a null here
+      // means something else changed the occurrence in the gap between that read and this write (no lock is held on
+      // the occurrence itself). That cannot be squared with "every row is legal", so the whole commit is refused, the
+      // same as a row found illegal up front, rather than silently posting a transaction with no occurrence to show
+      // for it.
+      if (!posted) throw new ImportRowsIllegalError([{ line: p.row.line, reason: "The linked recurring occurrence changed while this import was being committed." }])
+    }
+
+    for (const p of prepared) {
+      if (p.row.descriptionKey) {
+        await upsertRule(userId, { direction: p.row.direction!, descriptionKey: p.row.descriptionKey, nodeId: p.counterpartNodeId }, uow)
+      }
+    }
+
+    const committedAt = new Date()
+    const updated = await transitionBatch(userId, batchId, { from: ["STAGED"], to: "COMMITTED", committedAt, dropBytes: true }, uow)
+    if (!updated) throw new NotFoundError("import")
+
+    return buildCommitSummary(userId, batchId, committedAt, uow)
+  })
+}
+
+/**
+ * Reverse a COMMITTED batch (design §6 stage 5): every live transaction it created is soft-deleted and any occurrence
+ * it posted is reopened to PENDING with its link cleared, under the batch's row lock, in one database transaction.
+ * `ImportRow` is untouched: a committed row keeps its `transactionId`, which stays a valid foreign key because the
+ * transaction is soft-deleted, not removed (the `ImportRow_status_committed_has_transaction_and_counterpart` CHECK
+ * constraint is never at risk). Not guarded against an overdraft: reversal only ever raises a balance back toward what
+ * it was before the commit, never below zero.
+ *
+ * A second reversal of an already-REVERSED batch is a no-op, returning `{ reversed: 0, reopened: 0 }`: only a
+ * COMMITTED batch is reversible, so a STAGED or DISCARDED one throws InvalidImportError. Throws NotFoundError("import")
+ * for a batch that is not the user's.
+ */
+export async function reverseBatch(userId: string, batchId: string): Promise<{ reversed: number; reopened: number }> {
+  return inTransaction(async (uow) => {
+    const batch = await lockBatch(userId, batchId, uow)
+    if (!batch) throw new NotFoundError("import")
+    if (batch.status === "REVERSED") return { reversed: 0, reopened: 0 }
+    if (batch.status !== "COMMITTED") {
+      throw new InvalidImportError([{ field: "id", message: "This import cannot be reversed." }])
+    }
+
+    const transactionIds = await softDeleteByBatch(userId, batchId, uow)
+    const reopened = await reopenPostedByTransactions(userId, transactionIds, uow)
+    const result = await transitionBatch(userId, batchId, { from: ["COMMITTED"], to: "REVERSED", reversedAt: new Date() }, uow)
+    if (!result) throw new NotFoundError("import")
+
+    return { reversed: transactionIds.length, reopened }
+  })
 }

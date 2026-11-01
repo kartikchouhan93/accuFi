@@ -24,6 +24,8 @@ export interface TransactionView {
   note: string | null
   tags: string[]
   groupId: string | null
+  /** The import batch that created this transaction, or null for one entered by hand. */
+  importBatchId: string | null
   /** Soft-deleted: it counts toward no balance. Only a listing that asked for deleted rows ever contains one. */
   deleted: boolean
   /** The optimistic-locking token: pass it back as `expectedVersion` when editing. */
@@ -52,6 +54,7 @@ export function toTransactionView(row: Transaction, warnings: Warning[] = [], qu
     note: row.note,
     tags: [...row.tags],
     groupId: row.groupId,
+    importBatchId: row.importBatchId,
     deleted: row.deletedAt !== null,
     version: row.version,
     warnings,

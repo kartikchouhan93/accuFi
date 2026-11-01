@@ -63,6 +63,7 @@ function toRepositoryFilter(filter: ListFilter, nodeIds: string[] | undefined): 
     maxAmount: filter.max,
     tags: filter.tag,
     search: filter.q,
+    importBatchId: filter.batch,
     includeDeleted: filter.deleted === true,
   }
 }

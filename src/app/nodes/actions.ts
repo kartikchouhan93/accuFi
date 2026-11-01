@@ -16,6 +16,7 @@ import {
   InvalidNodeError,
   NodeHasHistoryError,
   NodeInBudgetError,
+  NodeInImportError,
   NodeInRecurringRuleError,
   NodeKindChangeError,
   removeLedgerNode,
@@ -52,6 +53,7 @@ function toFailure(error: unknown): Failure {
   // or a budget that names the ledger each get their own sentence, saying what to do instead.
   if (error instanceof NodeInRecurringRuleError) return failed("invalid", error.message)
   if (error instanceof NodeInBudgetError) return failed("invalid", error.message)
+  if (error instanceof NodeInImportError) return failed("invalid", error.message)
   if (error instanceof HierarchyDepthError) return failed("hierarchy_depth", error.message)
   if (error instanceof NodeKindChangeError) return failed("kind_immutable", error.message)
   if (error instanceof InvalidNodeError) return failed("invalid", error.message)

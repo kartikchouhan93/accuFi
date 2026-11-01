@@ -13,6 +13,7 @@ const view = (id: string, groupId: string | null = null): TransactionView => ({
   note: null,
   tags: [],
   groupId,
+  importBatchId: null,
   deleted: false,
   version: 0,
   warnings: [],

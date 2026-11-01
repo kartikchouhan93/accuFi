@@ -149,6 +149,9 @@ const filterFields = {
   max: blank(filterAmount),
   tag: blank(z.string().transform((text) => text.split(",").map((tag) => tag.trim()).filter((tag) => tag !== ""))),
   q: blank(z.string().trim().max(NOTE_MAX_LENGTH, `At most ${NOTE_MAX_LENGTH} characters`)),
+  // The import batch a transaction came from (its own page's "view in ledger" link): blank means no filter, like every
+  // other field here.
+  batch: blank(z.string().trim()),
   // A switch, not a value: "1" is on, anything else (blank, "0", a hand-edited word) is off, so there is nothing to
   // be wrong about and no field to show an error beside.
   deleted: z.preprocess((value) => (value === "1" ? true : undefined), z.literal(true).optional()),

@@ -14,6 +14,7 @@ import {
   updateNode,
 } from "@/server/repositories/node-repository"
 import { countBudgetsNaming } from "@/server/repositories/budget-repository"
+import { countImportsNaming, deleteImportConfigFor } from "@/server/repositories/import-repository"
 import { deletePricesOfNode } from "@/server/repositories/price-repository"
 import { countRulesNaming } from "@/server/repositories/recurring-repository"
 import { insertTransactions, sumBalances } from "@/server/repositories/transaction-repository"
@@ -55,6 +56,14 @@ export class NodeInBudgetError extends Error {
   constructor() {
     super("A budget uses this ledger. Delete the budget, or archive the ledger instead.")
     this.name = "NodeInBudgetError"
+  }
+}
+
+/** An import batch (any status) names the ledger as its account, or a row chose it as a counterpart: both are RESTRICT. */
+export class NodeInImportError extends Error {
+  constructor() {
+    super("An import uses this ledger. Delete the import, or archive the ledger instead.")
+    this.name = "NodeInImportError"
   }
 }
 
@@ -309,8 +318,10 @@ export async function removeLedgerNode(userId: string, nodeId: string): Promise<
   if ((await countTransactionsForNode(userId, nodeId)) > 0) throw new NodeHasHistoryError()
   if ((await countRulesNaming(userId, nodeId)) > 0) throw new NodeInRecurringRuleError()
   if ((await countBudgetsNaming(userId, nodeId)) > 0) throw new NodeInBudgetError()
+  if ((await countImportsNaming(userId, nodeId)) > 0) throw new NodeInImportError()
   await inTransaction(async (uow) => {
     await deletePricesOfNode(userId, nodeId, uow)
+    await deleteImportConfigFor(userId, nodeId, uow)
     await deleteNode(userId, nodeId, uow)
   })
 }

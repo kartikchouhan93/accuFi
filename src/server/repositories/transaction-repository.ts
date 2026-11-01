@@ -27,6 +27,8 @@ export interface TransactionFilter {
   tags?: string[]
   /** Case-insensitive substring of the note. */
   search?: string
+  /** Transactions the named import batch created. */
+  importBatchId?: string
   /**
    * Soft-deleted transactions are listed too, among the live ones. Off by default: a listing is of what counts. This is
    * how a deleted entry is found again to be restored; it changes no balance (`sumBalances` never counts a deleted row).
@@ -109,6 +111,7 @@ function filterConditions(filter: TransactionFilter): Prisma.TransactionWhereInp
   if (filter.maxAmount !== undefined) conditions.push({ amountPaise: { lte: filter.maxAmount } })
   if (filter.tags && filter.tags.length > 0) conditions.push({ tags: { hasEvery: filter.tags } })
   if (filter.search) conditions.push({ note: { contains: filter.search, mode: "insensitive" } })
+  if (filter.importBatchId) conditions.push({ importBatchId: filter.importBatchId })
   return conditions
 }
 
