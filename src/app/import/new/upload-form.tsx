@@ -78,11 +78,20 @@ export function UploadForm({ accounts, profiles }: { accounts: Account[]; profil
         return
       }
 
-      // Ruling R2: anything that is not the route's own JSON (the login page after a lapsed session, an HTML error
-      // page) is an expired session, never a success and never an uncaught parse error.
+      // Ruling R2: a non-JSON 200 (the login page after a lapsed session's redirect) is an expired session, never a
+      // success and never an uncaught parse error. Ruling R9: a non-JSON, non-200 answer is a proxy rejecting the
+      // request itself, named by its status rather than shown as the same "session expired" message.
       const outcome = await readUploadResponse(response)
       if (outcome.kind === "expired") {
         setMessage(SESSION_EXPIRED_MESSAGE)
+        return
+      }
+      if (outcome.kind === "blocked") {
+        setMessage(
+          outcome.status === 413
+            ? "A server in front of this app rejected the file as too large (not this app's own 5 MB limit). Try a smaller file, or ask whoever runs the server to raise its upload size limit."
+            : `The server rejected the request (status ${outcome.status}). Check your connection and try again.`,
+        )
         return
       }
       if (outcome.kind === "failed") {

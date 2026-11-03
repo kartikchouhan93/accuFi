@@ -614,6 +614,39 @@ describe("commitBatch re-checks duplicates against the ledger as it is now (fina
     expect(flagged.duplicateOfTransactionId).toBe(posted.id)
   })
 
+  it("final review R8: two different batches overlapping on the same account, committed concurrently, still catch the duplicate rather than both posting", async () => {
+    const w = await setup()
+    // Same scenario as the sequential test above, but both commits race each other instead of running one after the
+    // other: without the account lock, each would run findDuplicatesSinceStaging before either had posted, see no
+    // duplicate, and both would insert their own 99.00 transaction.
+    const first = await registry.makeBatch(w.user.id, w.bank.id)
+    const firstRow = await readyRow(w.user.id, first.id, 1, w.food.id, { amountPaise: 9_900n, occurredOn: toDbDate(calendarDate("2026-03-28")) })
+    const second = await registry.makeBatch(w.user.id, w.bank.id)
+    const secondRow = await readyRow(w.user.id, second.id, 1, w.food.id, { amountPaise: 9_900n, occurredOn: toDbDate(calendarDate("2026-03-28")) })
+
+    const results = await Promise.allSettled([commitBatch(w.user.id, first.id), commitBatch(w.user.id, second.id)])
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1)
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0].reason).toBeInstanceOf(ImportRowsIllegalError)
+
+    // Exactly one transaction was posted for the 99.00 row, whichever batch won the race - never two.
+    expect(await prisma.transaction.count({ where: { userId: w.user.id, amountPaise: 9_900n, deletedAt: null } })).toBe(1)
+    const posted = await prisma.transaction.findFirstOrThrow({ where: { userId: w.user.id, amountPaise: 9_900n, deletedAt: null } })
+
+    const [firstBatch, secondBatch] = await Promise.all([
+      prisma.importBatch.findUniqueOrThrow({ where: { id: first.id } }),
+      prisma.importBatch.findUniqueOrThrow({ where: { id: second.id } }),
+    ])
+    expect([firstBatch.status, secondBatch.status].sort()).toEqual(["COMMITTED", "STAGED"])
+
+    // The loser's row is sent back to review, flagged against whichever row actually posted - not stuck refusing forever.
+    const loserRowId = firstBatch.status === "STAGED" ? firstRow.id : secondRow.id
+    const loserRow = await prisma.importRow.findUniqueOrThrow({ where: { id: loserRowId } })
+    expect(loserRow.status).toBe("PENDING")
+    expect(loserRow.duplicateOfTransactionId).toBe(posted.id)
+  })
+
   it("does not re-refuse a row the person already chose to import anyway against a staging-time duplicate", async () => {
     const w = await setup()
     // Staging flagged this row against w.tx (500 paise, bank -> food, 2026-04-01) and the person chose "Import anyway":

@@ -34,14 +34,27 @@ describe("readUploadResponse", () => {
     expect(await readUploadResponse(loginPage)).toEqual({ kind: "expired" })
   })
 
-  it("treats any other non-JSON answer (an HTML error page, an empty body, JSON-typed garbage) as an expired session, never throwing", async () => {
-    const htmlError = new Response("<html>Bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } })
-    const empty = new Response(null, { status: 500 })
+  it("treats a 200 non-JSON answer (JSON-typed garbage included) as an expired session, never throwing", async () => {
     const garbage = new Response("{not json", { status: 200, headers: { "content-type": "application/json" } })
+    const htmlAtTwoHundred = new Response("<html>anything</html>", { status: 200, headers: { "content-type": "text/html" } })
     const wrongShape = json({ hello: "world" })
-    for (const response of [htmlError, empty, garbage, wrongShape]) {
+    for (const response of [garbage, htmlAtTwoHundred, wrongShape]) {
       await expect(readUploadResponse(response)).resolves.toEqual({ kind: "expired" })
     }
+  })
+
+  it("names a non-200, non-JSON answer by its status rather than calling it a lapsed session (ruling R9)", async () => {
+    // A real login-page landing is always a followed redirect's final 200; a reverse proxy rejecting the request
+    // itself - most concretely a 413 from a body-size limit smaller than this app's own 5 MB cap - carries its own
+    // status instead.
+    const tooLarge = new Response("<html>413 Request Entity Too Large</html>", { status: 413, headers: { "content-type": "text/html" } })
+    expect(await readUploadResponse(tooLarge)).toEqual({ kind: "blocked", status: 413 })
+
+    const badGateway = new Response("<html>Bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } })
+    expect(await readUploadResponse(badGateway)).toEqual({ kind: "blocked", status: 502 })
+
+    const empty = new Response(null, { status: 500 })
+    expect(await readUploadResponse(empty)).toEqual({ kind: "blocked", status: 500 })
   })
 
   it("says exactly what the ruling words", () => {

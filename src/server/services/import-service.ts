@@ -26,6 +26,9 @@ import {
 } from "@/lib/import-view"
 import { NOTE_MAX_LENGTH } from "@/lib/schemas/transaction"
 import { serialisePaise } from "@/lib/serialise"
+// Reused from the budget domain: it only locks a LedgerNode row, which is not budget-specific (R8 in
+// docs/superpowers/decisions/2026-11-02-m6-rulings.md).
+import { lockLedger } from "@/server/repositories/budget-repository"
 import { NotFoundError } from "@/server/repositories/errors"
 import {
   countRows,
@@ -1135,6 +1138,14 @@ export async function commitBatch(userId: string, batchId: string): Promise<Comm
 
     const counts = await countRows(userId, batchId, uow)
     if (counts.byStatus.PENDING > 0) throw new ImportNotReadyError(counts.byStatus.PENDING)
+
+    // Closes R8 (docs/superpowers/decisions/2026-11-02-m6-rulings.md): without this, two different batches against
+    // the same account, committed at the same time, each run findDuplicatesSinceStaging before either has posted,
+    // so neither sees the other's rows and both insert. Taking the account's lock first means the second commit
+    // waits for the first to finish, then re-reads the ledger as the first left it — the same "lock before
+    // deciding" pattern lockedSpans (budget-service.ts) already uses, now serialising two commits of the same
+    // account rather than two budget writes to the same ledger.
+    await lockLedger(userId, batch.nodeId, uow)
 
     const account = await requireNode(userId, batch.nodeId, uow)
     const accountInfo = { id: account.id, kind: account.kind as "ASSET" | "LIABILITY" }
